@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# rdgen-setup: install the hardened, pull-model rdgen (bryangerlach/rdgen + the patches in
+# /usr/local/share/rustdesk-cortendesk/rdgen/patches) and connect it to your private GitHub build repo.
+#   rdgen-setup              interactive
+#   rdgen-setup --stdin      lines: owner/repo, install/update token, runtime token, keep install token (yes|no)
+#   rdgen-setup --github     redo only the GitHub step (repo, tokens); blank tokens keep the stored/current ones
+#   rdgen-setup --push       push the installed tree to the configured repo with the stored install token, asking
+#                            nothing (exit 10 if no token is stored); tools/refresh-ct.sh runs it after --rebuild
+#   rdgen-setup --local-only install locally without touching GitHub (testing)
+#   rdgen-setup --rebuild    rebuild the installed rdgen from the base commit + the patches in this CT (after new
+#                            patches were copied in, e.g. by tools/refresh-ct.sh); then --push (or --github) it
+#   rdgen-setup --patch-source <owner/repo> [branch] | off | status | dispatch-token   (see rdgen/patch-source)
+# GitHub never connects to this LXC: builds are dispatched with the encrypted config as a workflow input and the
+# poller downloads (then deletes) the artifacts. The web UI listens on http://<LAN IP>:8190/ (LAN only, login).
+# Users: rdgen runs the web UI + poller (runtime token only); rdgenbuild owns the git tree and the install token
+# and runs every step that executes upstream rdgen code (checks, pushes). Root only deploys.
+# Tokens (fine-grained, only the build repo):
+#   install/update token  Contents RW, Workflows RW, Secrets RW   -> kept only if you choose (needed for automatic
+#                                                                   rdgen updates), readable by rdgenbuild only
+#   runtime token         Actions RW                             -> /etc/rdgen/rdgen.env (root:rdgen 0640)
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+MODE=full REPO="" ITOKEN="" RTOKEN="" STORE=""
+case "${1:-}" in --stdin) MODE=stdin ;; --github) MODE=github ;; --push) MODE=push ;; --local-only) MODE=local ;;
+  --rebuild) MODE=rebuild ;;
+  --patch-source) PS=/usr/local/share/rustdesk-cortendesk/rdgen/patch-source
+    case "${2:-status}" in off|status|dispatch-token) exec "$PS" "${2:-status}" ;; *) exec "$PS" setup "${@:2}" ;; esac ;;
+esac
+VENV_PY=$RDGEN_APP/.venv/bin/python3
+BOOT=$RDGEN_APP/tools/rdgen-github-bootstrap
+REPO_RE='^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$'
+TOKEN_RE='^github_pat_[A-Za-z0-9_]{20,}$'
+
+read_secret() {  # read_secret <prompt> <var>
+  local v; read -r -s -p "$1" v; echo; printf -v "$2" '%s' "$v"
+}
+stored_token() { as_build test -s "$RDGEN_TOKEN" 2>/dev/null; }
+ask() {
+  case "$MODE" in local|rebuild|push) return 0 ;; esac
+  if [ "$MODE" = stdin ]; then
+    IFS= read -r REPO || true; IFS= read -r ITOKEN || true; IFS= read -r RTOKEN || true; IFS= read -r STORE || true
+    return
+  fi
+  local cur; cur="$(env_get "$RDGEN_ENV" GHUSER)/$(env_get "$RDGEN_ENV" REPONAME)"; [ "$cur" = / ] && cur=""
+  echo "rdgen needs an empty private GitHub repository and two fine-grained tokens limited to that repository:"
+  echo "  install/update token: Contents RW, Workflows RW, Secrets RW   runtime token: Actions RW"
+  read -r -p "GitHub repository (owner/name)${cur:+ [$cur]}: " REPO; REPO=${REPO:-$cur}
+  if [ "$MODE" = github ] && stored_token; then
+    read_secret "Install/update token (blank = use the stored one): " ITOKEN
+    if [ -z "$ITOKEN" ]; then ITOKEN=$(as_build cat "$RDGEN_TOKEN"); STORE=yes; fi
+  else
+    read_secret "Install/update token: " ITOKEN
+  fi
+  if [ "$MODE" = github ]; then read_secret "Runtime token (blank = keep the current one): " RTOKEN
+  else read_secret "Runtime token: " RTOKEN; fi
+  [ -z "$STORE" ] || return 0   # reusing the stored token keeps it
+  echo "Keeping the install token lets rdgen update itself daily: upstream rdgen master is then rebuilt with the"
+  echo "patches and pushed to your repo unattended (as the unprivileged rdgenbuild user)."
+  read -r -p "Keep the install token for automatic updates? [y/N]: " STORE
+}
+
+users_dirs() {
+  id rdgen >/dev/null 2>&1 || {
+    if [ "$OS" = alpine ]; then addgroup -S rdgen && adduser -S -D -H -h "$RDGEN_DATA" -s /sbin/nologin -G rdgen rdgen
+    else useradd --system --user-group --home-dir "$RDGEN_DATA" --no-create-home --shell /usr/sbin/nologin rdgen; fi
+  }
+  # primary group rdgen: it reads ZIP_PASSWORD from rdgen.env when setting the repo secret
+  id rdgenbuild >/dev/null 2>&1 || {
+    if [ "$OS" = alpine ]; then adduser -S -D -H -h "$RDGEN_BUILD" -s /sbin/nologin -G rdgen rdgenbuild
+    else useradd --system --gid rdgen --home-dir "$RDGEN_BUILD" --no-create-home --shell /usr/sbin/nologin rdgenbuild; fi
+  }
+  install -d -m 0750 -o rdgen -g rdgen "$RDGEN_DATA" "$RDGEN_DATA/builds" /var/log/rdgen
+  install -d -m 0750 -o root -g rdgen /etc/rdgen
+  install -d -m 0700 -o rdgenbuild -g rdgen "$RDGEN_BUILD"
+}
+
+install_packages() {
+  echo "==> packages"
+  if [ "$OS" = alpine ]; then
+    apk add --no-cache -q python3 py3-django py3-pillow py3-gunicorn py3-requests py3-pycryptodomex py3-pynacl git
+  else
+    if ! grep -rqs trixie-backports /etc/apt/sources.list /etc/apt/sources.list.d/; then
+      # trixie main has Django 4.2, which lacks LoginRequiredMiddleware; backports has 5.2
+      printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: trixie-backports\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        >/etc/apt/sources.list.d/trixie-backports.sources
+    fi
+    apt-get update -qq
+    apt-get install -y -qq -t trixie-backports python3-django >/dev/null
+    apt-get install -y -qq python3-venv python3-pil python3-gunicorn python3-requests python3-pycryptodome python3-nacl git >/dev/null
+  fi
+}
+
+upstream_base() { sed -n 's/^base-commit: \([0-9a-f]\{40\}\).*/\1/p' "$RDGEN_PATCHES/UPSTREAM"; }
+BUILT_BASE=""
+reconcile_src() {  # point the tree back at what is deployed (a failed update may have left anything checked out)
+  local head; head=$(cat "$RDGEN_APP/.rdgen-head" 2>/dev/null || true)
+  [ -n "$head" ] && [ -d "$RDGEN_SRC/.git" ] || return 1
+  as_build git -C "$RDGEN_SRC" am --abort >/dev/null 2>&1 || true
+  as_build git -C "$RDGEN_SRC" checkout -qf -B rdgen-build "$head" && as_build git -C "$RDGEN_SRC" clean -fdxq
+}
+build_tree() {  # upstream at the tested base commit + the patch series; an installed tree (maybe newer) is kept
+  if reconcile_src; then echo "==> reusing the deployed tree in $RDGEN_SRC"; return 0; fi
+  rm -rf "$RDGEN_SRC"   # none, or not matching a deployed version: build from the tested base
+  chmod -R a+rX "$RDGEN_PATCHES"
+  local base; base=$(upstream_base)
+  [ -n "$base" ] || { echo "!! no base-commit in $RDGEN_PATCHES/UPSTREAM" >&2; return 1; }
+  echo "==> rdgen source: upstream ${base:0:12} + $(ls "$RDGEN_PATCHES"/*.patch | wc -l) patches"
+  as_build git clone -q https://github.com/bryangerlach/rdgen "$RDGEN_SRC"
+  as_build git -C "$RDGEN_SRC" checkout -q -B rdgen-build "$base"
+  as_build git -C "$RDGEN_SRC" -c user.name=rdgen-setup -c user.email=rdgen-setup@localhost \
+    am -q --keep-cr "$RDGEN_PATCHES"/*.patch
+  BUILT_BASE=$base
+}
+
+deploy_tree() {  # /opt/rdgen = root-owned export of the tree (git runs as rdgenbuild) + a venv (distro pkgs + pyzipper)
+  echo "==> deploy $RDGEN_APP"
+  rm -rf "$RDGEN_APP.new"; mkdir -p "$RDGEN_APP.new"
+  as_build git -C "$RDGEN_SRC" archive HEAD | tar -x -C "$RDGEN_APP.new"
+  as_build git -C "$RDGEN_SRC" rev-parse HEAD >"$RDGEN_APP.new/.rdgen-head"
+  rm -rf "$RDGEN_APP.new/.venv"   # never let the tree supply a venv: python/pip below run as root
+  python3 -m venv --clear --system-site-packages "$RDGEN_APP.new/.venv"
+  "$RDGEN_APP.new/.venv/bin/pip" install -q --disable-pip-version-check --no-deps --require-hashes --only-binary :all: \
+    -r "$RDGEN_APP.new/deploy/requirements-venv.txt"
+  chown -R root:root "$RDGEN_APP.new"; chmod -R u=rwX,go=rX "$RDGEN_APP.new"
+  rm -rf "$RDGEN_APP.prev"; [ -e "$RDGEN_APP" ] && mv "$RDGEN_APP" "$RDGEN_APP.prev"
+  mv "$RDGEN_APP.new" "$RDGEN_APP"
+}
+
+set_repo_env() {  # GitHub values rdgen (web + poller) uses at runtime
+  [ -n "$REPO" ] && { env_set "$RDGEN_ENV" GHUSER "${REPO%%/*}"; env_set "$RDGEN_ENV" REPONAME "${REPO#*/}"; }
+  [ -n "$RTOKEN" ] && env_set "$RDGEN_ENV" GHBEARER "$RTOKEN"
+  return 0
+}
+rdgen_env() {  # secrets are created once; site values are (re)written
+  if [ ! -f "$RDGEN_ENV" ]; then
+    install -m 0640 -o root -g rdgen /dev/null "$RDGEN_ENV"
+    {
+      echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(64))')"
+      echo "ZIP_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_hex(48))')"
+      echo "RDGEN_DATA_DIR=$RDGEN_DATA"
+      echo "RDGEN_BIND=127.0.0.1:8000"
+    } >"$RDGEN_ENV"
+  fi
+  # the rdgen user cannot read /var/lib/rustdesk-server (0750 rustdesk): give it its own copy of the PUBLIC key,
+  # otherwise the form's key is blank and rdgen falls back to RustDesk's public key
+  server_pub_copy
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_KEY_FILE /etc/rdgen/server.pub
+  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1"
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$(env_get "$CD_ENV" CORTENDESK_ID_SERVER | sed 's/:21116$//')"
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$(env_get "$CD_ENV" APP_URL)"
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_PORT 21116   # hbbs here always listens on 21116 (relay 21117, WebSocket 21118/9)
+  # Windows clients' self-update links on the console (/etc/nginx/rustdesk-clients.conf, client-update.php)
+  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "$(env_get "$CD_ENV" APP_URL | sed 's#/*$##')/clients"
+  # share links from the Recent builds page work wherever the console does (/etc/nginx/rustdesk-clients.conf)
+  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "$(env_get "$CD_ENV" APP_URL | sed 's#/*$##')/share"
+  # the form's "add to CortenDesk's Client Downloads" choice (rdgen-publish does the copy); an existing value,
+  # even an empty one (= off), is kept
+  grep -q '^RDGEN_PUBLISH_DEFAULT=' "$RDGEN_ENV" || env_set "$RDGEN_ENV" RDGEN_PUBLISH_DEFAULT hidden
+  env_set "$RDGEN_ENV" RDGEN_PUBLISH_TARGET CortenDesk
+  set_repo_env
+}
+
+manage() { (cd "$RDGEN_DATA" && as_user rdgen env RDGEN_ENV_FILE="$RDGEN_ENV" PYTHONDONTWRITEBYTECODE=1 "$VENV_PY" "$RDGEN_APP/manage.py" "$@"); }
+
+services() {
+  echo "==> services + nginx (:8190, LAN only)"
+  if [ "$OS" = alpine ]; then
+    install -m 0755 "$RDGEN_APP/deploy/openrc/rdgen" "$RDGEN_APP/deploy/openrc/rdgen-poller" /etc/init.d/
+    rc-update add rdgen default >/dev/null; rc-update add rdgen-poller default >/dev/null
+    install -m 0644 "$RDGEN_APP/deploy/nginx/rdgen-lan.conf" /etc/nginx/http.d/rdgen.conf
+    [ -e /proc/net/if_inet6 ] || sed -i '/listen \[::\]/d' /etc/nginx/http.d/rdgen.conf
+    sed -i '/rdgen-publish/d' /etc/crontabs/root
+    echo "* * * * * /usr/local/bin/rdgen-publish >>/var/log/rdgen-publish.log 2>&1" >>/etc/crontabs/root
+    rc-service --quiet crond restart
+  else
+    install -m 0644 "$RDGEN_APP/deploy/systemd/rdgen.service" "$RDGEN_APP/deploy/systemd/rdgen-poller.service" /etc/systemd/system/
+    systemctl daemon-reload; systemctl enable -q rdgen rdgen-poller
+    install -m 0644 "$RDGEN_APP/deploy/nginx/rdgen-lan.conf" /etc/nginx/sites-available/rdgen.conf
+    [ -e /proc/net/if_inet6 ] || sed -i '/listen \[::\]/d' /etc/nginx/sites-available/rdgen.conf
+    ln -sfn /etc/nginx/sites-available/rdgen.conf /etc/nginx/sites-enabled/rdgen.conf
+    printf '%s\n' '[Unit]' "Description=Copy finished rdgen builds into CortenDesk's Client Downloads" \
+      "ConditionPathExists=$RDGEN_DATA/publish.pending" '' '[Service]' 'Type=oneshot' \
+      'ExecStart=/usr/local/bin/rdgen-publish' >/etc/systemd/system/rdgen-publish.service
+    printf '%s\n' '[Unit]' 'Description=Check for finished rdgen builds every minute' '' '[Timer]' \
+      'OnCalendar=*-*-* *:*:30' 'AccuracySec=5s' '' '[Install]' 'WantedBy=timers.target' \
+      >/etc/systemd/system/rdgen-publish.timer
+    systemctl daemon-reload; systemctl enable -q --now rdgen-publish.timer
+  fi
+  install -m 0644 "$RDGEN_APP/deploy/nginx/rdgen-proxy.conf" /etc/nginx/rdgen-proxy.conf
+  nginx -t -q
+  svc restart rdgen; svc restart rdgen-poller; svc reload nginx
+}
+
+healthy() {
+  local i code
+  for i in $(seq 15); do
+    code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8190/accounts/login/ || true)
+    [ "$code" = 200 ] && return 0
+    sleep 2
+  done
+  echo "!! rdgen health: /accounts/login/ returned $code" >&2; return 1
+}
+
+github() {  # push the tree to the private repo + set ZIP_PASSWORD, as rdgenbuild; the token only travels on stdin
+  local store=no rc=0
+  [[ "$REPO" =~ $REPO_RE ]] || { echo "!! repository must look like owner/name" >&2; return 2; }
+  [[ "$ITOKEN" =~ $TOKEN_RE ]] || { echo "!! the install token must be a fine-grained token (github_pat_...)" >&2; return 2; }
+  case "${STORE:-n}" in [Yy]*) store=yes ;; esac
+  echo "==> GitHub: push the build tree to $REPO (private), set ZIP_PASSWORD, wait for the workflows"
+  # the runtime token (Actions RW) checks that GitHub lists the workflows; the install token has no Actions access
+  local rt=${RTOKEN:-$(env_get "$RDGEN_ENV" GHBEARER)}
+  printf '%s\n%s\n' "$ITOKEN" "$rt" | as_build "$VENV_PY" "$BOOT" --env-file "$RDGEN_ENV" --state "$RDGEN_STATE" \
+    --owner "${REPO%%/*}" --repo "${REPO#*/}" --token-stdin ${rt:+--runtime-token-stdin} \
+    init --tree "$RDGEN_SRC" --python "$VENV_PY" || rc=$?
+  [ $rc -eq 0 ] || return $rc
+  # init pushed to the repository's default branch, whatever it is called; rdgen dispatches builds on that branch
+  local branch; branch=$(as_build jq -r '.branch // empty' "$RDGEN_STATE" 2>/dev/null || true)
+  if [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,100}$ ]]; then env_set "$RDGEN_ENV" GHBRANCH "$branch"
+  else echo "!! the bootstrap state has no valid branch" >&2; return 3; fi
+  if [ -z "$BUILT_BASE" ]; then   # --push of a tree built earlier: the upstream commit under its patch commits
+    BUILT_BASE=$(as_build git -C "$RDGEN_SRC" rev-parse "HEAD~$(ls "$RDGEN_PATCHES"/*.patch | wc -l)" 2>/dev/null || true)
+  fi
+  if [ -n "$BUILT_BASE" ] && [ -f "$RDGEN_STATE" ]; then
+    # the pushed tree is that upstream + patches: record it, so the daily update compares against the truth
+    as_build sh -c 'jq --arg u "$2" ".upstream = \$u" "$1" >"$1.new" && mv -f "$1.new" "$1"' _ "$RDGEN_STATE" "$BUILT_BASE"
+  fi
+  if [ "$store" = yes ]; then   # kept only after it worked; written by rdgenbuild itself
+    printf '%s\n' "$ITOKEN" | write_as rdgenbuild "$RDGEN_TOKEN" 600
+    rm -f /var/lib/rustdesk-update/rdgen.seen   # a "no token" notice no longer applies
+    echo "    install token kept for automatic updates (readable by rdgenbuild only)"
+  else
+    as_build rm -f "$RDGEN_TOKEN"   # "no" also forgets an earlier stored token
+  fi
+  return 0
+}
+
+link_cortendesk() {
+  local url; url="http://$(lan_ip):8190"
+  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "$url"
+  art config:cache >/dev/null
+  jq -n --arg u "$url" '{rdgen_url:$u}' | cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
+  svc restart "$FPM"
+  creds_set "rdgen URL" "$url/  (LAN only; the console's Build Installers link)"
+}
+
+ask
+if [ "$MODE" = push ]; then   # same as --github with the stored install token, the current repo and runtime token
+  [ -x "$VENV_PY" ] || { echo "rdgen is not installed; run rdgen-setup first" >&2; exit 1; }
+  REPO="$(env_get "$RDGEN_ENV" GHUSER)/$(env_get "$RDGEN_ENV" REPONAME)"
+  [[ "$REPO" =~ $REPO_RE ]] && [ -n "$(env_get "$RDGEN_ENV" GHBEARER)" ] ||
+    { echo "rdgen-setup: no build repo is set up yet; run rdgen-setup --github" >&2; exit 2; }
+  stored_token || { echo "rdgen-setup: no install token is stored; run rdgen-setup --github" >&2; exit 10; }
+  ITOKEN=$(as_build cat "$RDGEN_TOKEN"); STORE=yes; MODE=github
+  if [[ ! "$ITOKEN" =~ $TOKEN_RE ]]; then echo "rdgen-setup: the stored install token is unreadable; run rdgen-setup --github" >&2; exit 3; fi
+  reconcile_src || { echo "rdgen-setup: $RDGEN_SRC does not match the deployed rdgen; run a full rdgen-setup" >&2; exit 1; }
+  rc=0; github || rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "!! the push with the stored install token failed (exit $rc). If the token expired or was revoked, run" >&2
+    echo "   rdgen-setup --github and give it a new one." >&2
+    exit $rc
+  fi
+  svc restart rdgen; svc restart rdgen-poller
+  echo "==> pushed to $REPO with the stored install token"; exit 0
+fi
+if [ "$MODE" = github ]; then
+  [ -x "$VENV_PY" ] || { echo "rdgen is not installed; run rdgen-setup first" >&2; exit 1; }
+  cur_repo="$(env_get "$RDGEN_ENV" GHUSER)/$(env_get "$RDGEN_ENV" REPONAME)"
+  if [ -z "$RTOKEN" ] && { [ -z "$(env_get "$RDGEN_ENV" GHBEARER)" ] || [ "$REPO" != "$cur_repo" ]; }; then
+    echo "rdgen-setup: a runtime token for $REPO is required" >&2; exit 2
+  fi
+  [ -z "$RTOKEN" ] || [[ "$RTOKEN" =~ $TOKEN_RE ]] || { echo "rdgen-setup: the runtime token must be a fine-grained token (github_pat_...)" >&2; exit 2; }
+  reconcile_src || { echo "rdgen-setup: $RDGEN_SRC does not match the deployed rdgen; run a full rdgen-setup" >&2; exit 1; }
+  rc=0; github || rc=$?
+  [ $rc -eq 0 ] || exit $rc
+  set_repo_env; svc restart rdgen; svc restart rdgen-poller
+  echo "==> rdgen now builds in $REPO"; exit 0
+fi
+if [ "$MODE" = rebuild ]; then
+  [ -x "$VENV_PY" ] || { echo "rdgen is not installed; run rdgen-setup" >&2; exit 1; }
+  rm -f "$RDGEN_APP/.rdgen-head"   # build from the base + the current patches instead of reusing the deployed tree
+elif [ "$MODE" != local ]; then
+  [[ "$REPO" =~ $REPO_RE ]] || { echo "rdgen-setup: repository must look like owner/name" >&2; exit 2; }
+  [[ "$RTOKEN" =~ $TOKEN_RE ]] || { echo "rdgen-setup: the runtime token must be a fine-grained token (github_pat_...)" >&2; exit 2; }
+fi
+[ -d "$RDGEN_PATCHES" ] || { echo "rdgen-setup: patches missing in $RDGEN_PATCHES" >&2; exit 1; }
+users_dirs
+install_packages
+build_tree
+deploy_tree
+rdgen_env
+manage migrate -v0
+# one login for the stack: the console admin from the creds file, if rdgen accepts that password
+# (a rebuild keeps the existing rdgen login)
+user=$(creds_get "Console admin" || true); pass=$(creds_get "Console password" || true)
+if [ "$MODE" = rebuild ]; then :
+elif [ -n "$user" ] && [ -n "$pass" ] && printf '%s\n' "$pass" | manage rdgen_admin --username "$user" --password-stdin >/dev/null 2>&1; then
+  creds_set "rdgen login" "$user (same password as the console)"
+else
+  user="admin"; pass=$(manage rdgen_admin --username admin --generate)
+  creds_set "rdgen login" "admin"; creds_set "rdgen password" "$pass"
+fi
+services
+healthy
+link_cortendesk
+mkdir -p /var/lib/rustdesk-update
+if [ -n "$BUILT_BASE" ]; then echo "${BUILT_BASE:0:12}" >/var/lib/rustdesk-update/rdgen; fi
+if [ "$MODE" = local ]; then echo "==> rdgen installed locally (GitHub not configured)"; exit 0; fi
+if [ "$MODE" = rebuild ]; then
+  echo "==> rdgen rebuilt from $(upstream_base | cut -c1-12) + $(ls "$RDGEN_PATCHES"/*.patch | wc -l) patches"
+  if [ -n "$(env_get "$RDGEN_ENV" GHUSER)" ] && [ -z "${RDGEN_SETUP_FROM_REFRESH:-}" ]; then   # refresh-ct.sh pushes itself
+    if stored_token; then echo "    push it to your build repo: rdgen-setup --push (uses the stored install token)"
+    else echo "    push it to your build repo: rdgen-setup --github"; fi
+  fi
+  exit 0
+fi
+rc=0; github || rc=$?
+if [ $rc -eq 0 ]; then svc restart rdgen; svc restart rdgen-poller; echo "==> rdgen ready: http://$(lan_ip):8190/ (login: $user)"
+else echo "!! rdgen is installed, but the GitHub step failed (exit $rc). Fix the repo/token and run: rdgen-setup --github" >&2; exit 3; fi

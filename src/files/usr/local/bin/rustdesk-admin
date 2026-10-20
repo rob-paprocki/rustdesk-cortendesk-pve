@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# rustdesk-admin: set the CortenDesk console administrator (and the rdgen login, if rdgen is installed).
+#   rustdesk-admin              interactive
+#   rustdesk-admin --stdin      lines: username, password, [email]   (used by the Proxmox host script)
+# The account named in ~/rustdesk-cortendesk.creds is renamed rather than duplicated; all its existing sessions,
+# remember-me cookies, trusted browsers and client tokens are revoked. Passwords are read from stdin/the terminal
+# only and saved to ~/rustdesk-cortendesk.creds (root-only). Minimum 12 characters (rdgen's rule; the console's is 8).
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+PREV=$(creds_get "Console admin" || true)
+EMAIL=""
+if [ "${1:-}" = --stdin ]; then
+  IFS= read -r USERNAME || true; IFS= read -r PASS || true; IFS= read -r EMAIL || true
+else
+  read -r -p "Admin username [${PREV:-admin}]: " USERNAME
+  USERNAME=${USERNAME:-${PREV:-admin}}
+  read -r -p "Admin email (optional): " EMAIL
+  while :; do
+    read -r -s -p "New password (min 12 chars): " PASS; echo
+    read -r -s -p "Repeat password: " P2; echo
+    [ "$PASS" = "$P2" ] && [ ${#PASS} -ge 12 ] && break
+    echo "Passwords don't match or are shorter than 12 characters, try again."
+  done
+fi
+[[ "$USERNAME" =~ ^[A-Za-z0-9._@-]{3,64}$ ]] || { echo "rustdesk-admin: username must be 3-64 chars of A-Z a-z 0-9 . _ @ -" >&2; exit 2; }
+[ ${#PASS} -ge 12 ] || { echo "rustdesk-admin: password must be at least 12 characters" >&2; exit 2; }
+
+printf '%s\n%s\n%s\n%s\n' "$USERNAME" "$PASS" "$EMAIL" "$PREV" | cd_php /usr/local/lib/cortendesk/set-admin.php >/dev/null
+if [ "$(env_get "$CD_ENV" SESSION_DRIVER)" = file ]; then   # database sessions are revoked by set-admin.php
+  as_user cortendesk find "$CD_DATA/storage/framework/sessions" -type f ! -name .gitignore -delete 2>/dev/null || true
+fi
+creds_set "Console admin" "$USERNAME"
+creds_set "Console password" "$PASS"
+echo "Console admin set: $USERNAME"
+
+if [ -f "$RDGEN_ENV" ] && [ -x "$RDGEN_APP/.venv/bin/python3" ]; then
+  if printf '%s\n' "$PASS" | (cd "$RDGEN_DATA" && as_user rdgen env RDGEN_ENV_FILE="$RDGEN_ENV" \
+    "$RDGEN_APP/.venv/bin/python3" "$RDGEN_APP/manage.py" rdgen_admin --username "$USERNAME" --password-stdin) >/dev/null; then
+    creds_set "rdgen login" "$USERNAME (same password as the console)"
+    echo "rdgen login set: $USERNAME"
+    if [ -n "$PREV" ] && [ "$PREV" != "$USERNAME" ]; then   # a rename must not leave the old login active
+      (cd "$RDGEN_DATA" && as_user rdgen env RDGEN_ENV_FILE="$RDGEN_ENV" P="$PREV" N="$USERNAME" \
+        "$RDGEN_APP/.venv/bin/python3" "$RDGEN_APP/manage.py" shell -c 'import os
+from django.contrib.auth import get_user_model as g
+g().objects.filter(username=os.environ["P"]).exclude(username=os.environ["N"]).update(is_active=False)') >/dev/null 2>&1 || true
+    fi
+  else
+    echo "rustdesk-admin: warning: rdgen did not accept the change (see the error above); rdgen login unchanged" >&2
+    creds_set "rdgen note" "rdgen_admin failed on $(date +%F); the rdgen login was not changed"
+  fi
+fi
+echo "Saved to $CREDS"

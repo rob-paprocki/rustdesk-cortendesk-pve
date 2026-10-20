@@ -1,0 +1,398 @@
+From 319c6d369fcfb2fc2c8ee5be5e5a9f5954cc68fd Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 00:38:19 -0400
+Subject: [PATCH 02/26] auth: require login everywhere, re-enable CSRF, token
+ or session for /api
+
+- Add LoginRequiredMiddleware (Django >= 5.1; Alpine 3.24 ships 5.2.17).
+  All pages, /download and /check_for_file now need a logged-in user.
+- Add a login page (accounts/login/) and a POST-only logout button.
+- Turn CsrfViewMiddleware back on and put {% csrf_token %} into the
+  generator form. The Save/Load Configuration JS neither saves nor
+  restores csrfmiddlewaretoken, so a stale token from an old saved config
+  cannot overwrite the live one.
+- /api/generate and /api/status accept either
+  "Authorization: Bearer $RDGEN_API_TOKEN" (compared with
+  hmac.compare_digest; no CSRF, since a browser never sends the header
+  cross-site) or a logged-in session, which must pass the normal
+  X-CSRFToken check. Anything else gets 401 JSON instead of a redirect.
+- manage.py rdgen_admin --username U --password-stdin|--generate creates
+  or updates the web login. The password is read from stdin, never from
+  argv, and is checked against the password validators (minimum length
+  12).
+- Use reversed URLs ({% url %}) in the templates this touches, so a
+  sub-path mount (RDGEN_URL_PREFIX) keeps working.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgen/settings.py                             | 17 +++++-
+ rdgen/urls.py                                 | 52 ++++++++-----------
+ rdgenerator/api_views.py                      | 32 ++++++++++++
+ rdgenerator/management/__init__.py            |  0
+ rdgenerator/management/commands/__init__.py   |  0
+ .../management/commands/rdgen_admin.py        | 45 ++++++++++++++++
+ rdgenerator/middleware.py                     | 23 ++++++++
+ rdgenerator/templates/failure.html            |  2 +-
+ rdgenerator/templates/generator.html          | 17 +++++-
+ rdgenerator/templates/registration/login.html | 30 +++++++++++
+ rdgenerator/templates/waiting.html            |  2 +-
+ 11 files changed, 185 insertions(+), 35 deletions(-)
+ create mode 100644 rdgenerator/management/__init__.py
+ create mode 100644 rdgenerator/management/commands/__init__.py
+ create mode 100644 rdgenerator/management/commands/rdgen_admin.py
+ create mode 100644 rdgenerator/middleware.py
+ create mode 100644 rdgenerator/templates/registration/login.html
+
+diff --git a/rdgen/settings.py b/rdgen/settings.py
+index 3da6b3b..f7c3100 100644
+--- a/rdgen/settings.py
++++ b/rdgen/settings.py
+@@ -121,6 +121,16 @@ GENURL = ''
+ PROTOCOL = 'https'
+ SH_SECRET = None
+ 
++# Bearer token for the JSON API (/api/*), e.g. for a console integration.
++# Empty disables token auth; the API then only accepts a logged-in session.
++RDGEN_API_TOKEN = env('RDGEN_API_TOKEN', '')
++if RDGEN_API_TOKEN and len(RDGEN_API_TOKEN) < 32:
++    raise ImproperlyConfigured('RDGEN_API_TOKEN must be at least 32 characters long.')
++
++LOGIN_URL = 'login'
++LOGIN_REDIRECT_URL = 'generator'
++LOGOUT_REDIRECT_URL = 'login'
++
+ # Data lives outside the (root-owned, read-only) code tree.
+ DATA_DIR = Path(env('RDGEN_DATA_DIR', str(BASE_DIR / 'data')))
+ 
+@@ -181,8 +191,13 @@ MIDDLEWARE = [
+     'django.middleware.security.SecurityMiddleware',
+     'django.contrib.sessions.middleware.SessionMiddleware',
+     'django.middleware.common.CommonMiddleware',
+-    #'django.middleware.csrf.CsrfViewMiddleware',
++    'rdgenerator.middleware.ApiTokenMiddleware',
++    'django.middleware.csrf.CsrfViewMiddleware',
+     'django.contrib.auth.middleware.AuthenticationMiddleware',
++    # Django >= 5.1: every view needs a logged-in user unless it is marked
++    # @login_not_required (the login page, and /api/* which does its own
++    # token-or-session check).
++    'django.contrib.auth.middleware.LoginRequiredMiddleware',
+     'django.contrib.messages.middleware.MessageMiddleware',
+     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+ ]
+diff --git a/rdgen/urls.py b/rdgen/urls.py
+index d28debe..5aa8265 100644
+--- a/rdgen/urls.py
++++ b/rdgen/urls.py
+@@ -1,41 +1,31 @@
+ """
+-URL configuration for rdgen project.
++URL configuration for rdgen.
+ 
+-The `urlpatterns` list routes URLs to views. For more information please see:
+-    https://docs.djangoproject.com/en/5.0/topics/http/urls/
+-Examples:
+-Function views
+-    1. Add an import:  from my_app import views
+-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
+-Class-based views
+-    1. Add an import:  from other_app.views import Home
+-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
+-Including another URLconf
+-    1. Import the include() function: from django.urls import include, path
+-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
++Every view requires a logged-in user (LoginRequiredMiddleware) except the
++login page and /api/*, which accepts a bearer token or a session.
+ """
+-import django
++from django.contrib.auth import views as auth_views
++from django.urls import path, re_path
+ 
+ from rdgenerator import views as views
+ from rdgenerator import api_views as api_views
+-if django.__version__.split('.')[0]>='4':
+-    from django.urls import re_path as url
+-else:
+-    from django.conf.urls import  url, include
+ 
+ urlpatterns = [
+-    url(r'^$',views.generator_view),
+-    url(r'^generator',views.generator_view),
+-    url(r'^check_for_file',views.check_for_file),
+-    url(r'^download',views.download),
+-    url(r'^creategh',views.create_github_run),
+-    url(r'^updategh',views.update_github_run),
+-    url(r'^startgh',views.startgh),
+-    url(r'^get_png',views.get_png),
+-    url(r'^save_custom_client',views.save_custom_client),
+-    url(r'^get_zip',views.get_zip),
+-    url(r'^cleanzip',views.cleanup_secrets),
++    path('', views.generator_view, name='home'),
++    path('generator', views.generator_view, name='generator'),
++    path('check_for_file', views.check_for_file, name='check_for_file'),
++    path('download', views.download, name='download'),
++    re_path(r'^creategh', views.create_github_run),
++    re_path(r'^updategh', views.update_github_run),
++    re_path(r'^startgh', views.startgh),
++    re_path(r'^get_png', views.get_png),
++    re_path(r'^save_custom_client', views.save_custom_client),
++    re_path(r'^get_zip', views.get_zip),
++    re_path(r'^cleanzip', views.cleanup_secrets),
+     # JSON API endpoints
+-    url(r'^api/generate$',api_views.api_generate),
+-    url(r'^api/status$',api_views.api_status),
++    path('api/generate', api_views.api_generate, name='api_generate'),
++    path('api/status', api_views.api_status, name='api_status'),
++    # Login / logout (logout is POST-only in Django 5)
++    path('accounts/login/', auth_views.LoginView.as_view(redirect_authenticated_user=True), name='login'),
++    path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
+ ]
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index 0fc1348..24208b6 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -1,7 +1,12 @@
+ import json
+ import os
+ import re
++from functools import wraps
++
++from django.contrib.auth.decorators import login_not_required
+ from django.http import JsonResponse
++from django.middleware.csrf import CsrfViewMiddleware
++from django.views.decorators.csrf import csrf_exempt
+ from django.conf import settings as _settings
+ from .views import generate_custom_client, _get_run_status, _UUID_RE
+ 
+@@ -110,6 +115,32 @@ def validate_generate_params(data):
+     return cleaned, errors
+ 
+ 
++def api_auth_required(view):
++    """Allow a valid RDGEN_API_TOKEN bearer token or a logged-in session.
++
++    Unauthenticated calls get 401 JSON instead of a login redirect.
++    Session-authenticated calls must pass the normal CSRF check (the
++    X-CSRFToken header); bearer-token calls skip it, because a browser
++    never attaches that header cross-site on its own.
++    """
++    @wraps(view)
++    def wrapper(request, *args, **kwargs):
++        if getattr(request, 'rdgen_api_token_ok', False):
++            return view(request, *args, **kwargs)
++        if request.user.is_authenticated:
++            rejected = CsrfViewMiddleware(lambda r: None).process_view(request, None, (), {})
++            if rejected is not None:
++                return JsonResponse({"success": False, "error": "CSRF check failed"}, status=403)
++            return view(request, *args, **kwargs)
++        return JsonResponse(
++            {"success": False, "error": "Authentication required"},
++            status=401,
++            headers={'WWW-Authenticate': 'Bearer realm="rdgen"'},
++        )
++    return login_not_required(csrf_exempt(wrapper))
++
++
++@api_auth_required
+ def api_generate(request):
+     """
+     POST /api/generate
+@@ -254,6 +285,7 @@ def api_generate(request):
+         return JsonResponse({"success": False, "error": result['error']}, status=result.get('status_code', 500))
+ 
+ 
++@api_auth_required
+ def api_status(request):
+     """
+     GET /api/status
+diff --git a/rdgenerator/management/__init__.py b/rdgenerator/management/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/rdgenerator/management/commands/__init__.py b/rdgenerator/management/commands/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/rdgenerator/management/commands/rdgen_admin.py b/rdgenerator/management/commands/rdgen_admin.py
+new file mode 100644
+index 0000000..b604d27
+--- /dev/null
++++ b/rdgenerator/management/commands/rdgen_admin.py
+@@ -0,0 +1,45 @@
++import secrets
++import sys
++
++from django.contrib.auth import get_user_model, password_validation
++from django.core.exceptions import ValidationError
++from django.core.management.base import BaseCommand, CommandError
++
++
++class Command(BaseCommand):
++    help = ("Create or update the rdgen web login. The password is read from "
++            "stdin (never from argv) or generated with --generate.")
++
++    def add_arguments(self, parser):
++        parser.add_argument('--username', required=True)
++        group = parser.add_mutually_exclusive_group(required=True)
++        group.add_argument('--password-stdin', action='store_true',
++                           help='read the password from the first line of stdin')
++        group.add_argument('--generate', action='store_true',
++                           help='generate a random password and print it to stdout')
++
++    def handle(self, *args, **opts):
++        username = opts['username'].strip()
++        if not username or len(username) > 150:
++            raise CommandError('invalid username')
++        if opts['generate']:
++            password = secrets.token_urlsafe(18)
++        else:
++            password = sys.stdin.readline().rstrip('\r\n')
++            if not password:
++                raise CommandError('no password on stdin')
++        User = get_user_model()
++        user = User.objects.filter(username=username).first()
++        if user is None:
++            user = User(username=username, is_staff=True, is_superuser=True)
++        try:
++            password_validation.validate_password(password, user)
++        except ValidationError as exc:
++            raise CommandError('; '.join(exc.messages))
++        user.set_password(password)
++        user.is_active = True
++        user.save()
++        if opts['generate']:
++            self.stdout.write(password)
++        else:
++            self.stdout.write(f'password set for {username}')
+diff --git a/rdgenerator/middleware.py b/rdgenerator/middleware.py
+new file mode 100644
+index 0000000..de72085
+--- /dev/null
++++ b/rdgenerator/middleware.py
+@@ -0,0 +1,23 @@
++import hmac
++
++from django.conf import settings
++
++
++class ApiTokenMiddleware:
++    """Accept `Authorization: Bearer <RDGEN_API_TOKEN>` on /api/*.
++
++    Only marks the request; the API views decide (see api_auth_required).
++    """
++
++    def __init__(self, get_response):
++        self.get_response = get_response
++
++    def __call__(self, request):
++        request.rdgen_api_token_ok = False
++        token = settings.RDGEN_API_TOKEN
++        header = request.META.get('HTTP_AUTHORIZATION', '')
++        if token and request.path_info.startswith('/api/') and header[:7].lower() == 'bearer ':
++            supplied = header[7:].strip().encode('utf-8', 'replace')
++            if hmac.compare_digest(supplied, token.encode('utf-8')):
++                request.rdgen_api_token_ok = True
++        return self.get_response(request)
+diff --git a/rdgenerator/templates/failure.html b/rdgenerator/templates/failure.html
+index 920ba18..40482d2 100644
+--- a/rdgenerator/templates/failure.html
++++ b/rdgenerator/templates/failure.html
+@@ -126,7 +126,7 @@
+         
+         <div id="platformNote" class="platform-note"></div>
+         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+-        <a href="/" style="font-size: 0.9em; color: #666; text-decoration: none;">← Return to Form</a>
++        <a href="{% url 'home' %}" style="font-size: 0.9em; color: #666; text-decoration: none;">← Return to Form</a>
+     </div>
+ 
+     <script>
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index 1ede638..a922375 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -224,8 +224,14 @@
+       </style>
+ </head>
+ <body>
++    <form method="post" action="{% url 'logout' %}" style="position:absolute;top:10px;right:14px;margin:0;font-size:.85em;">
++        {% csrf_token %}
++        <span>{{ user.get_username }}</span>
++        <button type="submit" style="padding:4px 10px;margin-left:6px;font-size:.9em;width:auto;">Log out</button>
++    </form>
+     <h1><i class="fas fa-cogs"></i> RustDesk Custom Client Builder</h1>
+-    <form id="myForm" action="/generator" method="post" enctype="multipart/form-data">
++    <form id="myForm" action="{% url 'generator' %}" method="post" enctype="multipart/form-data">
++        {% csrf_token %}
+         <div class="save-load-section-container">
+             <div class="section">
+                 <h2 id="saveLoadTitle">Save/Load Configuration <i class="fas fa-chevron-down"></i></h2>  
+@@ -566,6 +572,10 @@
+                 if (value instanceof File) {
+                     return;
+                 }
++                // Never save the per-session CSRF token into a config file.
++                if (key === 'csrfmiddlewaretoken') {
++                    return;
++                }
+                 formData[key] = value; // Add each key/value pair to the formData object.
+             });
+ 
+@@ -685,6 +695,11 @@
+                             carriedUnknownFields = {};
+                             const skippedKeys = [];
+                             for (const key in formData) {
++                                // A stale CSRF token from an old saved config would
++                                // overwrite the live one and make the POST fail.
++                                if (key === 'csrfmiddlewaretoken') {
++                                    continue;
++                                }
+                                 // More robust selector: checks for name OR id
+                                 const elements = document.querySelectorAll(`[name="${key}"], [id="${key}"]`);
+ 
+diff --git a/rdgenerator/templates/registration/login.html b/rdgenerator/templates/registration/login.html
+new file mode 100644
+index 0000000..18dcc35
+--- /dev/null
++++ b/rdgenerator/templates/registration/login.html
+@@ -0,0 +1,30 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++    <meta charset="UTF-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1.0">
++    <title>rdgen - sign in</title>
++    <style>
++        body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #e0e0e0; display: flex; min-height: 100vh; align-items: center; justify-content: center; margin: 0; }
++        form { background: #2d2d2d; padding: 28px 32px; border-radius: 8px; width: 300px; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
++        h1 { font-size: 1.2em; margin: 0 0 18px; }
++        label { display: block; margin: 12px 0 4px; font-size: .9em; }
++        input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #1e1e1e; color: #e0e0e0; }
++        button { margin-top: 18px; width: 100%; padding: 10px; border: 0; border-radius: 4px; background: #0095EA; color: #fff; font-weight: bold; cursor: pointer; }
++        .errorlist { color: #ff8080; padding-left: 18px; font-size: .9em; }
++    </style>
++</head>
++<body>
++    <form method="post" action="{% url 'login' %}">
++        {% csrf_token %}
++        <h1>RustDesk client generator</h1>
++        {{ form.non_field_errors }}
++        <label for="{{ form.username.id_for_label }}">Username</label>
++        {{ form.username }}
++        <label for="{{ form.password.id_for_label }}">Password</label>
++        {{ form.password }}
++        <input type="hidden" name="next" value="{{ next }}">
++        <button type="submit">Sign in</button>
++    </form>
++</body>
++</html>
+diff --git a/rdgenerator/templates/waiting.html b/rdgenerator/templates/waiting.html
+index 8da8d4c..726451a 100644
+--- a/rdgenerator/templates/waiting.html
++++ b/rdgenerator/templates/waiting.html
+@@ -241,7 +241,7 @@
+         //simulateProgress();
+ 
+         setTimeout(function() {
+-            window.location.replace('/check_for_file?filename={{filename}}&uuid={{uuid}}&platform={{platform}}');
++            window.location.replace('{% url 'check_for_file' %}?filename={{filename}}&uuid={{uuid}}&platform={{platform}}');
+         }, 30000); // 20000 milliseconds = 20 seconds
+     </script>
+ </body>

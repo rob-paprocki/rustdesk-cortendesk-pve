@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# rdgen-update: move rdgen to the newest upstream master + our patches, push that to the private build repo,
+# then deploy the same tree locally (backup, health check, rollback). The GitHub side and the local side must
+# match (dispatch inputs <-> workflows), so the local deploy only happens after a successful push; a failed local
+# deploy is retried on the next run. Everything that executes upstream code runs as the rdgenbuild user.
+#   rdgen-update               uses the stored install token (see rdgen-setup)
+#   rdgen-update --token-stdin reads a (fresh) install/update token from stdin (not echoed at a terminal)
+#   rdgen-update --check       print "<installed upstream> <latest upstream>" (12-char commits) and exit
+# Exit: 0 updated/up to date, 1 failed (local rollback), 3 token/repo problem, 4 patches no longer apply
+#       (nothing changed), 5 push failed, 6 the patch source is unreadable, 10 an update exists but no token is stored
+# With a patch source (rdgen-setup --patch-source) the versions read <upstream>+<series commit>, and a new series is
+# built and pushed like an upstream update; it replaces the installed patches only after a successful push.
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+VENV_PY=$RDGEN_APP/.venv/bin/python3
+STATEF=/var/lib/rustdesk-update/rdgen
+[ -x "$VENV_PY" ] || { echo "rdgen: not installed"; exit 0; }
+PS=/usr/local/share/rustdesk-cortendesk/rdgen/patch-source SERIESF=/var/lib/rustdesk-update/rdgen-series
+{ [ -x "$PS" ] && "$PS" enabled; } || PS=""
+ser() { [ -z "$PS" ] || printf '+%.7s' "$1"; }
+current() { echo "$(cat "$STATEF" 2>/dev/null || echo none)$(ser "$(cat "$SERIESF" 2>/dev/null || echo local)")"; }
+LATEST=$(git ls-remote https://github.com/bryangerlach/rdgen refs/heads/master 2>/dev/null | cut -c1-12 || true)
+LABEL=${LATEST:-?}; [ -z "$PS" ] || [ -z "$LATEST" ] || LABEL="$LATEST$(ser "$("$PS" remote)")"
+src_head() { as_build git -C "$RDGEN_SRC" rev-parse HEAD 2>/dev/null || true; }
+pushed() { as_build jq -r '.pushed // empty' "$RDGEN_STATE" 2>/dev/null || true; }
+deployed() { cat "$RDGEN_APP/.rdgen-head" 2>/dev/null || true; }
+built_upstream() { as_build jq -r '.upstream // empty' "$RDGEN_STATE" 2>/dev/null | cut -c1-12; }  # what the pushed tree is built on
+# a previous run pushed a tree but could not deploy it locally: deploy that one (no GitHub needed), unless upstream
+# moved on and a token is at hand (then the normal path rebuilds, pushes and deploys the newer tree)
+retry_deploy=""
+if [ -n "$(pushed)" ] && [ "$(src_head)" = "$(pushed)" ] && [ "$(deployed)" != "$(pushed)" ]; then
+  if [ "$LATEST" = "$(built_upstream)" ] || { [ "${1:-}" != --token-stdin ] && ! as_build test -s "$RDGEN_TOKEN"; }; then retry_deploy=1; fi
+fi
+if [ "${1:-}" = --check ]; then
+  if [ -n "$retry_deploy" ]; then echo "$(current) retry"; else echo "$(current) $LABEL"; fi; exit 0
+fi
+[ -n "$LATEST" ] || { echo "!! could not reach github.com/bryangerlach/rdgen" >&2; exit 1; }
+OLD=$(current)
+if [ -z "$retry_deploy" ] && [ "$OLD" = "$LABEL" ]; then echo "rdgen: upstream $OLD is current"; exit 0; fi
+
+if [ -z "$retry_deploy" ]; then
+  patches=$RDGEN_PATCHES force=() st=""
+  if [ -n "$PS" ]; then   # the series from the patch source: rebuild only when its content changed
+    st=$("$PS" stage) || { echo "!! rdgen: cannot read the patch source; nothing changed" >&2; exit 6; }
+    case $st in
+      new\ *) patches=$RDGEN_PATCHES.next force=(--force); echo "rdgen: new patch series ${st:4:12}" ;;
+      *) echo "${st#same }" >"$SERIESF"
+         if [ "$(cat "$STATEF" 2>/dev/null)" = "$LATEST" ]; then echo "rdgen: upstream $LATEST is current"; exit 0; fi ;;
+    esac
+  fi
+  tok=""
+  if [ "${1:-}" = --token-stdin ]; then
+    if [ -t 0 ]; then read -r -s -p "Install/update token: " tok; echo; else IFS= read -r tok || true; fi
+    [ -n "$tok" ] || { echo "rdgen-update: no token given" >&2; exit 3; }
+    tokarg=(--token-stdin)
+  elif as_build test -s "$RDGEN_TOKEN"; then
+    tokarg=(--token-file "$RDGEN_TOKEN")   # read by rdgenbuild itself
+  else
+    echo "rdgen: upstream moved ($OLD -> $LATEST) but no install token is stored; run: rdgen-update --token-stdin" >&2
+    exit 10
+  fi
+  owner=$(env_get "$RDGEN_ENV" GHUSER) repo=$(env_get "$RDGEN_ENV" REPONAME)
+  echo "rdgen: $OLD -> $LATEST (rebuild with the patches as rdgenbuild, push to $owner/$repo)"
+  rc=0
+  out=$(printf '%s\n' "$tok" | as_build "$VENV_PY" "$RDGEN_APP/tools/rdgen-github-bootstrap" --env-file "$RDGEN_ENV" \
+    --state "$RDGEN_STATE" --owner "$owner" --repo "$repo" "${tokarg[@]}" \
+    update --src "$RDGEN_SRC" --patches "$patches" --python "$VENV_PY" --apply "${force[@]}") || rc=$?
+  unset tok
+  echo "$out" | tail -n 3
+  if [ $rc -ne 0 ]; then
+    rm -rf "$RDGEN_PATCHES.next"
+    [ $rc -ne 4 ] || [ -z "$PS" ] || "$PS" request-repair "$LATEST" || true
+    echo "!! rdgen build repo not updated (exit $rc); the current version keeps working" >&2; exit $rc
+  fi
+  if [ "$patches" != "$RDGEN_PATCHES" ]; then   # pushed: the new series is now the installed one
+    rm -rf "$RDGEN_PATCHES.prev"; mv "$RDGEN_PATCHES" "$RDGEN_PATCHES.prev"; mv "$patches" "$RDGEN_PATCHES"
+    echo "${st#new }" >"$SERIESF"
+  fi
+  if [ "$(src_head)" != "$(pushed)" ] || [ "$(deployed)" = "$(pushed)" ]; then   # nothing new to deploy
+    echo "$(built_upstream)" >"$STATEF"; echo "rdgen: nothing to deploy"; exit 0
+  fi
+fi
+
+# ---------- local deploy of the pushed tree: stage first, then stop -> swap -> migrate -> start ----------
+echo "==> deploy $(pushed | cut -c1-12) locally"
+rm -rf "$RDGEN_APP.new"; mkdir -p "$RDGEN_APP.new"
+as_build git -C "$RDGEN_SRC" archive HEAD | tar -x -C "$RDGEN_APP.new"
+src_head >"$RDGEN_APP.new/.rdgen-head"
+rm -rf "$RDGEN_APP.new/.venv"   # never let the tree supply a venv: python/pip below run as root
+python3 -m venv --clear --system-site-packages "$RDGEN_APP.new/.venv"
+"$RDGEN_APP.new/.venv/bin/pip" install -q --disable-pip-version-check --no-deps --require-hashes --only-binary :all: \
+  -r "$RDGEN_APP.new/deploy/requirements-venv.txt"
+chown -R root:root "$RDGEN_APP.new"; chmod -R u=rwX,go=rX "$RDGEN_APP.new"
+
+ts=$(date +%Y%m%d-%H%M%S); mkdir -p "$BK"; chmod 700 "$BK"
+svc stop rdgen-poller; svc stop rdgen
+if ! (umask 077; tar -czf "$BK/rdgen-$ts.tgz" -C / "${RDGEN_DATA#/}/db.sqlite3" etc/rdgen) ||
+   ! tar -tzf "$BK/rdgen-$ts.tgz" "${RDGEN_DATA#/}/db.sqlite3" >/dev/null 2>&1; then
+  svc start rdgen; svc start rdgen-poller; rm -rf "$RDGEN_APP.new"
+  echo "!! rdgen backup failed; nothing changed" >&2; exit 1
+fi
+ls -1t "$BK"/rdgen-*.tgz 2>/dev/null | tail -n +8 | xargs -r rm -f
+set +e
+rm -rf "$RDGEN_APP.prev"; mv "$RDGEN_APP" "$RDGEN_APP.prev"; mv "$RDGEN_APP.new" "$RDGEN_APP"
+(cd "$RDGEN_DATA" && as_user rdgen env RDGEN_ENV_FILE="$RDGEN_ENV" "$VENV_PY" "$RDGEN_APP/manage.py" migrate -v0); mig=$?
+svc start rdgen; svc start rdgen-poller
+set -e
+healthy() {
+  local i code
+  for i in $(seq 15); do
+    code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8190/accounts/login/ || true)
+    [ "$code" = 200 ] && return 0
+    sleep 2
+  done
+  return 1
+}
+if [ $mig -eq 0 ] && healthy; then
+  echo "$(built_upstream)" >"$STATEF"; echo "==> rdgen $OLD -> $(built_upstream) deployed"; exit 0
+fi
+echo "!! rdgen local deploy failed; rolled back (the build repo has the new tree; the next run retries the deploy)" >&2
+set +e
+svc stop rdgen-poller; svc stop rdgen
+rm -rf "$RDGEN_APP.failed"; mv "$RDGEN_APP" "$RDGEN_APP.failed"; mv "$RDGEN_APP.prev" "$RDGEN_APP"
+# extract in the root-only backup dir, then let the rdgen user write it into its own directory
+x=$(mktemp -d -p "$BK") && tar -xzf "$BK/rdgen-$ts.tgz" -C "$x" "${RDGEN_DATA#/}/db.sqlite3" &&
+  write_as rdgen "$RDGEN_DATA/db.sqlite3" 640 <"$x/${RDGEN_DATA#/}/db.sqlite3"
+rm -rf "$x"
+svc start rdgen; svc start rdgen-poller
+exit 1

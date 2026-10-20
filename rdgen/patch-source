@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# rdgen patch source: let this CT follow the rdgen patch series of a GitHub repository (this installer's repository
+# or your fork), so a merged series reaches rdgen with the next daily update (rdgen-update). Read-only SSH deploy
+# key generated here (it never expires, unlike tokens); GitHub never connects to the CT.
+#   patch-source setup <owner/repo> [branch]   key, config and an access test (rdgen-setup --patch-source ...)
+#   patch-source off                           stop following (the installed series stays)
+#   patch-source status | enabled              what is configured | exit 0 when configured
+#   patch-source remote                        the branch's commit (7 chars), "?" when unreadable
+#   patch-source stage                         fetch; "new <commit>" with the series in $RDGEN_PATCHES.next when it
+#                                              differs from the installed one, else "same <commit>"; exit 6 when
+#                                              unreadable or invalid
+#   patch-source dispatch-token                store a token (stdin) that lets this CT start the repository's repair
+#                                              workflow (fine-grained, that repository only, Actions: Read and write)
+#   patch-source request-repair <upstream>     start .github/workflows/rdgen-upstream.yml there (rdgen-update calls it
+#                                              when the patches stop applying); the outcome goes into the notification
+# Installed by the ct script and tools/refresh-ct.sh next to the patches (/usr/local/share/rustdesk-cortendesk/rdgen).
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+HERE=$(cd "$(dirname "$0")" && pwd)
+CONF=/etc/rdgen/patch-source.env KEY=/etc/rdgen/patch-source.key
+HOSTS=$HERE/github_known_hosts CACHE=/var/cache/rdgen-patch-source NEXT=$RDGEN_PATCHES.next
+REPO_RE='^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$' BRANCH_RE='^[A-Za-z0-9._/-]{1,100}$'
+TOKEN=/etc/rdgen/patch-source-dispatch.token REPAIRF=/var/lib/rustdesk-update/rdgen-repair
+API=${RDGEN_PATCH_SOURCE_API:-https://api.github.com} WORKFLOW=rdgen-upstream.yml
+
+conf() {  # conf: REPO, BRANCH, URL from $CONF (validated), or fail
+  [ -s "$CONF" ] || return 1
+  REPO=$(env_get "$CONF" PATCH_SOURCE_REPO) BRANCH=$(env_get "$CONF" PATCH_SOURCE_BRANCH)
+  [[ "$REPO" =~ $REPO_RE && "$BRANCH" =~ $BRANCH_RE && "$BRANCH" != *..* ]] || { echo "!! $CONF is invalid" >&2; return 1; }
+  URL="git@github.com:$REPO.git"
+}
+sgit() {  # git over SSH with the deploy key and GitHub's pinned host keys only
+  GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+-o UserKnownHostsFile=$HOSTS -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20" git "$@"
+}
+gh_api() {  # gh_api <method> <path> [json]: prints the HTTP code; the token reaches curl via its stdin config only
+  local tok
+  tok=$(cat "$TOKEN") || { echo 000; return 0; }
+  printf 'header = "Authorization: Bearer %s"\n' "$tok" |
+    curl -sS -m 30 -o /dev/null -w '%{http_code}' -K - -X "$1" -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' ${3:+--data-binary "$3"} "$API/repos/$REPO$2" 2>/dev/null || echo 000
+}
+remote_commit() { sgit ls-remote "$URL" "refs/heads/$BRANCH" 2>/dev/null | cut -f1 || true; }   # empty: unreadable
+
+setup() {
+  local repo=${1:-} branch=${2:-main}
+  repo=${repo#https://github.com/} repo=${repo#git@github.com:} repo=${repo%.git}
+  [[ "$repo" =~ $REPO_RE ]] || { echo "usage: rdgen-setup --patch-source <owner/repo> [branch] | off" >&2; exit 2; }
+  [[ "$branch" =~ $BRANCH_RE && "$branch" != *..* ]] || { echo "!! invalid branch: $branch" >&2; exit 2; }
+  if ! command -v ssh >/dev/null || ! command -v ssh-keygen >/dev/null; then
+    echo "==> installing the OpenSSH client"
+    if [ "$OS" = alpine ]; then apk add --no-cache -q openssh-client-default openssh-keygen
+    else apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends openssh-client >/dev/null; fi
+  fi
+  [ -s "$KEY" ] || (umask 077; ssh-keygen -q -t ed25519 -N '' -C "rdgen-patches@$(hostname)" -f "$KEY")
+  (umask 077; printf 'PATCH_SOURCE_REPO=%s\nPATCH_SOURCE_BRANCH=%s\n' "$repo" "$branch" >"$CONF.new"; mv -f "$CONF.new" "$CONF")
+  conf
+  echo "rdgen follows the patch series of github.com/$REPO ($BRANCH). Add this deploy key there, READ-ONLY"
+  echo "(https://github.com/$REPO/settings/keys -> Add deploy key; leave \"Allow write access\" off):"
+  echo; cat "$KEY.pub"; echo
+  if [ -n "$(remote_commit)" ]; then echo "Access OK: the daily update now follows $REPO@$BRANCH."
+  else echo "Not readable yet. Once the key is added, check with: rdgen-setup --patch-source status"; fi
+}
+
+stage() {
+  conf || return 6
+  local commit tmp p n names
+  (umask 077; mkdir -p "$CACHE")
+  [ -d "$CACHE/repo.git" ] || git init -q --bare "$CACHE/repo.git"
+  sgit -C "$CACHE/repo.git" fetch -q --depth 1 "$URL" "+refs/heads/$BRANCH:refs/heads/series" || {
+    echo "!! cannot fetch $REPO@$BRANCH (deploy key added? see rdgen-setup --patch-source status)" >&2; return 6; }
+  commit=$(git -C "$CACHE/repo.git" rev-parse series)
+  tmp=$(mktemp -d -p "$(dirname "$RDGEN_PATCHES")" .stage.XXXXXX)
+  trap 'rm -rf "$tmp"' RETURN
+  git -C "$CACHE/repo.git" archive series rdgen/patches | tar -x -C "$tmp" || { echo "!! $REPO@$BRANCH has no rdgen/patches" >&2; return 6; }
+  # regular files with the expected names only (no links, no directories), MANIFEST and UPSTREAM in agreement
+  names=""
+  while IFS= read -r p; do
+    n=${p##*/}
+    if [ -L "$p" ] || [ ! -f "$p" ] || ! [[ "$n" =~ ^([0-9]{4}-[A-Za-z0-9._-]+\.patch|UPSTREAM|MANIFEST)$ ]]; then
+      echo "!! unexpected file in the patch source: rdgen/patches/${n:0:80}" >&2; return 6
+    fi
+    [ "$n" = MANIFEST ] || names+="$n"$'\n'
+  done < <(find "$tmp/rdgen/patches" -mindepth 1)
+  grep -qE '^base-commit: [0-9a-f]{40}( |$)' "$tmp/rdgen/patches/UPSTREAM" 2>/dev/null &&
+    [ "$(printf '%s' "$names" | LC_ALL=C sort)" = "$(LC_ALL=C sort "$tmp/rdgen/patches/MANIFEST")" ] ||
+    { echo "!! the patch source's MANIFEST/UPSTREAM do not match its patches" >&2; return 6; }
+  chmod -R u=rwX,go=rX "$tmp"
+  if diff -rq "$tmp/rdgen/patches" "$RDGEN_PATCHES" >/dev/null 2>&1; then echo "same $commit"; return 0; fi
+  rm -rf "$NEXT"; mv "$tmp/rdgen/patches" "$NEXT"
+  echo "new $commit"
+}
+
+dispatch_token() {
+  conf || { echo "!! set a patch source first: rdgen-setup --patch-source <owner/repo>" >&2; exit 2; }
+  local t code
+  if [ -t 0 ]; then read -r -s -p "Token (fine-grained, only $REPO, Actions: Read and write): " t; echo
+  else IFS= read -r t || true; fi
+  [[ "$t" =~ ^github_pat_[A-Za-z0-9_]{20,}$ ]] || { echo "!! not a fine-grained token (github_pat_...)" >&2; exit 2; }
+  (umask 077; printf '%s\n' "$t" >"$TOKEN.new"); unset t
+  code=$(TOKEN=$TOKEN.new gh_api GET "/actions/workflows/$WORKFLOW")
+  if [ "$code" != 200 ]; then
+    rm -f "$TOKEN.new"; echo "!! GitHub answered $code for $REPO/$WORKFLOW (repository and Actions permission?)" >&2; exit 3
+  fi
+  mv -f "$TOKEN.new" "$TOKEN"
+  echo "OK: when the daily update finds that the patches stop applying, this CT starts $WORKFLOW in $REPO."
+}
+
+request_repair() {  # once per failing upstream (rustdesk-update does not rerun rdgen-update for the same versions)
+  conf 2>/dev/null || return 0
+  local code
+  if [ ! -s "$TOKEN" ]; then echo "no repair requested (rdgen-setup --patch-source dispatch-token)" >"$REPAIRF"
+  else
+    code=$(gh_api POST "/actions/workflows/$WORKFLOW/dispatches" "{\"ref\":\"$BRANCH\",\"inputs\":{\"onto\":\"\"}}")
+    if [ "$code" = 204 ]; then echo "repair requested: github.com/$REPO/actions (upstream ${1:-?})" >"$REPAIRF"
+    else echo "repair NOT requested: GitHub answered $code (token expired? rdgen-setup --patch-source dispatch-token)" >"$REPAIRF"; fi
+  fi
+  cat "$REPAIRF"
+}
+
+case "${1:-status}" in
+  setup) shift; setup "$@" ;;
+  off) rm -f "$CONF" "$TOKEN" "$REPAIRF"; rm -rf "$CACHE" "$NEXT"
+       echo "rdgen no longer follows a patch source (the key stays: $KEY)" ;;
+  dispatch-token) dispatch_token ;;
+  request-repair) request_repair "${2:-}" ;;
+  enabled) conf 2>/dev/null ;;
+  remote) conf 2>/dev/null || exit 1; c=$(remote_commit); echo "${c:0:7}" | grep . || echo "?" ;;
+  stage) stage ;;
+  status)
+    if conf; then
+      c=$(remote_commit)
+      if [ -n "$c" ]; then echo "following github.com/$REPO ($BRANCH): readable, at ${c:0:12}"
+      else echo "following github.com/$REPO ($BRANCH): NOT readable (add the deploy key below, read-only)"; fi
+      echo "installed series from: $(cat /var/lib/rustdesk-update/rdgen-series 2>/dev/null || echo "this CT's copy (refresh-ct.sh)")"
+      if [ -s "$TOKEN" ]; then echo "repair requests: on ($WORKFLOW)${REPAIRF:+; last: $(cat "$REPAIRF" 2>/dev/null || echo none)}"
+      else echo "repair requests: off (rdgen-setup --patch-source dispatch-token)"; fi
+      [ -n "$c" ] || cat "$KEY.pub"
+    else echo "no patch source: rdgen uses the patches copied in by the installer or tools/refresh-ct.sh"; fi ;;
+  *) echo "usage: $0 setup <owner/repo> [branch] | off | status | dispatch-token | enabled | remote | stage | request-repair" >&2
+     exit 2 ;;
+esac

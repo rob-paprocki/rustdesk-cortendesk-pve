@@ -1,0 +1,844 @@
+From 6a4cc83804aba2c151d544b084ad1f9137584ecf Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Thu, 1 Oct 2026 16:17:32 -0400
+Subject: [PATCH 17/26] builds: a Recent builds page and expiring share links
+
+Once you left a build's result page there was no way back to it, so a
+build that should not go on a public download page (a client with a
+password inside) could not be fetched again.
+
+/builds (linked from the form and the result page) lists the builds of
+the last RDGEN_RETENTION_DAYS with their files, status and console
+hand-off. For a finished build it creates a share link:
+/share/<token> shows the build's files and /share/<token>/<file>
+downloads one, without a login. The token is 32 random bytes
+(token_urlsafe), a link expires after 1, 7 or 30 days and never after
+the build itself, it can be deleted at once, and it counts downloads.
+Unknown, expired and deleted links all answer the same 404 page; the
+share pages are no-store, noindex and no-referrer, and only GET/HEAD.
+
+RDGEN_SHARE_BASE (e.g. https://console.example.com/share) makes the
+links public: a reverse proxy there passes exactly the two share paths
+to rdgen. Without it, links point at rdgen itself (LAN only).
+
+The file checks of /download move into stored_file(), shared by both.
+The poller drops expired links when it prunes; a pruned build takes its
+links along.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ SETUP-PULL.md                            |   7 +
+ deploy/rdgen.env.example                 |   4 +
+ rdgen/settings.py                        |   7 +
+ rdgen/urls.py                            |  11 +-
+ rdgenerator/migrations/0005_sharelink.py |  27 ++++
+ rdgenerator/models.py                    |  19 +++
+ rdgenerator/poller.py                    |   3 +-
+ rdgenerator/templates/builds.html        | 152 +++++++++++++++++++
+ rdgenerator/templates/generated.html     |   1 +
+ rdgenerator/templates/generator.html     |   1 +
+ rdgenerator/templates/share.html         |  46 ++++++
+ rdgenerator/tests/test_share.py          | 166 +++++++++++++++++++++
+ rdgenerator/views.py                     | 179 +++++++++++++++++++++--
+ 13 files changed, 611 insertions(+), 12 deletions(-)
+ create mode 100644 rdgenerator/migrations/0005_sharelink.py
+ create mode 100644 rdgenerator/templates/builds.html
+ create mode 100644 rdgenerator/templates/share.html
+ create mode 100644 rdgenerator/tests/test_share.py
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index 27adb62..f58bd7b 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -133,6 +133,12 @@ With `RDGEN_PUBLISH_DEFAULT` set (no, hidden or published), the form asks whethe
+ 
+ CortenDesk's `/downloads` page needs no login, and a client with a preset permanent password carries that password. rdgen therefore refuses "published" for such a client, and the pending list reports it as hidden. In the RustDesk LXC the job is `rdgen-publish`, which runs every minute.
+ 
++### Recent builds and share links
++
++`/builds` (linked from the form) lists the builds of the last `RDGEN_RETENTION_DAYS` with their files and status. For a finished build it makes a **share link**: `/share/<token>` shows the build's files and needs no login, so you can send a client to someone without putting it on a public page. The token is 32 random bytes. A link expires after 1, 7 or 30 days, and never later than the build itself; you can delete it sooner. Each link counts its downloads.
++
++Links point at `RDGEN_SHARE_BASE` when it is set (e.g. `https://console.example.com/share`). Otherwise they point at rdgen itself, which is normally reachable on the LAN only. A reverse proxy on that public host has to pass exactly `/share/<43 characters>` and `/share/<43 characters>/<file>` to rdgen, GET only, and nothing else. The RustDesk LXC's console does that.
++
+ CortenDesk does not read the client's `preset-*` keys, so rdgen's address-book, strategy and device-group presets have no effect there. Clients from rdgen at version 1.4.1 or later need an hbbs with KeyExchange; cortendesk-server has it.
+ 
+ ## 3. Updates
+@@ -176,6 +182,7 @@ The patches fix these upstream problems (the commit messages have the details):
+ They do not change these:
+ - GitHub sees the decrypted config (server, key, preset password) in runner memory and in the built binaries while a build runs. Values are masked in logs.
+ - The preset password is only base64-encoded in every client (`custom_.txt`), so treat it as low-grade.
++- Anyone who holds a share link can download that build until the link expires or is deleted, including a preset password inside it.
+ - Unsigned Windows builds trigger SmartScreen and antivirus warnings.
+ - The UI loads Font Awesome from cdnjs and a Google font (upstream `generator.html`), which your browser fetches.
+ - Failed runs and their logs stay in your private repository for 48 hours. They contain masked values and ciphertext.
+diff --git a/deploy/rdgen.env.example b/deploy/rdgen.env.example
+index a2c9e91..3fe5d05 100644
+--- a/deploy/rdgen.env.example
++++ b/deploy/rdgen.env.example
+@@ -52,6 +52,10 @@ RDGEN_DEFAULT_COMPANY=
+ # Base of the self-update links the form suggests for Windows builds, e.g. https://console.example.com/clients.
+ # The console must answer /clients/<windows-x86_64|windows-x86>/<version>/<name>.exe (the RustDesk LXC does).
+ RDGEN_UPDATE_BASE=
++# Public base of the private share links for finished builds (Recent builds page), e.g.
++# https://console.example.com/share. That host must pass /share/<token> and /share/<token>/<file> to rdgen and
++# nothing else (the RustDesk LXC's console does). Empty: links point at rdgen itself (LAN only).
++RDGEN_SHARE_BASE=
+ 
+ # --- hand-off to a console's client downloads (optional) -----------------
+ # Empty: off. Otherwise the form offers "add the files to <target>'s Client
+diff --git a/rdgen/settings.py b/rdgen/settings.py
+index 9cceab5..c3adecd 100644
+--- a/rdgen/settings.py
++++ b/rdgen/settings.py
+@@ -140,6 +140,13 @@ RDGEN_UPDATE_BASE = env('RDGEN_UPDATE_BASE', '').strip().rstrip('/')
+ if RDGEN_UPDATE_BASE and not re.fullmatch(r'https?://[A-Za-z0-9.:\[\]-]+(?:/[A-Za-z0-9._~/-]*)?', RDGEN_UPDATE_BASE):
+     raise ImproperlyConfigured('RDGEN_UPDATE_BASE must be an http(s) URL without a query string')
+ 
++# Public base of the private share links for finished builds, e.g. https://console.example.com/share (a reverse
++# proxy there passes /share/<token> and /share/<token>/<file> to rdgen, and nothing else). Empty: links point at
++# this rdgen itself, which is usually reachable on the LAN only.
++RDGEN_SHARE_BASE = env('RDGEN_SHARE_BASE', '').strip().rstrip('/')
++if RDGEN_SHARE_BASE and not re.fullmatch(r'https?://[A-Za-z0-9.:\[\]-]+(?:/[A-Za-z0-9._~/-]*)?', RDGEN_SHARE_BASE):
++    raise ImproperlyConfigured('RDGEN_SHARE_BASE must be an http(s) URL without a query string')
++
+ # Hand-off of finished builds to a console's client downloads list. A root
+ # job outside rdgen (rdgen-publish in the RustDesk LXC) asks
+ # `manage.py rdgen_publish pending` for builds and imports their files.
+diff --git a/rdgen/urls.py b/rdgen/urls.py
+index e593015..1905f54 100644
+--- a/rdgen/urls.py
++++ b/rdgen/urls.py
+@@ -2,10 +2,11 @@
+ URL configuration for rdgen.
+ 
+ Every view requires a logged-in user (LoginRequiredMiddleware) except the
+-login page and /api/*, which accepts a bearer token or a session.
++login page, the share links (/share/<token>, unguessable and expiring) and
++/api/*, which accepts a bearer token or a session.
+ """
+ from django.contrib.auth import views as auth_views
+-from django.urls import path
++from django.urls import path, re_path
+ 
+ from rdgenerator import views as views
+ from rdgenerator import api_views as api_views
+@@ -15,6 +16,12 @@ urlpatterns = [
+     path('generator', views.generator_view, name='generator'),
+     path('check_for_file', views.check_for_file, name='check_for_file'),
+     path('download', views.download, name='download'),
++    path('builds', views.builds_view, name='builds'),
++    # Private share links: the only pages besides the login page that need no login. A console in front of
++    # rdgen may pass exactly these two paths through to make the links work from outside the LAN.
++    re_path(r'^share/(?P<token>[A-Za-z0-9_-]{43})$', views.share_view, name='share'),
++    re_path(r'^share/(?P<token>[A-Za-z0-9_-]{43})/(?P<filename>[A-Za-z0-9][A-Za-z0-9._+-]{0,200})$',
++            views.share_file_view, name='share_file'),
+     # Pull model: there are no inbound callbacks from GitHub any more.
+     # /get_zip, /get_png, /save_custom_client, /cleanzip, /updategh,
+     # /startgh and /creategh are gone.
+diff --git a/rdgenerator/migrations/0005_sharelink.py b/rdgenerator/migrations/0005_sharelink.py
+new file mode 100644
+index 0000000..29266e0
+--- /dev/null
++++ b/rdgenerator/migrations/0005_sharelink.py
+@@ -0,0 +1,27 @@
++import django.db.models.deletion
++import django.utils.timezone
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('rdgenerator', '0004_publish'),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='ShareLink',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('token', models.CharField(max_length=64, unique=True)),
++                ('created_at', models.DateTimeField(default=django.utils.timezone.now)),
++                ('expires_at', models.DateTimeField(db_index=True)),
++                ('created_by', models.CharField(blank=True, default='', max_length=150)),
++                ('downloads', models.PositiveIntegerField(default=0)),
++                ('last_download_at', models.DateTimeField(blank=True, null=True)),
++                ('build', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='share_links',
++                                            to='rdgenerator.githubrun')),
++            ],
++        ),
++    ]
+diff --git a/rdgenerator/models.py b/rdgenerator/models.py
+index 70bb79d..4937a01 100644
+--- a/rdgenerator/models.py
++++ b/rdgenerator/models.py
+@@ -47,3 +47,22 @@ class GithubRun(models.Model):
+     @property
+     def is_terminal(self):
+         return self.status in TERMINAL_STATUSES
++
++
++class ShareLink(models.Model):
++    """A private, expiring download link for one finished build (/share/<token>, no login).
++
++    Anyone holding the token can fetch the build's files until it expires or is deleted, so the token is long
++    (32 random bytes) and the link never outlives the build itself (RDGEN_RETENTION_DAYS).
++    """
++    build = models.ForeignKey(GithubRun, on_delete=models.CASCADE, related_name='share_links')
++    token = models.CharField(max_length=64, unique=True)
++    created_at = models.DateTimeField(default=timezone.now)
++    expires_at = models.DateTimeField(db_index=True)
++    created_by = models.CharField(max_length=150, blank=True, default='')
++    downloads = models.PositiveIntegerField(default=0)
++    last_download_at = models.DateTimeField(null=True, blank=True)
++
++    @property
++    def is_active(self):
++        return self.expires_at > timezone.now() and self.build.status == 'success'
+diff --git a/rdgenerator/poller.py b/rdgenerator/poller.py
+index f0da983..ccdb97b 100644
+--- a/rdgenerator/poller.py
++++ b/rdgenerator/poller.py
+@@ -33,7 +33,7 @@ from django.conf import settings
+ from django.utils import timezone
+ 
+ from .github import GitHub, GitHubError, WORKFLOWS
+-from .models import GithubRun, TERMINAL_STATUSES
++from .models import GithubRun, ShareLink, TERMINAL_STATUSES
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -339,6 +339,7 @@ def prune_local(now=None):
+                 shutil.rmtree(root / build.uuid, ignore_errors=True)
+             build.delete()
+             removed += 1
++    ShareLink.objects.filter(expires_at__lt=now).delete()   # expired share links (a deleted build takes its own)
+     known = set(GithubRun.objects.values_list('uuid', flat=True))
+     for entry in root.iterdir():
+         if entry.name.startswith(('.dl-', '.stage-')):
+diff --git a/rdgenerator/templates/builds.html b/rdgenerator/templates/builds.html
+new file mode 100644
+index 0000000..53073c9
+--- /dev/null
++++ b/rdgenerator/templates/builds.html
+@@ -0,0 +1,152 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <title>Recent builds</title>
++    <style>
++        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #000; color: #e0e0e0; margin: 0; padding: 20px; }
++        main { max-width: 980px; margin: 0 auto; }
++        h1 { color: #fff; margin: 10px 0 4px; }
++        a { color: #6aa8ff; }
++        .top { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
++        .lead { color: #aaa; margin: 4px 0 18px; font-size: .92em; line-height: 1.45; }
++        .build { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
++        .build:target { border-color: #2e52f7; }
++        .head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
++        .name { color: #fff; font-weight: 600; font-size: 1.05em; word-break: break-word; }
++        .meta { color: #999; font-size: .85em; }
++        .badge { font-size: .75em; padding: 2px 8px; border-radius: 10px; background: #222; color: #bbb; }
++        .badge.ready { background: #12351f; color: #6fdc8c; }
++        .badge.failed { background: #3a1616; color: #ff8a80; }
++        .badge.building { background: #3a3012; color: #ffd166; }
++        .badge.pw { background: #3a2a12; color: #ffb74d; }
++        .files { margin: 10px 0 0; padding: 0; list-style: none; }
++        .files li { margin: 4px 0; font-size: .9em; word-break: break-all; }
++        .files .size { color: #888; }
++        .share { margin-top: 12px; border-top: 1px solid #222; padding-top: 10px; }
++        .share form { display: inline; margin: 0; }
++        select, button { font: inherit; font-size: .88em; border-radius: 4px; }
++        select { background: #222; color: #fff; border: 1px solid #444; padding: 5px 6px; }
++        button { background: #0077ff; color: #fff; border: none; padding: 6px 12px; cursor: pointer; }
++        button:hover { background: #0066cc; }
++        button.quiet { background: #2a2a2a; color: #ddd; }
++        button.quiet:hover { background: #3a3a3a; }
++        .link { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 2px; }
++        .link input { flex: 1 1 320px; min-width: 0; background: #1a1a1a; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 6px 8px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .82em; }
++        .link.new input { border-color: #2e52f7; }
++        .linkmeta { color: #888; font-size: .8em; margin-bottom: 12px; line-height: 1.4; }
++        .warn { color: #ffb74d; font-size: .82em; margin: 6px 0 0; line-height: 1.4; }
++        .note { color: #999; font-size: .82em; margin: 6px 0 0; line-height: 1.4; }
++        .empty { color: #999; background: #111; border-radius: 8px; padding: 20px; }
++    </style>
++</head>
++<body>
++<main>
++    <div class="top">
++        <h1>Recent builds</h1>
++        <a href="{% url 'generator' %}">&larr; Back to the builder</a>
++    </div>
++    <p class="lead">
++        Builds from the last {{ retention_days }} days, newest first. After that, rdgen deletes a build and its files.
++        A <b>share link</b> lets someone without a login download a build's files until the link expires, for example
++        a client with a password inside that shouldn't go on a public download page.
++        {% if not share_base %}Share links point at this page's address, so they only work where this page does (usually your LAN).{% endif %}
++    </p>
++
++    {% for row in rows %}
++    <section class="build" id="b-{{ row.run.uuid }}">
++        <div class="head">
++            <span class="name">{{ row.name }}</span>
++            <span class="badge {{ row.state }}">{% if row.state == 'ready' %}ready{% elif row.state == 'failed' %}failed{% else %}building{% endif %}</span>
++            {% if row.run.has_password %}<span class="badge pw" title="A password is built into this client">password inside</span>{% endif %}
++            <span class="meta">{{ row.platform }}{% if row.run.version %} &middot; {{ row.run.version }}{% endif %} &middot; <time datetime="{{ row.run.created_at|date:'c' }}">{{ row.run.created_at|date:'Y-m-d H:i' }} UTC</time></span>
++        </div>
++
++        {% if row.state == 'ready' %}
++            <ul class="files">
++            {% for f in row.files %}
++                <li><a href="{{ f.url }}">{{ f.name }}</a> <span class="size">({{ f.size|filesizeformat }})</span></li>
++            {% empty %}
++                <li class="meta">No files were stored for this build.</li>
++            {% endfor %}
++            </ul>
++            {% if publish_on and row.run.publish != 'no' %}
++                <p class="note">
++                {% if row.run.publish_state == 'done' %}In {{ publish_target }}'s Client Downloads ({{ row.run.publish }}).
++                {% elif row.run.publish_state == 'failed' %}Adding it to {{ publish_target }}'s Client Downloads failed.
++                {% elif row.run.publish_state == 'skipped' %}Not added to {{ publish_target }}'s Client Downloads.
++                {% else %}Being added to {{ publish_target }}'s Client Downloads ({{ row.run.publish }}).{% endif %}
++                </p>
++            {% endif %}
++
++            <div class="share">
++                {% for link in row.links %}
++                    <div class="link{% if link.new %} new{% endif %}">
++                        <input type="text" readonly value="{{ link.url }}" aria-label="Share link" {% if link.new %}autofocus{% endif %}>
++                        <button type="button" class="quiet" data-copy>Copy</button>
++                        <form method="post" action="{% url 'builds' %}">
++                            {% csrf_token %}
++                            <input type="hidden" name="action" value="delete_link">
++                            <input type="hidden" name="link" value="{{ link.id }}">
++                            <button type="submit" class="quiet" title="The link stops working at once">Delete link</button>
++                        </form>
++                    </div>
++                    <div class="linkmeta">
++                        Works until <time datetime="{{ link.expires_at|date:'c' }}">{{ link.expires_at|date:'Y-m-d H:i' }} UTC</time>
++                        &middot; downloaded {{ link.downloads }} time{{ link.downloads|pluralize }}{% if link.last_download_at %}, last <time datetime="{{ link.last_download_at|date:'c' }}">{{ link.last_download_at|date:'Y-m-d H:i' }} UTC</time>{% endif %}
++                    </div>
++                {% endfor %}
++                {% if row.can_share %}
++                    <form method="post" action="{% url 'builds' %}">
++                        {% csrf_token %}
++                        <input type="hidden" name="action" value="share">
++                        <input type="hidden" name="uuid" value="{{ row.run.uuid }}">
++                        <button type="submit">{% if row.links %}New share link{% else %}Create share link{% endif %}</button>
++                        valid for
++                        <select name="days" aria-label="Valid for">
++                            {% for d in share_days %}<option value="{{ d }}"{% if d == 7 %} selected{% endif %}>{{ d }} day{{ d|pluralize }}</option>{% endfor %}
++                        </select>
++                    </form>
++                    <p class="note">Links end when the build is deleted (<time datetime="{{ row.expires_at|date:'c' }}" data-date>{{ row.expires_at|date:'Y-m-d' }}</time>) at the latest.</p>
++                    {% if row.run.has_password %}
++                        <p class="warn">Anyone who gets the link can download this client and read the password inside it, until the link expires or you delete it. Send it only to the person who installs it.</p>
++                    {% endif %}
++                {% endif %}
++            </div>
++        {% else %}
++            <p class="note">
++                {% if row.state == 'failed' %}The build ended with status "{{ row.run.status }}".{% else %}Still building.{% endif %}
++                <a href="{{ row.status_url }}">Status page</a>{% if row.run.html_url %} &middot; <a href="{{ row.run.html_url }}" target="_blank" rel="noopener">GitHub log</a>{% endif %}
++            </p>
++        {% endif %}
++    </section>
++    {% empty %}
++        <p class="empty">No builds in the last {{ retention_days }} days.</p>
++    {% endfor %}
++</main>
++<script>
++    // times in the viewer's own time zone
++    document.querySelectorAll('time[datetime]').forEach(function (t) {
++        var d = new Date(t.getAttribute('datetime'));
++        if (isNaN(d)) return;
++        t.textContent = t.hasAttribute('data-date') ? d.toLocaleDateString([], {dateStyle: 'medium'})
++                                                   : d.toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'});
++    });
++    document.querySelectorAll('[data-copy]').forEach(function (b) {
++        b.addEventListener('click', function () {
++            var input = b.parentNode.querySelector('input');
++            var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); };
++            if (navigator.clipboard && window.isSecureContext) {
++                navigator.clipboard.writeText(input.value).then(done, function () { input.select(); });
++            } else {   // plain http on the LAN: no clipboard API
++                input.focus(); input.select();
++                try { if (document.execCommand('copy')) done(); } catch (e) {}
++            }
++        });
++    });
++    var fresh = document.querySelector('.link.new input');
++    if (fresh) { fresh.select(); }
++</script>
++</body>
++</html>
+diff --git a/rdgenerator/templates/generated.html b/rdgenerator/templates/generated.html
+index cc6b6fd..a921556 100644
+--- a/rdgenerator/templates/generated.html
++++ b/rdgenerator/templates/generated.html
+@@ -128,6 +128,7 @@
+         <div class="download-section">
+             {% include '_files.html' %}
+             {% include '_publish_status.html' %}
++            <p style="font-size:.9em;color:#555;margin-top:14px;">To send these files to someone without a login, or to find them again later: <a href="{% url 'builds' %}#b-{{ uuid }}">Recent builds</a>.</p>
+         </div>
+     </div>
+ 
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index 055968a..790c89c 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -232,6 +232,7 @@
+ <body>
+     <form method="post" action="{% url 'logout' %}" style="position:absolute;top:10px;right:14px;margin:0;font-size:.85em;">
+         {% csrf_token %}
++        <a href="{% url 'builds' %}" style="color:#6aa8ff;margin-right:12px;">Recent builds</a>
+         <span>{{ user.get_username }}</span>
+         <button type="submit" style="padding:4px 10px;margin-left:6px;font-size:.9em;width:auto;">Log out</button>
+     </form>
+diff --git a/rdgenerator/templates/share.html b/rdgenerator/templates/share.html
+new file mode 100644
+index 0000000..4c6fa6e
+--- /dev/null
++++ b/rdgenerator/templates/share.html
+@@ -0,0 +1,46 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <meta name="robots" content="noindex, nofollow">
++    <meta name="referrer" content="no-referrer">
++    <title>{% if gone %}Link not available{% else %}Download {{ name }}{% endif %}</title>
++    <style>
++        :root { --bg: #f4f6f9; --card: #fff; --text: #1d2330; --muted: #667085; --line: #e3e7ee; --accent: #1f6feb; }
++        @media (prefers-color-scheme: dark) { :root { --bg: #0f1218; --card: #181c24; --text: #e6e9ef; --muted: #98a2b3; --line: #2a303b; --accent: #4c8dff; } }
++        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
++        main { max-width: 560px; margin: 8vh auto 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
++        h1 { font-size: 1.3em; margin: 0 0 4px; word-break: break-word; }
++        .meta { color: var(--muted); font-size: .9em; margin: 0 0 18px; }
++        a.file { display: block; text-decoration: none; background: var(--accent); color: #fff; border-radius: 8px; padding: 12px 14px; margin: 10px 0 2px; font-weight: 600; word-break: break-all; }
++        a.file:hover { filter: brightness(1.08); }
++        .sum { color: var(--muted); font-size: .75em; word-break: break-all; margin-bottom: 10px; }
++        .foot { color: var(--muted); font-size: .82em; margin-top: 18px; }
++    </style>
++</head>
++<body>
++<main>
++{% if gone %}
++    <h1>This link isn't available</h1>
++    <p class="meta">It may have expired or been deleted. Ask the person who sent it for a new one.</p>
++{% else %}
++    <h1>{{ name }}</h1>
++    <p class="meta">{{ platform }}{% if version %} &middot; RustDesk {{ version }}{% endif %}</p>
++    {% for f in files %}
++        <a class="file" href="{{ f.url }}">Download {{ f.name }}</a>
++        <div class="sum">{{ f.size|filesizeformat }} &middot; SHA-256 {{ f.sha256 }}</div>
++    {% empty %}
++        <p class="meta">The files are no longer available.</p>
++    {% endfor %}
++    <p class="foot">This link works until <time datetime="{{ expires_at|date:'c' }}">{{ expires_at|date:'Y-m-d H:i' }} UTC</time>.</p>
++{% endif %}
++</main>
++<script>
++    document.querySelectorAll('time[datetime]').forEach(function (t) {
++        var d = new Date(t.getAttribute('datetime'));
++        if (!isNaN(d)) t.textContent = d.toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'});
++    });
++</script>
++</body>
++</html>
+diff --git a/rdgenerator/tests/test_share.py b/rdgenerator/tests/test_share.py
+new file mode 100644
+index 0000000..4ebf0ea
+--- /dev/null
++++ b/rdgenerator/tests/test_share.py
+@@ -0,0 +1,166 @@
++"""Recent builds page and private share links (/builds, /share/<token>)."""
++import hashlib
++import re
++import tempfile
++import uuid
++from datetime import timedelta
++from pathlib import Path
++
++from django.contrib.auth import get_user_model
++from django.test import Client, TestCase, override_settings
++from django.utils import timezone
++
++from rdgenerator.models import GithubRun, ShareLink
++from rdgenerator.poller import prune_local
++
++EXE = b'MZ' + b'\0' * 200
++
++
++class ShareTests(TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.override = override_settings(ARTIFACT_ROOT=self.tmp.name, DATA_DIR=Path(self.tmp.name),
++                                          RDGEN_RETENTION_DAYS=30, RDGEN_SHARE_BASE='')
++        self.override.enable()
++        self.c = Client()
++        self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++        self.anon = Client()
++
++    def tearDown(self):
++        self.override.disable()
++        self.tmp.cleanup()
++
++    def run_with_file(self, status='success', **kw):
++        u = str(uuid.uuid4())
++        d = Path(self.tmp.name) / u
++        d.mkdir()
++        (d / 'acme_client.exe').write_bytes(EXE)
++        kw.setdefault('label', 'Acme Support')
++        return GithubRun.objects.create(
++            uuid=u, status=status, platform='windows', filename='acme_client', version='1.4.9',
++            files=[{'name': 'acme_client.exe', 'size': len(EXE), 'sha256': hashlib.sha256(EXE).hexdigest()}], **kw)
++
++    def share(self, run, days='7'):
++        r = self.c.post('/builds', {'action': 'share', 'uuid': run.uuid, 'days': days})
++        self.assertEqual(r.status_code, 302, r.content)
++        return ShareLink.objects.filter(build=run).latest('id')
++
++    def test_builds_page_needs_a_login(self):
++        r = self.anon.get('/builds')
++        self.assertEqual(r.status_code, 302)
++        self.assertIn('/accounts/login/', r['Location'])
++
++    def test_builds_page_lists_files_states_and_password_builds(self):
++        ok = self.run_with_file(has_password=True)
++        GithubRun.objects.create(uuid=str(uuid.uuid4()), status='failure', platform='linux', filename='x', label='Broken')
++        GithubRun.objects.create(uuid=str(uuid.uuid4()), status='in_progress', platform='macos', filename='y', label='Busy')
++        page = self.c.get('/builds').content.decode()
++        self.assertIn('Acme Support', page)
++        self.assertIn(f'/download?uuid={ok.uuid}&amp;filename=acme_client.exe', page)
++        self.assertIn('password inside', page)
++        self.assertIn('read the password inside it', page)
++        self.assertEqual(page.count('name="action" value="share"'), 1)   # only the finished build
++        self.assertIn('Broken', page)
++        self.assertIn('Still building.', page)
++        self.assertIn('Recent builds', self.c.get('/').content.decode())
++
++    def test_share_link_downloads_without_a_login(self):
++        run = self.run_with_file()
++        link = self.share(run)
++        self.assertRegex(link.token, r'^[A-Za-z0-9_-]{43}$')
++        self.assertAlmostEqual((link.expires_at - timezone.now()).total_seconds(), 7 * 86400, delta=60)
++        page = self.anon.get(f'/share/{link.token}')
++        self.assertEqual(page.status_code, 200)
++        body = page.content.decode()
++        self.assertIn('Acme Support', body)
++        self.assertIn(f'/share/{link.token}/acme_client.exe', body)
++        self.assertNotIn('/download?', body)
++        self.assertNotIn('/builds', body)
++        self.assertEqual(page['Cache-Control'], 'no-store, private')
++        self.assertEqual(page['Referrer-Policy'], 'no-referrer')
++        self.assertIn('noindex', page['X-Robots-Tag'])
++        self.assertNotIn('sessionid', page.cookies)
++        f = self.anon.get(f'/share/{link.token}/acme_client.exe')
++        self.assertEqual(f.status_code, 200)
++        self.assertEqual(b''.join(f.streaming_content), EXE)
++        self.assertIn('attachment', f['Content-Disposition'])
++        self.anon.head(f'/share/{link.token}/acme_client.exe')
++        link.refresh_from_db()
++        self.assertEqual(link.downloads, 1)   # HEAD does not count
++        self.assertIsNotNone(link.last_download_at)
++        # the logged-in list shows the full link and the count
++        page = self.c.get('/builds').content.decode()
++        self.assertIn(f'http://testserver/share/{link.token}', page)
++        self.assertIn('downloaded 1 time', page)
++
++    def test_share_base_gives_public_links(self):
++        run = self.run_with_file()
++        link = self.share(run)
++        with override_settings(RDGEN_SHARE_BASE='https://console.example.com/share'):
++            page = self.c.get('/builds').content.decode()
++        self.assertIn(f'value="https://console.example.com/share/{link.token}"', page)
++
++    def test_link_never_outlives_the_build(self):
++        run = self.run_with_file()
++        GithubRun.objects.filter(pk=run.pk).update(created_at=timezone.now() - timedelta(days=28))
++        link = self.share(run, days='30')
++        self.assertAlmostEqual((link.expires_at - timezone.now()).total_seconds(), 2 * 86400, delta=60)
++        link = self.share(run, days='999')   # not a choice: 7 days, still capped
++        self.assertAlmostEqual((link.expires_at - timezone.now()).total_seconds(), 2 * 86400, delta=60)
++
++    def test_dead_links_all_look_the_same(self):
++        run = self.run_with_file()
++        expired = self.share(run)
++        ShareLink.objects.filter(pk=expired.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
++        deleted = self.share(run)
++        r = self.c.post('/builds', {'action': 'delete_link', 'link': str(deleted.id)})
++        self.assertEqual(r.status_code, 302)
++        live = self.share(run)
++        for path in (f'/share/{expired.token}', f'/share/{expired.token}/acme_client.exe',
++                     f'/share/{deleted.token}', f'/share/{"A" * 43}',
++                     f'/share/{live.token}/acme_client.msi', f'/share/{live.token}/..%2Facme_client.exe'):
++            r = self.anon.get(path)
++            self.assertEqual(r.status_code, 404, path)
++        self.assertEqual(self.anon.get(f'/share/{live.token}').status_code, 200)
++        self.assertEqual(self.anon.post(f'/share/{live.token}').status_code, 405)
++        # the files are gone (pruned by hand): the page says so, the download is a 404
++        (Path(self.tmp.name) / run.uuid / 'acme_client.exe').unlink()
++        self.assertIn('no longer available', self.anon.get(f'/share/{live.token}').content.decode())
++        self.assertEqual(self.anon.get(f'/share/{live.token}/acme_client.exe').status_code, 404)
++
++    def test_only_finished_builds_can_be_shared(self):
++        failed = self.run_with_file(status='failure')
++        r = self.c.post('/builds', {'action': 'share', 'uuid': failed.uuid, 'days': '7'})
++        self.assertEqual(r.status_code, 404)
++        self.assertEqual(self.c.post('/builds', {'action': 'share', 'uuid': 'nope'}).status_code, 404)
++        self.assertEqual(self.c.post('/builds', {'action': 'delete_link', 'link': 'x'}).status_code, 404)
++        self.assertFalse(ShareLink.objects.exists())
++
++    def test_creating_a_link_needs_the_csrf_token(self):
++        run = self.run_with_file()
++        c = Client(enforce_csrf_checks=True)
++        c.force_login(get_user_model().objects.get(username='tester'))
++        self.assertEqual(c.post('/builds', {'action': 'share', 'uuid': run.uuid}).status_code, 403)
++        page = c.get('/builds').content.decode()
++        token = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', page).group(1)
++        r = c.post('/builds', {'action': 'share', 'uuid': run.uuid, 'csrfmiddlewaretoken': token})
++        self.assertEqual(r.status_code, 302)
++
++    def test_anonymous_users_still_cannot_reach_the_rest(self):
++        run = self.run_with_file()
++        self.share(run)
++        for path in ('/', f'/download?uuid={run.uuid}&filename=acme_client.exe', f'/check_for_file?uuid={run.uuid}'):
++            r = self.anon.get(path)
++            self.assertEqual(r.status_code, 302, path)
++            self.assertIn('/accounts/login/', r['Location'])
++
++    def test_prune_drops_expired_links(self):
++        run = self.run_with_file()
++        old, live = self.share(run), self.share(run)
++        ShareLink.objects.filter(pk=old.pk).update(expires_at=timezone.now() - timedelta(minutes=1))
++        prune_local()
++        self.assertEqual(list(ShareLink.objects.values_list('pk', flat=True)), [live.pk])
++        # a pruned build takes its links along
++        GithubRun.objects.filter(pk=run.pk).update(created_at=timezone.now() - timedelta(days=31))
++        prune_local()
++        self.assertFalse(ShareLink.objects.exists())
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 20bd9ca..80a7aed 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -3,18 +3,24 @@ import functools
+ import json
+ import logging
+ import os
++import re
++import secrets
+ import uuid
++from datetime import timedelta
+ from urllib.parse import urlencode
+ 
+ from django.conf import settings as _settings
++from django.contrib.auth.decorators import login_not_required
++from django.db.models import F
+ from django.http import FileResponse, Http404
+-from django.shortcuts import render
++from django.shortcuts import redirect, render
+ from django.urls import reverse
+ from django.utils import timezone
++from django.views.decorators.http import require_http_methods, require_safe
+ 
+ from . import buildcfg, github
+ from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
+-from .models import GithubRun
++from .models import GithubRun, ShareLink
+ from .poller import allowed_output_name, valid_uuid
+ from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
+ 
+@@ -435,6 +441,23 @@ def check_for_file(request):
+     return render(request, 'waiting.html', context)
+ 
+ 
++def stored_file(gh_run, filename):
++    """Path of one stored output of gh_run, or None.
++
++    filename must be a plain name listed in the build's manifest, and the
++    resolved path must stay inside the build directory.
++    """
++    if gh_run is None or not valid_uuid(gh_run.uuid) or filename != os.path.basename(filename):
++        return None
++    if filename not in {f['name'] for f in build_files(gh_run)}:
++        return None
++    base = os.path.realpath(os.path.join(_settings.ARTIFACT_ROOT, gh_run.uuid))
++    path = os.path.realpath(os.path.join(base, filename))
++    if os.path.dirname(path) != base or not os.path.isfile(path):
++        return None
++    return path
++
++
+ def serve_build_file(request):
+     """Stream one stored build output.
+ 
+@@ -447,14 +470,10 @@ def serve_build_file(request):
+     """
+     uuid_val = request.GET.get('uuid', '')
+     filename = request.GET.get('filename', '')
+-    if not valid_uuid(uuid_val) or filename != os.path.basename(filename):
+-        raise Http404("Not found")
+-    gh_run = GithubRun.objects.filter(uuid=uuid_val).first()
+-    if gh_run is None or filename not in {f['name'] for f in build_files(gh_run)}:
++    if not valid_uuid(uuid_val):
+         raise Http404("Not found")
+-    base = os.path.realpath(os.path.join(_settings.ARTIFACT_ROOT, uuid_val))
+-    path = os.path.realpath(os.path.join(base, filename))
+-    if os.path.dirname(path) != base or not os.path.isfile(path):
++    path = stored_file(GithubRun.objects.filter(uuid=uuid_val).first(), filename)
++    if path is None:
+         raise Http404("Not found")
+     return FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
+                         content_type='application/octet-stream')
+@@ -462,3 +481,145 @@ def serve_build_file(request):
+ 
+ def download(request):
+     return serve_build_file(request)
++
++
++# --- recent builds and share links ---------------------------------------------------------------
++
++PLATFORM_NAMES = {'windows': 'Windows 64-bit', 'windows-x86': 'Windows 32-bit', 'linux': 'Linux',
++                  'android': 'Android', 'macos': 'macOS'}
++SHARE_DAYS = (1, 7, 30)
++TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{43}')
++ACTIVE_STATES = {'queued', 'in_progress', 'waiting', 'requested', 'pending'}
++
++
++def build_expires_at(gh_run):
++    """When the poller deletes the build and its files (prune_local)."""
++    return gh_run.created_at + timedelta(days=_settings.RDGEN_RETENTION_DAYS)
++
++
++def share_url(request, link):
++    if _settings.RDGEN_SHARE_BASE:
++        return f'{_settings.RDGEN_SHARE_BASE}/{link.token}'
++    return request.build_absolute_uri(reverse('share', args=[link.token]))
++
++
++def _builds_redirect(gh_run, new=None):
++    query = f'?new={new}' if new else ''
++    return redirect(reverse('builds') + query + (f'#b-{gh_run.uuid}' if gh_run else ''))
++
++
++@require_http_methods(['GET', 'POST'])
++def builds_view(request):
++    """The builds of the last RDGEN_RETENTION_DAYS, their files and their share links."""
++    now = timezone.now()
++    if request.method == 'POST':
++        action = request.POST.get('action', '')
++        if action == 'share':
++            uuid_val = request.POST.get('uuid', '')
++            gh_run = GithubRun.objects.filter(uuid=uuid_val).first() if valid_uuid(uuid_val) else None
++            if gh_run is None or gh_run.status != 'success' or not build_files(gh_run):
++                raise Http404("Not found")
++            try:
++                days = int(request.POST.get('days', '7'))
++            except ValueError:
++                days = 7
++            if days not in SHARE_DAYS:
++                days = 7
++            # a link never outlives the files it points at
++            expires = min(now + timedelta(days=days), build_expires_at(gh_run))
++            if expires <= now + timedelta(minutes=5):
++                raise Http404("Not found")
++            link = ShareLink.objects.create(build=gh_run, token=secrets.token_urlsafe(32), expires_at=expires,
++                                            created_by=request.user.get_username())
++            return _builds_redirect(gh_run, link.id)
++        if action == 'delete_link':
++            link_id = request.POST.get('link', '')
++            link = ShareLink.objects.select_related('build').filter(pk=int(link_id)).first() if link_id.isdigit() else None
++            if link is None:
++                raise Http404("Not found")
++            gh_run = link.build
++            link.delete()
++            return _builds_redirect(gh_run)
++        raise Http404("Not found")
++
++    try:
++        new = int(request.GET.get('new', ''))
++    except ValueError:
++        new = None
++    since = now - timedelta(days=_settings.RDGEN_RETENTION_DAYS)
++    rows = []
++    for gh_run in GithubRun.objects.filter(created_at__gte=since).order_by('-created_at')[:200]:
++        state = 'ready' if gh_run.status == 'success' else ('failed' if gh_run.is_terminal else 'building')
++        links = [{'id': link.id, 'url': share_url(request, link), 'expires_at': link.expires_at,
++                  'downloads': link.downloads, 'last_download_at': link.last_download_at,
++                  'created_by': link.created_by, 'new': link.id == new}
++                 for link in gh_run.share_links.filter(expires_at__gt=now).order_by('-created_at')]
++        rows.append({
++            'run': gh_run,
++            'name': gh_run.label or gh_run.filename,
++            'platform': PLATFORM_NAMES.get(gh_run.platform, gh_run.platform),
++            'state': state,
++            'files': build_files(gh_run) if state == 'ready' else [],
++            'status_url': reverse('check_for_file') + '?' + urlencode({'uuid': gh_run.uuid}),
++            'expires_at': build_expires_at(gh_run),
++            'links': links,
++            'can_share': state == 'ready' and build_expires_at(gh_run) > now + timedelta(minutes=5),
++        })
++    return render(request, 'builds.html', {
++        'rows': rows,
++        'share_days': SHARE_DAYS,
++        'retention_days': _settings.RDGEN_RETENTION_DAYS,
++        'share_base': _settings.RDGEN_SHARE_BASE,
++        'publish_target': _settings.RDGEN_PUBLISH_TARGET,
++        'publish_on': bool(_settings.RDGEN_PUBLISH_DEFAULT),
++    })
++
++
++def _active_link(token):
++    if not TOKEN_RE.fullmatch(token or ''):
++        return None
++    link = ShareLink.objects.select_related('build').filter(token=token).first()
++    if link is None or not link.is_active:
++        return None
++    return link
++
++
++def _private(response):
++    """Headers for the public share pages: not cached, not indexed, and the token never leaks as a referrer."""
++    response['Cache-Control'] = 'no-store, private'
++    response['X-Robots-Tag'] = 'noindex, nofollow'
++    response['Referrer-Policy'] = 'no-referrer'
++    response['X-Content-Type-Options'] = 'nosniff'
++    return response
++
++
++@login_not_required
++@require_safe
++def share_view(request, token):
++    """Public: the files of a shared build. Unknown, expired and deleted links all look the same."""
++    link = _active_link(token)
++    if link is None:
++        return _private(render(request, 'share.html', {'gone': True}, status=404))
++    files = [{'name': f['name'], 'size': f['size'], 'sha256': f['sha256'],
++              'url': reverse('share_file', args=[token, f['name']])}
++             for f in build_files(link.build) if stored_file(link.build, f['name'])]
++    return _private(render(request, 'share.html', {
++        'name': link.build.label or link.build.filename,
++        'platform': PLATFORM_NAMES.get(link.build.platform, link.build.platform),
++        'version': link.build.version,
++        'files': files,
++        'expires_at': link.expires_at,
++    }))
++
++
++@login_not_required
++@require_safe
++def share_file_view(request, token, filename):
++    link = _active_link(token)
++    path = stored_file(link.build, filename) if link else None
++    if path is None:
++        return _private(render(request, 'share.html', {'gone': True}, status=404))
++    if request.method == 'GET':
++        ShareLink.objects.filter(pk=link.pk).update(downloads=F('downloads') + 1, last_download_at=timezone.now())
++    return _private(FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
++                                 content_type='application/octet-stream'))

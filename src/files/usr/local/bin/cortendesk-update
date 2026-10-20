@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# cortendesk-update: install or update CortenDesk (marcpope/cortendesk, Laravel) natively, with a consistent
+# SQLite backup, health check and rollback (previous code + pre-migration database).
+#   cortendesk-update [--force]   update if a newer release exists (reinstall the current one with --force)
+#   cortendesk-update --install   first install (used by the installer; no backup/rollback)
+#   cortendesk-update --check     print "<installed> <latest>" and exit
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+REPO=marcpope/cortendesk
+NEW=$CD_APP.new PREV=$CD_APP.prev
+COMPOSER=/usr/local/bin/composer
+MODE=update FORCE=
+for a in "$@"; do case $a in --force) FORCE=1 ;; --install) MODE=install ;; --check) MODE=check ;; esac; done
+current() { cat "$CD_APP/VERSION" 2>/dev/null || echo none; }
+TARGET=$(latest_tag "$REPO" | sed 's/^v//' || true)
+OLD=$(current)
+if [ "$MODE" = check ]; then echo "$OLD ${TARGET:-?}"; exit 0; fi
+# run on its own: keep rdgen-publish from importing while the DB is backed up, migrated or rolled back
+if [ -z "${RUSTDESK_UPDATE_LOCKED:-}" ] && command -v flock >/dev/null; then
+  update_lock_wait 600 || { echo "!! another update or a client import is running; try again later" >&2; exit 1; }
+fi
+[ -n "$TARGET" ] || { echo "!! could not resolve the latest $REPO release" >&2; exit 1; }
+
+# /up = Laravel health route (503 while in maintenance); /api/version = running code; /login = DB + views + sessions
+healthy() {
+  local want=$1 up ver login i
+  if [ -n "${RD_TEST_FAIL_HEALTH:-}" ] && [ -z "${_rd_failed_once:-}" ]; then   # tests: exercise the rollback
+    _rd_failed_once=1; echo "!! (test) injected health failure" >&2; return 1
+  fi
+  for i in $(seq 15); do
+    up=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1/up || true)
+    ver=$(curl -s -m 5 http://127.0.0.1/api/version || true)
+    login=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1/login || true)
+    [ "$up" = 200 ] && [ "$ver" = "$want" ] && [ "$login" = 200 ] && return 0
+    sleep 2
+  done
+  echo "!! CortenDesk health: up=$up version=$ver login=$login (want $want)" >&2; return 1
+}
+link_state() {  # a release dir uses the shared state + config
+  rm -rf "$1/storage"; ln -s "$CD_DATA/storage" "$1/storage"
+  ln -sfn "$CD_ENV" "$1/.env"
+  # bootstrap/cache/config.php holds APP_KEY and every .env secret: app user only
+  install -d -m 0750 "$1/bootstrap/cache"; chmod -R o-rwx "$1/bootstrap/cache"
+  chown -R cortendesk:cortendesk "$1/bootstrap/cache"
+}
+cache_all() {
+  art package:discover >/dev/null; art view:clear >/dev/null
+  art config:cache >/dev/null; art route:cache >/dev/null; art view:cache >/dev/null
+}
+wal() { cd_php -r '(new PDO("sqlite:'"$CD_DB"'"))->query("PRAGMA journal_mode=WAL");' >/dev/null; }  # persists in the file
+restore_db() { write_as cortendesk "$CD_DB" 640 <"$1"; }  # the app user writes it; root only reads the backup
+
+if [ "$MODE" = update ] && [ -z "$FORCE" ] && [ "$OLD" = "$TARGET" ]; then
+  echo "cortendesk: $OLD is current"; healthy "$OLD"; exit $?
+fi
+echo "cortendesk: $OLD -> $TARGET"
+
+# ---------- 1) stage: download + composer into $NEW (the running app is untouched) ----------
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+"${CURL[@]}" -m 600 -o "$tmp/src.tgz" "https://github.com/$REPO/archive/refs/tags/v$TARGET.tar.gz"
+echo "    sha256 $(sha256sum "$tmp/src.tgz" | cut -d' ' -f1)"   # upstream publishes no checksums; logged for audit
+rm -rf "$NEW"; mkdir -p "$NEW"
+tar -xzf "$tmp/src.tgz" -C "$NEW" --strip-components=1
+[ "$(cat "$NEW/VERSION")" = "$TARGET" ] || { echo "!! VERSION file mismatch" >&2; rm -rf "$NEW"; exit 1; }
+mkdir -p "$NEW"/bootstrap/cache
+# --no-scripts/--no-plugins: nothing from the downloaded project runs as root; the one script that matters
+# (artisan package:discover) runs later as the app user
+(cd "$NEW" && COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_HOME="$tmp/ch" COMPOSER_CACHE_DIR="$tmp/cc" \
+  "$PHP" "$COMPOSER" install --no-dev --optimize-autoloader --no-scripts --no-plugins \
+  --no-interaction --no-progress --no-ansi --prefer-dist -q)
+chown -R root:root "$NEW"; chmod -R go-w "$NEW"   # GitHub archives ship 0664/0775
+
+if [ "$MODE" = install ]; then
+  mkdir -p "$CD_DATA"/storage/framework/{cache/data,sessions,views} "$CD_DATA"/storage/logs "$CD_DATA"/storage/app/{private,public} "$CD_DATA/downloads"
+  chown -R cortendesk:cortendesk "$CD_DATA"; chmod 750 "$CD_DATA"
+  [ -f "$CD_DB" ] || install -m 640 -o cortendesk -g cortendesk /dev/null "$CD_DB"
+  rm -rf "$CD_APP"; mv "$NEW" "$CD_APP"; link_state "$CD_APP"
+  art package:discover >/dev/null
+  art migrate --force >/dev/null
+  wal
+  cache_all
+  svc restart "$FPM"
+  healthy "$TARGET"
+  echo "==> CortenDesk $TARGET installed"; exit 0
+fi
+
+# ---------- 2) maintenance + consistent SQLite backup ----------
+ts=$(date +%Y%m%d-%H%M%S); mkdir -p "$BK"; chmod 700 "$BK"
+t0=$(date +%s)
+art down --retry=60 >/dev/null
+BKF="$BK/cortendesk-$OLD-$ts.sqlite"
+backup() {  # VACUUM INTO as the app user (no root-owned -wal/-shm), then hand the copy to root
+  cd_php -r '$p=new PDO("sqlite:'"$CD_DB"'"); $p->exec("VACUUM INTO '"'$CD_DATA/.bk-$ts.sqlite'"'");' &&
+    mv "$CD_DATA/.bk-$ts.sqlite" "$BKF" && [ -f "$BKF" ] && [ ! -L "$BKF" ] &&   # the app user owns $CD_DATA
+    chown -h root:root "$BKF" && chmod 600 "$BKF" &&
+    cp "$CD_ENV" "$BK/cortendesk-env-$ts" && chmod 600 "$BK/cortendesk-env-$ts"   # APP_KEY: the DB is useless without it
+}
+if ! backup; then art up >/dev/null; rm -f "$CD_DATA/.bk-$ts.sqlite"; echo "!! backup failed; nothing changed, still on $OLD" >&2; exit 1; fi
+ls -1t "$BK"/cortendesk-*.sqlite 2>/dev/null | tail -n +8 | xargs -r rm -f
+ls -1t "$BK"/cortendesk-env-* 2>/dev/null | tail -n +8 | xargs -r rm -f
+echo "==> backup $BKF"
+
+# ---------- 3) swap -> migrate -> cache -> restart -> up; everything after this ends in health or rollback ----------
+set +e
+rm -rf "$PREV"; mv "$CD_APP" "$PREV"; mv "$NEW" "$CD_APP"; link_state "$CD_APP"
+art package:discover >/dev/null
+art migrate --force; mig=$?
+cache_all
+svc restart "$FPM"   # opcache.validate_timestamps=0: new code is only seen after a restart
+art up >/dev/null
+set -e
+if [ $mig -eq 0 ] && healthy "$TARGET"; then
+  rm -rf "$CD_APP.failed"
+  echo "==> CortenDesk $OLD -> $TARGET healthy (maintenance $(($(date +%s) - t0))s); previous code kept at $PREV"
+  exit 0
+fi
+
+# ---------- 4) rollback: previous code + pre-migration database ----------
+echo "!! rolling back CortenDesk to $OLD" >&2
+set +e
+art down >/dev/null 2>&1
+svc stop "$FPM"
+rm -rf "$CD_APP.failed"; mv "$CD_APP" "$CD_APP.failed"; mv "$PREV" "$CD_APP"; link_state "$CD_APP"
+rm -f "$CD_DB-wal" "$CD_DB-shm"   # never let a newer WAL replay onto the restored file
+restore_db "$BKF"
+wal   # VACUUM INTO copies are in rollback-journal mode
+cache_all
+svc start "$FPM"
+art up >/dev/null
+if healthy "$OLD"; then echo "!! rolled back; healthy on $OLD (failed release kept at $CD_APP.failed)" >&2
+else echo "!! rollback ALSO unhealthy; database backup: $BKF" >&2; fi
+exit 1

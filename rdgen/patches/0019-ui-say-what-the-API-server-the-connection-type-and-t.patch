@@ -1,0 +1,203 @@
+From 8bd4f918c4167a1845facf7df5725a6b53d16a9f Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Thu, 1 Oct 2026 22:46:40 -0400
+Subject: [PATCH 19/26] ui: say what the API server, the connection type and
+ the password are for
+
+A user's clients never appeared in the console: the form's API server
+was http://<name> behind Cloudflare, which redirects http to https, and
+a client cannot follow that redirect when it checks in (a redirected
+POST becomes a GET). The same user put the permanent password into the
+build for the computer they connect from, so the computer they connect
+to kept asking for its one-time password or an Accept click. And Mac
+builds quietly used most of their GitHub Actions minutes.
+
+- API server: the hint says the client checks in there (that is how it
+  appears under Devices with its status); a warning shows while it is
+  http:// with a host name that is not an IP address or a LAN name.
+- Connection Type: what Incoming Only, Outgoing Only and Bidirectional
+  are for.
+- Permanent password: it belongs in the build for the computers you
+  connect to; a live note says when it can never be used (Outgoing
+  Only, approve mode "via click") or when its absence means one-time
+  passwords and Accept clicks.
+- Platform: what a build costs in Actions minutes; a Mac build runs two
+  Mac machines and uses roughly 600-700 of the Free plan's 2,000.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgenerator/templates/_api_server.html | 61 ++++++++++++++++++++++++++
+ rdgenerator/templates/_build_cost.html | 29 ++++++++++++
+ rdgenerator/templates/generator.html   |  8 ++--
+ rdgenerator/tests/test_ui.py           | 13 ++++++
+ 4 files changed, 108 insertions(+), 3 deletions(-)
+ create mode 100644 rdgenerator/templates/_api_server.html
+ create mode 100644 rdgenerator/templates/_build_cost.html
+
+diff --git a/rdgenerator/templates/_api_server.html b/rdgenerator/templates/_api_server.html
+new file mode 100644
+index 0000000..41a843b
+--- /dev/null
++++ b/rdgenerator/templates/_api_server.html
+@@ -0,0 +1,61 @@
++<div id="rd-api-http" class="rd-api-warn" hidden>
++    This API server starts with <code>http://</code>. Clients check in, sign in and load their address book here.
++    Behind Cloudflare or another proxy that redirects <code>http</code> to <code>https</code>, none of that arrives:
++    a client can't follow the redirect, so it never shows up under Devices or reports its status. Use
++    <code>https://</code>. A LAN address the clients reach directly, without a proxy, can stay <code>http://</code>.
++</div>
++<style>
++    .rd-api-warn { margin:-4px 0 8px; padding:6px 8px; border-radius:4px; background:#2a1515; color:#ffb4ac;
++                   font-size:.85em; line-height:1.4; }
++    .rd-api-warn code { background:#222; padding:0 3px; border-radius:3px; }
++</style>
++<script>
++(function () {
++    var input = document.getElementById('{{ form.apiServer.id_for_label }}');
++    var warn = document.getElementById('rd-api-http');
++    if (!input || !warn) return;
++    function check() {
++        var m = /^http:\/\/([^\/:?#]+)/i.exec(input.value.trim());
++        // IP addresses and LAN-only names are usually reached directly, with no redirecting proxy in between
++        var lan = m && (/^\d{1,3}(\.\d{1,3}){3}$/.test(m[1]) ||
++                        /^(localhost|[^.]+|.+\.(lan|local|home\.arpa|internal|localdomain))$/i.test(m[1]));
++        warn.hidden = !m || lan;
++    }
++    input.addEventListener('input', check);
++    input.addEventListener('change', check);
++    check();
++})();
++</script>
++<style>
++    .rd-pw-warn { margin:-4px 0 8px; padding:6px 8px; border-radius:4px; background:#2a2410; color:#ffd58a;
++                  font-size:.85em; line-height:1.4; }
++</style>
++<script>
++document.addEventListener('DOMContentLoaded', function () {
++    var pw = document.getElementById('{{ form.permanentPassword.id_for_label }}');
++    var mode = document.getElementById('{{ form.passApproveMode.id_for_label }}');
++    var note = document.getElementById('rd-pw-note');
++    if (!pw || !mode || !note) return;
++    function direction() {
++        var r = document.querySelector('input[name="{{ form.direction.html_name }}"]:checked');
++        return r ? r.value : '';
++    }
++    function check() {
++        var text = '';
++        if (pw.value && direction() === 'outgoing') {
++            text = 'An Outgoing Only client cannot be connected to, so this password is never used.';
++        } else if (pw.value && mode.value === 'click') {
++            text = 'With approve mode "via click" the password is ignored: someone has to click Accept every time.';
++        } else if (!pw.value && direction() !== 'outgoing' && mode.value !== 'click') {
++            text = 'Without a permanent password, connecting to this client always needs its one-time password or an Accept click.';
++        }
++        note.textContent = text;
++        note.hidden = !text;
++    }
++    [pw, mode].forEach(function (el) { el.addEventListener('input', check); el.addEventListener('change', check); });
++    document.querySelectorAll('input[name="{{ form.direction.html_name }}"]').forEach(function (el) {
++        el.addEventListener('change', check);
++    });
++    check();
++});
++</script>
+diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
+new file mode 100644
+index 0000000..9265a84
+--- /dev/null
++++ b/rdgenerator/templates/_build_cost.html
+@@ -0,0 +1,29 @@
++<div id="rd-cost-note" class="rd-hint" aria-live="polite"></div>
++<script>
++(function () {
++    // what a build costs in GitHub Actions minutes in a private repo (measured on real builds; the Free plan
++    // includes 2,000 minutes a month, and GitHub counts Windows minutes 2x and Mac minutes 10x)
++    var notes = {
++        'macos': 'GitHub Actions cost: a Mac build runs two Mac machines (Intel and Apple Silicon) for 30-40 minutes, '
++               + 'and GitHub counts Mac minutes ten times. One build uses roughly 600-700 of the 2,000 minutes a month '
++               + 'the Free plan includes, so build Macs only when you need to, and set an Actions budget on GitHub.',
++        'windows': 'GitHub Actions cost: about 100 minutes per build (Windows minutes count double).',
++        'windows-x86': 'GitHub Actions cost: about 100 minutes per build (Windows minutes count double).',
++        'linux': 'GitHub Actions cost: about 100 minutes per build (an x86_64 and an ARM Linux machine).'
++    };
++    var select = document.getElementById('id_platform');
++    var note = document.getElementById('rd-cost-note');
++    if (!select || !note) return;
++    function show() {
++        var text = notes[select.value] || '';
++        note.textContent = text;
++        note.style.color = select.value === 'macos' ? '#ffd58a' : '';
++        note.hidden = !text;
++    }
++    select.addEventListener('change', show);
++    document.querySelectorAll('.platform-icon').forEach(function (i) {
++        i.addEventListener('click', function () { setTimeout(show, 0); });
++    });
++    show();
++})();
++</script>
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index 790c89c..4b6436c 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -276,6 +276,7 @@
+                 <select name="platform" id="id_platform">
+                     {% for value, label in form.fields.platform.choices %}<option value="{{ value }}"{% if form.platform.value == value %} selected{% endif %}>{{ label }}</option>
+                     {% endfor %}</select>
++                {% include '_build_cost.html' %}
+                 <label for="{{ form.version.id_for_label }}">Rustdesk Version:</label>
+                 {{ form.version }}
+                 {% if form.version.help_text %}
+@@ -294,7 +295,7 @@
+                     <label for="{{ form.appname.id_for_label }}">Custom Application Name (leave blank to use default):</label>
+                     {{ form.appname }}{% include '_linux_name.html' %}<br>
+                     <label for="{{ form.direction.id_for_label }}">Connection Type:</label>
+-                    {{ form.direction }}<br><br>
++                    {{ form.direction }}<div class="rd-hint"><b>Incoming Only</b>: for computers you connect to, such as unattended machines. <b>Outgoing Only</b>: for the computers you connect from. <b>Bidirectional</b>: both.</div><br>
+                     <label for="{{ form.installation.id_for_label }}">Disable Installation:</label>
+                     {{ form.installation }}<br><br>
+                     <label for="{{ form.settings.id_for_label }}">Disable Settings:</label>
+@@ -312,7 +313,7 @@
+                     <label for="{{ form.key.id_for_label }}">Key:</label>
+                     {{ form.key }}<div class="rd-hint">The server's public key (the contents of id_ed25519.pub). Clients only connect to a server that holds the matching private key. If empty: this site's default, else RustDesk's public key.</div><br>
+                     <label for="{{ form.apiServer.id_for_label }}">API:</label>
+-                    {{ form.apiServer }}<div class="rd-hint">The console URL the client signs in to and gets its address book from (CortenDesk here). If empty: this site's default, else <i>host</i>:21114.</div><br>
++                    {{ form.apiServer }}<div class="rd-hint">The console URL (CortenDesk here). The client checks in here, which is how it appears under Devices with its online status, and signs in and gets its address book here too. If empty: this site's default, else <i>host</i>:21114.</div>{% include '_api_server.html' %}<br>
+                     <label for="{{ form.urlLink.id_for_label }}">Custom URL for links (replaces https://rustdesk.com):</label>
+                     {{ form.urlLink }}<div class="rd-hint">The Homepage link in the client's About page, and <i>URL</i>/privacy.html for its Privacy link. Empty keeps https://rustdesk.com.</div><br>
+                     <label for="{{ form.downloadLink.id_for_label }}">Custom URL for downloading updates (replaces https://rustdesk.com/download):</label>
+@@ -328,7 +329,8 @@
+                     {{ form.passApproveMode }}<br><br>
+                     <div id="passwordRequirement" class="password-requirement">To use the hide connection window feature, please set a permanent password.</div>
+                     <label for="{{ form.permanentPassword.id_for_label }}">Set Permanent Password:</label>
+-                    {{ form.permanentPassword }} *The password is used as default, but can be changed by the client<br><br>
++                    {{ form.permanentPassword }}<div class="rd-hint">For unattended access: put it in the build for the computers you connect <i>to</i>. Whoever connects types it instead of the one-time password, and with approve mode <i>via password</i> nobody has to click Accept. It does nothing for connecting <i>from</i> a computer. The computer's user can change it unless Disable Settings is on.</div>
++                    <div id="rd-pw-note" class="rd-pw-warn" hidden></div><br>
+                     
+                     
+                     <label for="{{ form.denyLan.id_for_label }}">{{ form.denyLan }} Deny LAN discovery</label><br>
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index 1d82e70..bd34d35 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -37,6 +37,19 @@ class FormPageTests(TestCase):
+             page = self.c.get('/').content.decode()
+         self.assertNotIn('rd-update-base', page)
+ 
++    def test_http_api_server_is_flagged_on_the_page(self):
++        page = self.c.get('/').content.decode()
++        self.assertIn('<div id="rd-api-http" class="rd-api-warn" hidden>', page)
++        self.assertIn("document.getElementById('id_apiServer')", page)
++        self.assertIn('appears under Devices', page)
++        # where the permanent password belongs, and a live note when it cannot be used
++        self.assertIn('put it in the build for the computers you connect <i>to</i>', page)
++        self.assertIn('<div id="rd-pw-note" class="rd-pw-warn" hidden></div>', page)
++        self.assertIn('input[name="direction"]', page)
++        # what a Mac build costs in GitHub Actions minutes, next to the platform picker
++        self.assertIn('<div id="rd-cost-note"', page)
++        self.assertIn('roughly 600-700 of the 2,000 minutes', page)
++
+     def test_invalid_site_default_is_dropped(self):
+         with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
+             page = self.c.get('/').content.decode()

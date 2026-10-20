@@ -1,0 +1,630 @@
+From 4c6eac1d8d38ab3d352ee777370872f56f9f9d70 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 22:31:39 -0400
+Subject: [PATCH 14/26] console hand-off: list finished builds for a console's
+ client downloads
+
+A per-build choice (no / hidden / published, default RDGEN_PUBLISH_DEFAULT;
+off and not shown while that is empty) is stored on the build, together
+with the label to show and whether a preset permanent password is baked
+in. When such a build succeeds, the poller touches DATA_DIR/publish.pending.
+
+rdgen never writes into the console. A job outside rdgen runs
+`manage.py rdgen_publish pending` (JSON: builds and their checked file
+names, sizes and sha256), imports the files itself, then records the
+result with `manage.py rdgen_publish mark <uuid> done|failed|skipped`.
+The build page shows that result.
+
+A client that carries a password (the preset permanent password, or
+default-connect-password, proxy-password, preset-address-book-password
+or a proxy-url with credentials in the Other boxes) cannot be sent to a
+public downloads page: the form and the API refuse "published" for it,
+and the pending list reports such builds as hidden.
+---
+ SETUP-PULL.md                                 |  10 ++
+ deploy/rdgen.env.example                      |   7 +
+ rdgen/settings.py                             |  11 ++
+ rdgenerator/api_views.py                      |   8 +-
+ rdgenerator/forms.py                          |  50 +++++++
+ .../management/commands/rdgen_publish.py      |  71 ++++++++++
+ rdgenerator/migrations/0004_publish.py        |  36 +++++
+ rdgenerator/models.py                         |  13 ++
+ rdgenerator/poller.py                         |  14 ++
+ rdgenerator/templates/_publish_field.html     |  11 ++
+ rdgenerator/templates/_publish_status.html    |   9 ++
+ rdgenerator/templates/generated.html          |   1 +
+ rdgenerator/templates/generator.html          |   1 +
+ rdgenerator/tests/test_publish.py             | 130 ++++++++++++++++++
+ rdgenerator/views.py                          |  17 ++-
+ 15 files changed, 386 insertions(+), 3 deletions(-)
+ create mode 100644 rdgenerator/management/commands/rdgen_publish.py
+ create mode 100644 rdgenerator/migrations/0004_publish.py
+ create mode 100644 rdgenerator/templates/_publish_field.html
+ create mode 100644 rdgenerator/templates/_publish_status.html
+ create mode 100644 rdgenerator/tests/test_publish.py
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index 066d52c..5ad5d12 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -123,6 +123,16 @@ shred -u /root/rdgen-install.token
+ 
+ In CortenDesk, set Settings > Build Installers URL (or `CORTENDESK_RDGEN_URL`) to `http://<lxc-ip>:8190/`. It opens in a new tab, and rdgen asks for its own login.
+ 
++### Finished builds in CortenDesk's Client Downloads
++
++With `RDGEN_PUBLISH_DEFAULT` set (no, hidden or published), the form asks whether to add the finished files to the console's Client Downloads. rdgen never writes into the console. When such a build succeeds, the poller creates `$RDGEN_DATA_DIR/publish.pending`, and a job outside rdgen does the copy:
++
++- `manage.py rdgen_publish pending` prints the waiting builds as JSON (label, platform, version, the choice, and each file's name, size and sha256).
++- The job reads `builds/<uuid>/<name>` as the rdgen user, imports each file into the console, and checks it against that size and sha256.
++- `manage.py rdgen_publish mark <uuid> done|failed|skipped --note TEXT` records the result, which the build page shows. `mark <uuid> pending` queues the build again.
++
++CortenDesk's `/downloads` page needs no login, and a client with a preset permanent password carries that password. rdgen therefore refuses "published" for such a client, and the pending list reports it as hidden. In the RustDesk LXC the job is `rdgen-publish`, which runs every minute.
++
+ CortenDesk does not read the client's `preset-*` keys, so rdgen's address-book, strategy and device-group presets have no effect there. Clients from rdgen at version 1.4.1 or later need an hbbs with KeyExchange; cortendesk-server has it.
+ 
+ ## 3. Updates
+diff --git a/deploy/rdgen.env.example b/deploy/rdgen.env.example
+index 3de346a..7c2f7f8 100644
+--- a/deploy/rdgen.env.example
++++ b/deploy/rdgen.env.example
+@@ -44,3 +44,10 @@ RDGEN_FAILED_RUN_KEEP_HOURS=48
+ RDGEN_DEFAULT_SERVER=
+ RDGEN_DEFAULT_API_SERVER=
+ RDGEN_DEFAULT_KEY_FILE=/var/lib/rustdesk-server/id_ed25519.pub
++
++# --- hand-off to a console's client downloads (optional) -----------------
++# Empty: off. Otherwise the form offers "add the files to <target>'s Client
++# Downloads" with this default: no, hidden or published. A job outside rdgen
++# imports them (manage.py rdgen_publish; see SETUP-PULL.md).
++RDGEN_PUBLISH_DEFAULT=
++RDGEN_PUBLISH_TARGET=CortenDesk
+diff --git a/rdgen/settings.py b/rdgen/settings.py
+index 4e90663..2df970c 100644
+--- a/rdgen/settings.py
++++ b/rdgen/settings.py
+@@ -131,6 +131,17 @@ RDGEN_DEFAULTS = {
+     'key_file': env('RDGEN_DEFAULT_KEY_FILE', ''),
+ }
+ 
++# Hand-off of finished builds to a console's client downloads list. A root
++# job outside rdgen (rdgen-publish in the RustDesk LXC) asks
++# `manage.py rdgen_publish pending` for builds and imports their files.
++# Empty: off, the form has no publish choice. Otherwise the form default:
++# no, hidden (listed in the console for an admin to publish) or published.
++RDGEN_PUBLISH_DEFAULT = env('RDGEN_PUBLISH_DEFAULT', '').strip().lower()
++if RDGEN_PUBLISH_DEFAULT not in ('', 'no', 'hidden', 'published'):
++    raise ImproperlyConfigured('RDGEN_PUBLISH_DEFAULT must be empty, no, hidden or published')
++# Name shown next to the choice, e.g. CortenDesk.
++RDGEN_PUBLISH_TARGET = env('RDGEN_PUBLISH_TARGET', 'the console').strip()[:40] or 'the console'
++
+ # Bearer token for the JSON API (/api/*), e.g. for a console integration.
+ # Empty disables token auth; the API then only accepts a logged-in session.
+ RDGEN_API_TOKEN = env('RDGEN_API_TOKEN', '')
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index fafa7fa..f0832ea 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -6,7 +6,7 @@ from django.core.exceptions import RequestDataTooBig
+ from django.http import JsonResponse
+ from django.middleware.csrf import CsrfViewMiddleware
+ from django.views.decorators.csrf import csrf_exempt
+-from .forms import GenerateForm
++from .forms import GenerateForm, publish_choice
+ from .validation import validate_build_fields
+ from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
+ 
+@@ -108,6 +108,12 @@ def validate_generate_params(data):
+             continue
+         cleaned[field] = value if field in ('permanentPassword',) else value.strip()
+ 
++    publish = data.get('publish', '')
++    if publish not in ('', 'no', 'hidden', 'published'):
++        errors['publish'] = "Invalid choice. Must be one of: ['no', 'hidden', 'published']"
++    else:
++        cleaned['publish'] = publish_choice(publish or None)
++
+     # Values that reach the build scripts (same rules as GenerateForm).
+     for field, message in validate_build_fields(cleaned).items():
+         errors.setdefault(field, message)
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index a00ba49..6433816 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -1,4 +1,5 @@
+ from django import forms
++from django.conf import settings as _settings
+ from PIL import Image
+ 
+ from .validation import validate_build_fields
+@@ -89,6 +90,18 @@ class GenerateForm(forms.Form):
+     xOffline = forms.BooleanField(initial=False, required=False)
+     removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
+ 
++    # hand-off to the console's client downloads (only offered when RDGEN_PUBLISH_DEFAULT is set)
++    publish = forms.ChoiceField(choices=[('no', 'No'),
++                                         ('hidden', 'Yes, hidden until I publish it there'),
++                                         ('published', 'Yes, and publish it on the public downloads page')],
++                                required=False, initial='no')
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.publish_enabled = bool(_settings.RDGEN_PUBLISH_DEFAULT)
++        if self.publish_enabled:
++            self.fields['publish'].initial = _settings.RDGEN_PUBLISH_DEFAULT
++
+     def clean_iconfile(self):
+         image = self.cleaned_data['iconfile']
+         if image:
+@@ -147,4 +160,41 @@ class GenerateForm(forms.Form):
+         for field, message in validate_build_fields(cleaned).items():
+             if field in self.fields and field not in self.errors:
+                 self.add_error(field, message)
++        message = publish_problem(cleaned)
++        if message and 'publish' not in self.errors:
++            self.add_error('publish', message)
+         return cleaned
++
++
++def publish_choice(value):
++    """The effective publish choice: always 'no' while the hand-off is off."""
++    if not _settings.RDGEN_PUBLISH_DEFAULT:
++        return 'no'
++    return value if value in ('no', 'hidden', 'published') else _settings.RDGEN_PUBLISH_DEFAULT
++
++
++# Settings whose value is a credential. custom.txt is only base64-encoded inside the client, so whoever downloads
++# the client can read them, like the preset permanent password.
++SECRET_SETTINGS = ('password', 'default-connect-password', 'proxy-password', 'preset-address-book-password')
++
++
++def embeds_secret(data):
++    """True if the client would carry a password: the permanent one, or one set in the Other boxes."""
++    if data.get('permanentPassword'):
++        return True
++    for field in ('defaultManual', 'overrideManual'):
++        text = data.get(field) or ''
++        for line in (text.splitlines() if isinstance(text, str) else ()):
++            key, sep, value = line.partition('=')
++            key, value = key.strip(), value.strip()
++            if sep and value and (key in SECRET_SETTINGS or (key == 'proxy-url' and '@' in value)):
++                return True
++    return False
++
++
++def publish_problem(cleaned):
++    if publish_choice(cleaned.get('publish')) == 'published' and embeds_secret(cleaned):
++        return ('A client with a password built in (the permanent password, or a password option under Other) '
++                'cannot go on the public downloads page: anyone could download it and read the password. Choose '
++                '"hidden" (you can still publish it yourself) or remove the password.')
++    return ''
+diff --git a/rdgenerator/management/commands/rdgen_publish.py b/rdgenerator/management/commands/rdgen_publish.py
+new file mode 100644
+index 0000000..3d30766
+--- /dev/null
++++ b/rdgenerator/management/commands/rdgen_publish.py
+@@ -0,0 +1,71 @@
++"""Hand finished builds to a console's client downloads list.
++
++rdgen never writes into the console itself. A job outside rdgen (in the
++RustDesk LXC: /usr/local/bin/rdgen-publish, run by root) does this:
++
++    manage.py rdgen_publish pending        JSON: builds waiting for the hand-off
++    (reads ARTIFACT_ROOT/<uuid>/<name> as the rdgen user, imports the files)
++    manage.py rdgen_publish mark <uuid> done|failed|skipped [--note TEXT]
++    manage.py rdgen_publish mark <uuid> pending   (try that build again)
++
++Only successful builds whose publish choice is hidden or published are
++listed, and only files that pass the same name checks as the downloads.
++"""
++import json
++
++from django.conf import settings
++from django.core.management.base import BaseCommand, CommandError
++
++from rdgenerator.models import GithubRun, PUBLISH_STATES
++from rdgenerator.poller import allowed_output_name, flag_publish, valid_uuid
++
++
++def pending_builds():
++    builds = []
++    if not settings.RDGEN_PUBLISH_DEFAULT:
++        return builds
++    query = (GithubRun.objects.filter(status='success', publish__in=('hidden', 'published'), publish_state='')
++             .order_by('completed_at', 'id'))
++    for run in query:
++        files = [{'name': f.get('name', ''), 'size': int(f.get('size', 0)), 'sha256': f.get('sha256', '')}
++                 for f in run.files or [] if allowed_output_name(f.get('name', ''), run.filename)]
++        builds.append({
++            'uuid': run.uuid,
++            'platform': run.platform,
++            'version': run.version,
++            'filename': run.filename,
++            'label': run.label or run.filename,
++            # a client with a password built in is never published automatically
++            'publish': 'hidden' if run.has_password else run.publish,
++            'has_password': run.has_password,
++            'completed_at': run.completed_at.isoformat() if run.completed_at else '',
++            'files': files,
++        })
++    return builds
++
++
++class Command(BaseCommand):
++    help = 'List finished builds for the client-downloads hand-off, or record its result.'
++
++    def add_arguments(self, parser):
++        sub = parser.add_subparsers(dest='action', required=True)
++        sub.add_parser('pending')
++        mark = sub.add_parser('mark')
++        mark.add_argument('uuid')
++        mark.add_argument('state', choices=['done', 'failed', 'skipped', 'pending'])
++        mark.add_argument('--note', default='')
++
++    def handle(self, *args, **opts):
++        if opts['action'] == 'pending':
++            self.stdout.write(json.dumps(pending_builds()))
++            return
++        if not valid_uuid(opts['uuid']):
++            raise CommandError('not a build uuid')
++        state = '' if opts['state'] == 'pending' else opts['state']
++        assert state in PUBLISH_STATES
++        updated = GithubRun.objects.filter(uuid=opts['uuid']).update(
++            publish_state=state, publish_note=opts['note'][:2000])
++        if not updated:
++            raise CommandError('no such build')
++        if not state:
++            flag_publish()   # the job only runs while the flag exists
+diff --git a/rdgenerator/migrations/0004_publish.py b/rdgenerator/migrations/0004_publish.py
+new file mode 100644
+index 0000000..a94c4d4
+--- /dev/null
++++ b/rdgenerator/migrations/0004_publish.py
+@@ -0,0 +1,36 @@
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('rdgenerator', '0003_pull_model'),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='githubrun',
++            name='publish',
++            field=models.CharField(blank=True, default='no', max_length=16),
++        ),
++        migrations.AddField(
++            model_name='githubrun',
++            name='has_password',
++            field=models.BooleanField(default=False),
++        ),
++        migrations.AddField(
++            model_name='githubrun',
++            name='label',
++            field=models.CharField(blank=True, default='', max_length=120),
++        ),
++        migrations.AddField(
++            model_name='githubrun',
++            name='publish_state',
++            field=models.CharField(blank=True, default='', max_length=16),
++        ),
++        migrations.AddField(
++            model_name='githubrun',
++            name='publish_note',
++            field=models.TextField(blank=True, default=''),
++        ),
++    ]
+diff --git a/rdgenerator/models.py b/rdgenerator/models.py
+index 7ec77b8..70bb79d 100644
+--- a/rdgenerator/models.py
++++ b/rdgenerator/models.py
+@@ -2,6 +2,10 @@ from django.db import models
+ from django.utils import timezone
+ 
+ # GitHub conclusions plus the poller's own end states.
++# Hand-off of a finished build to a console's client downloads (rdgen_publish).
++PUBLISH_CHOICES = ('no', 'hidden', 'published')
++PUBLISH_STATES = ('', 'done', 'failed', 'skipped')
++
+ TERMINAL_STATUSES = {
+     'success', 'failure', 'cancelled', 'timed_out', 'skipped', 'stale',
+     'neutral', 'action_required', 'startup_failure',
+@@ -30,6 +34,15 @@ class GithubRun(models.Model):
+     run_deleted = models.BooleanField(default=False)
+     last_error = models.TextField(blank=True, default='')
+     poll_failures = models.PositiveIntegerField(default=0)
++    # what to do with the files once the build succeeded: no / hidden / published
++    publish = models.CharField(max_length=16, blank=True, default='no')
++    # the client carries a password (the permanent one or one in the Other boxes): never published automatically
++    has_password = models.BooleanField(default=False)
++    # display name for the console: the custom app name, else the configuration name
++    label = models.CharField(max_length=120, blank=True, default='')
++    # '' (waiting), done, failed or skipped; set by `manage.py rdgen_publish mark`
++    publish_state = models.CharField(max_length=16, blank=True, default='')
++    publish_note = models.TextField(blank=True, default='')
+ 
+     @property
+     def is_terminal(self):
+diff --git a/rdgenerator/poller.py b/rdgenerator/poller.py
+index 48ca33f..f0da983 100644
+--- a/rdgenerator/poller.py
++++ b/rdgenerator/poller.py
+@@ -280,6 +280,8 @@ def sync_build(gh, build, now=None):
+     else:
+         build.status = conclusion if conclusion in TERMINAL_STATUSES else 'failure'
+     build.save()
++    if build.status == 'success' and build.publish in ('hidden', 'published'):
++        flag_publish()
+     if build.status == 'success':
+         # Removes the logs and the event payload (which held the ciphertext).
+         # A failure here is retried by prune().
+@@ -291,6 +293,18 @@ def sync_build(gh, build, now=None):
+             log.warning('build %s: could not delete run yet: %s', build.uuid, exc)
+ 
+ 
++def flag_publish():
++    """Tell the hand-off job (rdgen_publish) that a finished build is waiting.
++
++    The job runs outside rdgen and only starts Django when this file exists.
++    """
++    path = Path(settings.DATA_DIR) / 'publish.pending'
++    try:
++        path.touch()
++    except OSError as exc:
++        log.warning('could not create %s: %s', path, exc)
++
++
+ def poll_once(gh=None):
+     """One pass over all active builds. Returns the number of builds seen."""
+     active = list(GithubRun.objects.exclude(status__in=TERMINAL_STATUSES))
+diff --git a/rdgenerator/templates/_publish_field.html b/rdgenerator/templates/_publish_field.html
+new file mode 100644
+index 0000000..33a6705
+--- /dev/null
++++ b/rdgenerator/templates/_publish_field.html
+@@ -0,0 +1,11 @@
++{% if form.publish_enabled %}
++<label for="{{ form.publish.id_for_label }}" style="margin-top:12px;">Add the finished files to {{ publish_target }}'s Client Downloads:</label>
++{{ form.publish }}
++<div style="color:#999;font-size:.85em;line-height:1.4;margin:-4px 0 6px;">
++    Hidden: the files show up in {{ publish_target }} under Client Downloads, where you can publish them.
++    Published: they also appear on its downloads page, which anyone can open without signing in, and they
++    replace earlier rdgen copies of the same file there. A client with a password built in (the permanent
++    password, or a password option under Other) always arrives hidden, because anyone who downloads it can
++    read the password.
++</div>
++{% endif %}
+diff --git a/rdgenerator/templates/_publish_status.html b/rdgenerator/templates/_publish_status.html
+new file mode 100644
+index 0000000..74ec9d0
+--- /dev/null
++++ b/rdgenerator/templates/_publish_status.html
+@@ -0,0 +1,9 @@
++{% if publish == 'hidden' or publish == 'published' %}
++<p style="font-size:.9em;color:#555;margin-top:14px;">
++{% if publish_state == 'done' %}{{ publish_note|default:"Added to the client downloads." }}
++{% elif publish_state == 'failed' %}<span style="color:#c0392b;">Adding the files to {{ publish_target }}'s Client Downloads failed: {{ publish_note }}</span>
++{% elif publish_state == 'skipped' %}Not added to {{ publish_target }}: {{ publish_note }}
++{% else %}These files are added to {{ publish_target }}'s Client Downloads ({{ publish }}) within about a minute.
++{% endif %}
++</p>
++{% endif %}
+diff --git a/rdgenerator/templates/generated.html b/rdgenerator/templates/generated.html
+index 2afcd43..cc6b6fd 100644
+--- a/rdgenerator/templates/generated.html
++++ b/rdgenerator/templates/generated.html
+@@ -127,6 +127,7 @@
+         <h2 class="success-text">Build Generated Successfully</h2>
+         <div class="download-section">
+             {% include '_files.html' %}
++            {% include '_publish_status.html' %}
+         </div>
+     </div>
+ 
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index e11be5d..1e1293d 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -280,6 +280,7 @@
+                 {% endif %}
+                 <div class="help-text">{{ form.version.help_text }}</div>
+                 <label for="{{ form.delayFix.id_for_label }}">{{ form.delayFix }} Fix connection delay when using third-party API</label>
++                {% include '_publish_field.html' %}
+             </div>
+         </div>
+         <div class="container">   
+diff --git a/rdgenerator/tests/test_publish.py b/rdgenerator/tests/test_publish.py
+new file mode 100644
+index 0000000..0fcd342
+--- /dev/null
++++ b/rdgenerator/tests/test_publish.py
+@@ -0,0 +1,130 @@
++"""Hand-off of finished builds to a console's client downloads (rdgen_publish)."""
++import io
++import json
++import os
++from pathlib import Path
++
++from django.core.management import call_command
++from django.core.management.base import CommandError
++from django.test import override_settings
++
++from rdgenerator.models import GithubRun
++from rdgenerator.tests.test_pull import PollerTests, StubTestCase
++
++
++def publish_cmd(*args):
++    out = io.StringIO()
++    call_command('rdgen_publish', *args, stdout=out)
++    return out.getvalue()
++
++
++class PublishTests(StubTestCase):
++    poll_until_terminal = PollerTests.poll_until_terminal
++
++    def setUp(self):
++        super().setUp()
++        self.data = override_settings(DATA_DIR=Path(self.tmp.name), RDGEN_PUBLISH_DEFAULT='hidden',
++                                      RDGEN_PUBLISH_TARGET='CortenDesk')
++        self.data.enable()
++        self.flag = Path(self.tmp.name) / 'publish.pending'
++        self.stub.artifacts_for = lambda run: [
++            (f"rdgen-{run['inputs']['build_uuid']}-build-0", {'acme_client.exe': b'MZ' + b'\0' * 100,
++                                                              'acme_client.msi': b'MSI' * 10})]
++
++    def tearDown(self):
++        self.data.disable()
++        super().tearDown()
++
++    def build(self, **body):
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 200, r.content)
++        return self.poll_until_terminal(r.json()['uuid'])
++
++    def test_default_choice_is_recorded_and_flagged(self):
++        build = self.build(appname='Acme Support')
++        self.assertEqual((build.status, build.publish, build.label, build.has_password),
++                         ('success', 'hidden', 'Acme Support', False))
++        self.assertTrue(self.flag.exists())
++        pending = json.loads(publish_cmd('pending'))
++        self.assertEqual(len(pending), 1)
++        entry = pending[0]
++        self.assertEqual((entry['uuid'], entry['publish'], entry['label'], entry['platform']),
++                         (build.uuid, 'hidden', 'Acme Support', 'windows'))
++        self.assertEqual([f['name'] for f in entry['files']], ['acme_client.exe', 'acme_client.msi'])
++        self.assertEqual(entry['files'][0]['size'], 102)
++        self.assertEqual(len(entry['files'][0]['sha256']), 64)
++
++    def test_mark_done_then_retry(self):
++        build = self.build(publish='published')
++        publish_cmd('mark', build.uuid, 'done', '--note', 'Added to CortenDesk (published).')
++        self.assertEqual(json.loads(publish_cmd('pending')), [])
++        build.refresh_from_db()
++        self.assertEqual((build.publish_state, build.publish_note), ('done', 'Added to CortenDesk (published).'))
++        self.c.force_login(self._user())
++        page = self.c.get(f'/check_for_file?uuid={build.uuid}')
++        self.assertContains(page, 'Added to CortenDesk (published).')
++        publish_cmd('mark', build.uuid, 'pending')
++        self.assertEqual([b['uuid'] for b in json.loads(publish_cmd('pending'))], [build.uuid])
++
++    def test_mark_rejects_bad_uuid(self):
++        with self.assertRaises(CommandError):
++            publish_cmd('mark', '../../etc', 'done')
++
++    def test_no_choice_means_no_flag(self):
++        build = self.build(publish='no')
++        self.assertEqual(build.status, 'success')
++        self.assertFalse(self.flag.exists())
++        self.assertEqual(json.loads(publish_cmd('pending')), [])
++
++    def test_password_client_cannot_be_published(self):
++        r = self.generate(publish='published', permanentPassword='s3cret-pass')
++        self.assertEqual(r.status_code, 400)
++        self.assertIn('password built in', r.json()['error'])
++        self.assertFalse(GithubRun.objects.exists())
++
++    def test_password_in_other_settings_cannot_be_published(self):
++        for line in ('default-connect-password=hunter2', 'proxy-password = x', 'preset-address-book-password=pw',
++                     'proxy-url=socks5://user:pw@proxy.lan:1080'):
++            r = self.generate(publish='published', overrideManual='enable-audio=N\n' + line)
++            self.assertEqual(r.status_code, 400, line)
++        r = self.generate(publish='published', defaultManual='proxy-url=socks5://proxy.lan:1080\nproxy-password=')
++        self.assertEqual(r.status_code, 200)
++        self.assertFalse(GithubRun.objects.get(uuid=r.json()['uuid']).has_password)
++        r = self.generate(publish='hidden', defaultManual='default-connect-password=hunter2')
++        self.assertTrue(GithubRun.objects.get(uuid=r.json()['uuid']).has_password)
++
++    def test_mark_pending_sets_the_flag(self):
++        build = self.build(publish='hidden')
++        publish_cmd('mark', build.uuid, 'done')
++        self.flag.unlink()
++        publish_cmd('mark', build.uuid, 'pending')
++        self.assertTrue(self.flag.exists())
++
++    def test_password_client_is_listed_hidden(self):
++        build = self.build(publish='hidden', permanentPassword='s3cret-pass')
++        self.assertTrue(build.has_password)
++        GithubRun.objects.filter(pk=build.pk).update(publish='published')   # e.g. an old row
++        self.assertEqual(json.loads(publish_cmd('pending'))[0]['publish'], 'hidden')
++
++    def test_invalid_choice_rejected(self):
++        r = self.generate(publish='everyone')
++        self.assertEqual(r.status_code, 400)
++        self.assertIn('publish', r.json()['details'])
++
++    def test_form_offers_the_choice_only_when_enabled(self):
++        self.c.force_login(self._user())
++        page = self.c.get('/')
++        self.assertContains(page, "Add the finished files to CortenDesk")
++        with override_settings(RDGEN_PUBLISH_DEFAULT=''):
++            self.assertNotContains(self.c.get('/'), 'name="publish"')
++
++    def test_disabled_hand_off_ignores_the_choice(self):
++        with override_settings(RDGEN_PUBLISH_DEFAULT=''):
++            build = self.build(publish='published')
++            self.assertEqual(build.publish, 'no')
++            self.assertEqual(json.loads(publish_cmd('pending')), [])
++        self.assertFalse(self.flag.exists())
++
++    def _user(self):
++        from django.contrib.auth import get_user_model
++        return get_user_model().objects.create_user('tester', password='x' * 16)
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 2c6d664..e976f5a 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -12,7 +12,7 @@ from django.urls import reverse
+ from django.utils import timezone
+ 
+ from . import buildcfg, github
+-from .forms import GenerateForm
++from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
+ from .models import GithubRun
+ from .poller import allowed_output_name, valid_uuid
+ from .validation import sanitize_filename, validate_build_fields
+@@ -133,6 +133,12 @@ def generate_custom_client(params, full_url=None):
+     filename = sanitize_filename(filename)
+     if not all(char.isascii() for char in appname):
+         appname = "rustdesk"
++    publish = publish_choice(params.get('publish'))
++    secret_fields = {'permanentPassword': permPass, 'defaultManual': defaultManual, 'overrideManual': overrideManual}
++    problem = publish_problem(dict(secret_fields, publish=publish))
++    if problem:
++        return {"success": False, "error": problem, "status_code": 400}
++    label = (params.get('appname', '') or filename).strip()[:120]
+     myuuid = str(uuid.uuid4())
+ 
+     # Images travel inside the encrypted cfg input (pull model): no /get_png
+@@ -294,6 +300,9 @@ def generate_custom_client(params, full_url=None):
+         platform=platform,
+         filename=filename,
+         version=version,
++        publish=publish,
++        has_password=embeds_secret(secret_fields),
++        label=label,
+     )
+     try:
+         run_id, html_url = github.GitHub().dispatch(platform, inputs)
+@@ -370,7 +379,7 @@ def generator_view(request):
+     else:
+         form = GenerateForm(initial=site_defaults())
+     #return render(request, 'maintenance.html')
+-    return render(request, 'generator.html', {'form': form})
++    return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET})
+ 
+ 
+ def check_for_file(request):
+@@ -386,6 +395,10 @@ def check_for_file(request):
+         'log_url': result['github_log_url'],
+         'files': build_files(gh_run),
+         'last_error': gh_run.last_error,
++        'publish': gh_run.publish if _settings.RDGEN_PUBLISH_DEFAULT else 'no',
++        'publish_state': gh_run.publish_state,
++        'publish_note': gh_run.publish_note,
++        'publish_target': _settings.RDGEN_PUBLISH_TARGET,
+     }
+     if gh_run.status == "success":
+         return render(request, 'generated.html', context)

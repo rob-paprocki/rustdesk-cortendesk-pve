@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# rustdesk-server-update: install/update hbbs + hbbr from marcpope/cortendesk-server (official RustDesk
+# server 1.1.16 + the KeyExchange that signed-in clients need), with digest check, backup, health check, rollback.
+#   rustdesk-server-update [--force]   update if a newer release exists (or reinstall with --force)
+#   rustdesk-server-update --check     print "<installed> <latest>" and exit
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+REPO=marcpope/cortendesk-server
+STATEF=/var/lib/rustdesk-update/rustdesk-server
+case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac
+current() { cat "$STATEF" 2>/dev/null || echo none; }
+LATEST=$(latest_tag "$REPO" || true)
+if [ "${1:-}" = --check ]; then echo "$(current) ${LATEST:-?}"; exit 0; fi
+[ -n "$LATEST" ] || { echo "!! could not resolve the latest $REPO release" >&2; exit 1; }
+OLD=$(current)
+
+ensure_key() {  # hbbs refuses to start without it; keys with / or : break config strings and URLs
+  # All key file I/O runs as rustdesk (its directory): root never writes through paths that user controls.
+  local pair pub sec n=0
+  if [ -L "$SRV_DATA/id_ed25519" ] || [ -L "$SRV_DATA/id_ed25519.pub" ]; then
+    echo "!! refusing: a server key file is a symlink" >&2; return 1
+  fi
+  if [ -s "$SRV_DATA/id_ed25519" ]; then
+    [ -s "$SRV_DATA/id_ed25519.pub" ] && return 0
+    # never rotate an existing key (every client and CORTENDESK_PUBLIC_KEY depend on it): the public key is
+    # the last 32 bytes of the 64-byte secret
+    pub=$(as_user rustdesk cat "$SRV_DATA/id_ed25519" | base64 -d 2>/dev/null | tail -c 32 | base64 | tr -d '\n')
+    [ ${#pub} -eq 44 ] || { echo "!! $SRV_DATA/id_ed25519 is not a valid key" >&2; return 1; }
+    printf '%s' "$pub" | write_as rustdesk "$SRV_DATA/id_ed25519.pub" 644
+    echo "==> restored id_ed25519.pub from the secret key"; return 0
+  fi
+  while [ $n -lt 300 ]; do
+    pair=$("$SRV_BIN/cortendesk-utils" genkeypair)
+    pub=$(awk '/Public Key:/ {print $3}' <<<"$pair"); sec=$(awk '/Secret Key:/ {print $3}' <<<"$pair")
+    case "$pub" in *[/:]*) n=$((n + 1)); continue ;; esac
+    break
+  done
+  [ -n "$pub" ] && [ -n "$sec" ] || { echo "!! key generation failed" >&2; return 1; }
+  printf '%s' "$sec" | write_as rustdesk "$SRV_DATA/id_ed25519" 600   # no trailing newline, like hbbs
+  printf '%s' "$pub" | write_as rustdesk "$SRV_DATA/id_ed25519.pub" 644
+  echo "==> generated the server key pair"
+}
+kex() {  # the fork's hbbs opens every TCP connection with a signed KeyExchange; official hbbs sends nothing
+  local n; n=$( (exec 3<>/dev/tcp/127.0.0.1/21116 && timeout 3 dd bs=1 count=2 <&3 2>/dev/null) | wc -c) || n=0
+  [ "$n" -ge 2 ]
+}
+port() { timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$1" 2>/dev/null; }
+relay_selfheal() {  # hbbs resolves relay names once at startup and silently drops failures
+  local want; want=$(sed -n 's/^relay-servers=//p' "$SRV_CONF" | cut -d, -f1)
+  [ -n "$want" ] || return 0
+  command -v nc >/dev/null || return 0
+  local out rc=0
+  out=$( (printf rs; sleep 1) | timeout 5 nc 127.0.0.1 21115 2>/dev/null) || rc=$?
+  if [ $rc -eq 0 ] && [ -z "$out" ] && getent hosts "${want%:*}" >/dev/null 2>&1; then
+    echo "==> hbbs has no relay but ${want%:*} resolves now: restarting hbbs"; svc restart rustdesk-hbbs; sleep 3
+  fi
+}
+healthy() {
+  local i
+  if [ -n "${RD_TEST_FAIL_HEALTH:-}" ] && [ -z "${_rd_failed_once:-}" ]; then   # tests: exercise the rollback
+    _rd_failed_once=1; echo "!! (test) injected health failure" >&2; return 1
+  fi
+  for i in $(seq 15); do
+    port 21116 && port 21117 && port 21118 && port 21119 && kex && return 0
+    sleep 2
+  done
+  echo "!! hbbs/hbbr health check failed" >&2; return 1
+}
+
+if [ "${1:-}" != --force ] && [ "$OLD" = "$LATEST" ] && [ -x "$SRV_BIN/hbbs" ]; then
+  echo "rustdesk-server: $OLD is current"; relay_selfheal; healthy; exit $?
+fi
+echo "rustdesk-server: $OLD -> $LATEST"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+ASSET="cortendesk-server-${LATEST}-linux-${ARCH}.tar.gz"
+"${CURL[@]}" -m 600 -o "$tmp/$ASSET" "https://github.com/$REPO/releases/download/$LATEST/$ASSET"
+# no SHA256SUMS upstream: compare with the digest GitHub records for the asset (1 API call); never install unverified
+want=$("${CURL[@]}" -m 60 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/tags/$LATEST" |
+  jq -r --arg n "$ASSET" '.assets[] | select(.name == $n) | .digest // empty' | sed 's/^sha256://')
+have=$(sha256sum "$tmp/$ASSET" | cut -d' ' -f1)
+[ -n "$want" ] && [ "$want" = "$have" ] || { echo "!! $ASSET digest mismatch or unavailable (got $have, want ${want:-none})" >&2; exit 1; }
+mkdir "$tmp/srv"; tar -xzof "$tmp/$ASSET" -C "$tmp/srv"
+[ -x "$tmp/srv/hbbs" ] && [ -x "$tmp/srv/hbbr" ] || { echo "!! unexpected archive layout" >&2; exit 1; }
+[ "$("$tmp/srv/hbbs" -V 2>/dev/null)" = "hbbs ${LATEST#v}" ] || { echo "!! hbbs version does not match $LATEST" >&2; exit 1; }
+chown -R root:root "$tmp/srv"; chmod 755 "$tmp/srv" "$tmp/srv"/*
+
+# backup: key + peer database (consistent: stop first)
+ts=$(date +%Y%m%d-%H%M%S); mkdir -p "$BK" "$(dirname "$STATEF")"; chmod 700 "$BK"
+set +e
+svc stop rustdesk-hbbr; svc stop rustdesk-hbbs
+[ -d "$SRV_DATA" ] && (umask 077; tar -czf "$BK/rustdesk-server-$ts.tgz" -C / "${SRV_DATA#/}" 2>/dev/null)
+ls -1t "$BK"/rustdesk-server-*.tgz 2>/dev/null | tail -n +8 | xargs -r rm -f
+rm -rf "$SRV_BIN.prev"; [ -e "$SRV_BIN" ] && mv "$SRV_BIN" "$SRV_BIN.prev"
+mv "$tmp/srv" "$SRV_BIN"
+ensure_key; key=$?
+svc start rustdesk-hbbs; svc start rustdesk-hbbr
+set -e
+if [ $key -eq 0 ] && healthy; then
+  echo "$LATEST" >"$STATEF"; echo "==> rustdesk-server $LATEST healthy"; exit 0
+fi
+echo "!! rolling back rustdesk-server to $OLD" >&2
+set +e
+svc stop rustdesk-hbbr; svc stop rustdesk-hbbs
+if [ -d "$SRV_BIN.prev" ]; then rm -rf "$SRV_BIN"; mv "$SRV_BIN.prev" "$SRV_BIN"; fi
+svc start rustdesk-hbbs; svc start rustdesk-hbbr
+healthy && echo "!! rolled back; healthy on $OLD" >&2
+exit 1

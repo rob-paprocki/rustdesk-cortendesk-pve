@@ -1,0 +1,2667 @@
+From fd8d67671553e9b6343c9c66482fe6f978f20cb9 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 22:38:06 -0400
+Subject: [PATCH 15/26] ui: site defaults and hints for the server fields, a
+ reference for the Other section
+
+Custom Server: RDGEN_DEFAULT_PORT, RDGEN_DEFAULT_URL_LINK,
+RDGEN_DEFAULT_DOWNLOAD_LINK and RDGEN_DEFAULT_COMPANY prefill the
+remaining fields (validated like the others). Each field says what it
+changes in the client. The update URL is downloaded and run by installed
+Windows clients (updater.rs, update_progress.dart), so the hint says it
+must be a direct installer link.
+
+Other: the section explains the key=value format, default vs override,
+and that a line replaces the matching control. A reference table built
+from RustDesk's advanced-settings documentation (client_settings.json:
+140 options, values, defaults, short descriptions, checked against the
+client source) can be filtered and adds a line to either box. Both boxes
+are checked as you type: lines without '=', invalid names, top-level
+keys that have no effect there, unknown keys, values outside Y/N-style
+choices, duplicates, keys a form control already sets, and keys present
+in both boxes.
+
+Fix: "Deny LAN discovery" and "Automatically close incoming sessions"
+wrote enable-lan-discovery and allow-auto-disconnect at the top level of
+custom.txt. The client keeps top-level keys in HARD_SETTINGS but reads
+these two through Config::get_option(), so the boxes had no effect. When
+ticked they now go into the default or override map chosen for the
+permissions.
+---
+ SETUP-PULL.md                              |    4 +-
+ deploy/rdgen.env.example                   |    8 +
+ rdgen/settings.py                          |    9 +
+ rdgenerator/client_settings.json           | 1996 ++++++++++++++++++++
+ rdgenerator/templates/_other_settings.html |  204 ++
+ rdgenerator/templates/_update_link.html    |   96 +
+ rdgenerator/templates/generator.html       |   26 +-
+ rdgenerator/tests/test_ui.py               |   92 +
+ rdgenerator/views.py                       |   32 +-
+ 9 files changed, 2448 insertions(+), 19 deletions(-)
+ create mode 100644 rdgenerator/client_settings.json
+ create mode 100644 rdgenerator/templates/_other_settings.html
+ create mode 100644 rdgenerator/templates/_update_link.html
+ create mode 100644 rdgenerator/tests/test_ui.py
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index 5ad5d12..27adb62 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -98,7 +98,7 @@ Notes:
+   - `GHUSER`, `REPONAME`: the build repository
+   - `GHBRANCH`: the branch `init` pushed to, which is the repository's default branch (`init` prints it)
+   - `GHBEARER`: the runtime token
+-- Optional defaults: `RDGEN_DEFAULT_SERVER`, `RDGEN_DEFAULT_API_SERVER` and `RDGEN_DEFAULT_KEY_FILE` (the hbbs `id_ed25519.pub` in the same LXC) prefill the form.
++- Optional defaults: `RDGEN_DEFAULT_SERVER`, `RDGEN_DEFAULT_PORT`, `RDGEN_DEFAULT_API_SERVER` and `RDGEN_DEFAULT_KEY_FILE` (the hbbs `id_ed25519.pub` in the same LXC) prefill the form, as do `RDGEN_DEFAULT_URL_LINK`, `RDGEN_DEFAULT_DOWNLOAD_LINK` and `RDGEN_DEFAULT_COMPANY`. Installed Windows clients download the update URL and run it, so it has to be a direct link to an installer. With `RDGEN_UPDATE_BASE` set, the form suggests `<base>/<windows-x86_64|windows-x86>/<version>/<name>.exe` for Windows builds of a 1.4.x version; the RustDesk LXC answers it with the newest published build of that name with a newer version, or 404.
+ - To serve rdgen under a sub-path instead of a port, set `RDGEN_URL_PREFIX=/rdgen` and include `deploy/nginx/rdgen-subpath.conf` in an existing server block. Keep its allow/deny list if that server block is reachable from the internet.
+ - Memory, measured on Alpine: gunicorn master about 18 MB, worker about 57 MB, poller about 57 MB. Add about 2 MB for nginx.
+ - Disk: a Windows build (exe + msi) is 50-60 MB. Builds are pruned after `RDGEN_RETENTION_DAYS` (default 30).
+@@ -184,6 +184,6 @@ They do not change these:
+ 
+ Send `Authorization: Bearer $RDGEN_API_TOKEN`, or use a logged-in session plus `X-CSRFToken`.
+ 
+-- `POST /api/generate`: same fields as upstream. Omitted booleans take the form's defaults. A blank server/key/API uses `RDGEN_DEFAULT_*`.
++- `POST /api/generate`: same fields as upstream. Omitted booleans take the form's defaults. A blank server, port, key, API, link, update URL or company uses the matching `RDGEN_DEFAULT_*`.
+ - `GET /api/status?uuid=`: returns `{status, ready, finished, error, files:[{name,size,sha256,url}], ...}`.
+ - `GET /api/download?uuid=&filename=`: streams a stored build file.
+diff --git a/deploy/rdgen.env.example b/deploy/rdgen.env.example
+index 7c2f7f8..a2c9e91 100644
+--- a/deploy/rdgen.env.example
++++ b/deploy/rdgen.env.example
+@@ -44,6 +44,14 @@ RDGEN_FAILED_RUN_KEEP_HOURS=48
+ RDGEN_DEFAULT_SERVER=
+ RDGEN_DEFAULT_API_SERVER=
+ RDGEN_DEFAULT_KEY_FILE=/var/lib/rustdesk-server/id_ed25519.pub
++RDGEN_DEFAULT_PORT=21116
++# Homepage/privacy links, the update download (a direct installer URL), and the copyright holder
++RDGEN_DEFAULT_URL_LINK=
++RDGEN_DEFAULT_DOWNLOAD_LINK=
++RDGEN_DEFAULT_COMPANY=
++# Base of the self-update links the form suggests for Windows builds, e.g. https://console.example.com/clients.
++# The console must answer /clients/<windows-x86_64|windows-x86>/<version>/<name>.exe (the RustDesk LXC does).
++RDGEN_UPDATE_BASE=
+ 
+ # --- hand-off to a console's client downloads (optional) -----------------
+ # Empty: off. Otherwise the form offers "add the files to <target>'s Client
+diff --git a/rdgen/settings.py b/rdgen/settings.py
+index 2df970c..9cceab5 100644
+--- a/rdgen/settings.py
++++ b/rdgen/settings.py
+@@ -129,7 +129,16 @@ RDGEN_DEFAULTS = {
+     'api_server': env('RDGEN_DEFAULT_API_SERVER', ''),
+     'key': env('RDGEN_DEFAULT_KEY', ''),
+     'key_file': env('RDGEN_DEFAULT_KEY_FILE', ''),
++    'port': env('RDGEN_DEFAULT_PORT', ''),
++    'url_link': env('RDGEN_DEFAULT_URL_LINK', ''),
++    'download_link': env('RDGEN_DEFAULT_DOWNLOAD_LINK', ''),
++    'company': env('RDGEN_DEFAULT_COMPANY', ''),
+ }
++# Base of the self-update links for Windows builds, e.g. https://console.example.com/clients (the console answers
++# /clients/<arch>/<version>/<name>.exe). Empty: the form does not suggest an update URL.
++RDGEN_UPDATE_BASE = env('RDGEN_UPDATE_BASE', '').strip().rstrip('/')
++if RDGEN_UPDATE_BASE and not re.fullmatch(r'https?://[A-Za-z0-9.:\[\]-]+(?:/[A-Za-z0-9._~/-]*)?', RDGEN_UPDATE_BASE):
++    raise ImproperlyConfigured('RDGEN_UPDATE_BASE must be an http(s) URL without a query string')
+ 
+ # Hand-off of finished builds to a console's client downloads list. A root
+ # job outside rdgen (rdgen-publish in the RustDesk LXC) asks
+diff --git a/rdgenerator/client_settings.json b/rdgenerator/client_settings.json
+new file mode 100644
+index 0000000..bfdb57e
+--- /dev/null
++++ b/rdgenerator/client_settings.json
+@@ -0,0 +1,1996 @@
++{
++ "source": "https://rustdesk.com/docs/en/self-host/client-configuration/advanced-settings/",
++ "keys": [
++  {
++   "key": "access-mode",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "custom|full|view",
++   "choices": [
++    "custom",
++    "full",
++    "view"
++   ],
++   "default": "custom",
++   "insert": "custom",
++   "description": "Permission preset for incoming sessions: custom uses the individual enable-* toggles, full allows all, view is screen only.",
++   "default_only": false
++  },
++  {
++   "key": "enable-keyboard",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets an incoming session send keyboard and mouse input to this device.",
++   "default_only": false
++  },
++  {
++   "key": "enable-clipboard",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets an incoming session share clipboard text with this device.",
++   "default_only": false
++  },
++  {
++   "key": "enable-file-transfer",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets an incoming session copy/paste files or open a file transfer session.",
++   "default_only": false
++  },
++  {
++   "key": "enable-camera",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets an incoming session view this device's camera.",
++   "default_only": false
++  },
++  {
++   "key": "enable-terminal",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets an incoming session open a remote terminal on this device (desktop only).",
++   "default_only": false
++  },
++  {
++   "key": "enable-remote-printer",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets an incoming session use the remote printer feature (Windows only).",
++   "default_only": false
++  },
++  {
++   "key": "enable-audio",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Captures this device's audio and streams it to the controlling side.",
++   "default_only": false
++  },
++  {
++   "key": "enable-tunnel",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Allows incoming sessions to create TCP tunnels (port forwards) through this device.",
++   "default_only": false
++  },
++  {
++   "key": "enable-remote-restart",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets the controlling side reboot this device.",
++   "default_only": false
++  },
++  {
++   "key": "enable-record-session",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Allows incoming sessions with this device to be recorded.",
++   "default_only": false
++  },
++  {
++   "key": "enable-block-input",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets the controlling side lock out the local user's keyboard and mouse (Windows only).",
++   "default_only": false
++  },
++  {
++   "key": "enable-privacy-mode",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Whether this device permits the controller to turn on privacy mode; distinct from the per-peer privacy-mode default.",
++   "default_only": false
++  },
++  {
++   "key": "allow-remote-config-modification",
++   "group": "Security/Permissions",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Lets the controlling side change this client's settings during a session.",
++   "default_only": false
++  },
++  {
++   "key": "enable-lan-discovery",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "Y|N (N = 'Deny LAN discovery' checked)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets other LAN clients discover this device, which Wake-on-LAN relies on. Requires install.",
++   "default_only": false
++  },
++  {
++   "key": "direct-server",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Accepts direct IP connections to this device, bypassing the ID/relay servers.",
++   "default_only": false
++  },
++  {
++   "key": "direct-access-port",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "TCP port number",
++   "choices": [],
++   "default": "21118",
++   "insert": "21118",
++   "description": "Port listened on for direct IP access when direct-server is enabled.",
++   "default_only": false
++  },
++  {
++   "key": "whitelist",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "\",\" (no filter) or comma-separated IPs/CIDRs, e.g. 192.168.1.0/24,10.0.0.5",
++   "choices": [],
++   "default": ", (no filter)",
++   "insert": "",
++   "description": "Only accepts incoming connections from the listed IP addresses or CIDR ranges.",
++   "default_only": false
++  },
++  {
++   "key": "id-whitelist",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "\",\" (no filter) or comma-separated IDs; * and ? wildcards, case-insensitive; client >= 1.5.0",
++   "choices": [],
++   "default": ", (no filter)",
++   "insert": "",
++   "description": "Only accepts connections from listed peer IDs; the ID is self-reported, so it narrows exposure but is not authentication.",
++   "default_only": false
++  },
++  {
++   "key": "allow-auto-disconnect",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Ends incoming sessions automatically once the local user has been idle for auto-disconnect-timeout.",
++   "default_only": false
++  },
++  {
++   "key": "auto-disconnect-timeout",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "integer minutes",
++   "choices": [],
++   "default": "10",
++   "insert": "10",
++   "description": "Minutes of inactivity before allow-auto-disconnect closes an incoming session.",
++   "default_only": false
++  },
++  {
++   "key": "allow-only-conn-window-open",
++   "group": "Security/Access",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Refuses incoming connections unless the main window is open. Requires install.",
++   "default_only": false
++  },
++  {
++   "key": "approve-mode",
++   "group": "Security/Password",
++   "kind": "settings",
++   "values": "password|click|password-click",
++   "choices": [
++    "password",
++    "click",
++    "password-click"
++   ],
++   "default": "password-click",
++   "insert": "password-click",
++   "description": "How incoming sessions get accepted: by password, by a local click, or either one.",
++   "default_only": false
++  },
++  {
++   "key": "verification-method",
++   "group": "Security/Password",
++   "kind": "settings",
++   "values": "use-temporary-password|use-permanent-password|use-both-passwords",
++   "choices": [
++    "use-temporary-password",
++    "use-permanent-password",
++    "use-both-passwords"
++   ],
++   "default": "use-both-passwords",
++   "insert": "use-both-passwords",
++   "description": "Which password types unlock incoming sessions: the one-time password, the permanent one, or both.",
++   "default_only": false
++  },
++  {
++   "key": "temporary-password-length",
++   "group": "Security/Password",
++   "kind": "settings",
++   "values": "6|8|10",
++   "choices": [
++    "6",
++    "8",
++    "10"
++   ],
++   "default": "6",
++   "insert": "6",
++   "description": "Number of characters in the generated one-time password.",
++   "default_only": false
++  },
++  {
++   "key": "proxy-url",
++   "group": "Security/Proxy",
++   "kind": "settings",
++   "values": "http://host:port | https://host:port | socks5://host:port",
++   "choices": [],
++   "default": "(empty, no proxy)",
++   "insert": "",
++   "description": "Proxy that the client sends its server connections through.",
++   "default_only": false
++  },
++  {
++   "key": "proxy-username",
++   "group": "Security/Proxy",
++   "kind": "settings",
++   "values": "free text",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Username for the proxy in proxy-url. Only used when proxy-url is in the same box.",
++   "default_only": false
++  },
++  {
++   "key": "proxy-password",
++   "group": "Security/Proxy",
++   "kind": "settings",
++   "values": "free text",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Password for the proxy in proxy-url. Only used when proxy-url is in the same box.",
++   "default_only": false
++  },
++  {
++   "key": "theme",
++   "group": "General/UI",
++   "kind": "local",
++   "values": "dark|light|system",
++   "choices": [
++    "dark",
++    "light",
++    "system"
++   ],
++   "default": "system",
++   "insert": "system",
++   "description": "Color theme of the client UI.",
++   "default_only": false
++  },
++  {
++   "key": "lang",
++   "group": "General/UI",
++   "kind": "local",
++   "values": "en|it|fr|de|nl|nb|zh-cn|zh-tw|pt-pt|pt-br|es|et|eu|hu|bg|be|ru|sk|id|cs|da|eo|tr|vi|pl|ja|ko|kz|uk|ur|fa|ca|gl|el|sv|sq|sr|th|sl|ro|lt|lv|ar|he|hr|sc|ta|ge|fi|ml|hi|gu|az",
++   "choices": [
++    "en",
++    "it",
++    "fr",
++    "de",
++    "nl",
++    "nb",
++    "zh-cn",
++    "zh-tw",
++    "pt-pt",
++    "pt-br",
++    "es",
++    "et",
++    "eu",
++    "hu",
++    "bg",
++    "be",
++    "ru",
++    "sk",
++    "id",
++    "cs",
++    "da",
++    "eo",
++    "tr",
++    "vi",
++    "pl",
++    "ja",
++    "ko",
++    "kz",
++    "uk",
++    "ur",
++    "fa",
++    "ca",
++    "gl",
++    "el",
++    "sv",
++    "sq",
++    "sr",
++    "th",
++    "sl",
++    "ro",
++    "lt",
++    "lv",
++    "ar",
++    "he",
++    "hr",
++    "sc",
++    "ta",
++    "ge",
++    "fi",
++    "ml",
++    "hi",
++    "gu",
++    "az"
++   ],
++   "default": "(empty: follows the OS)",
++   "insert": "",
++   "description": "UI language of the client. Leave it out to follow the operating system; the value 'default' gives English.",
++   "default_only": false
++  },
++  {
++   "key": "allow-auto-record-incoming",
++   "group": "General/Recording",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Records every incoming session automatically.",
++   "default_only": false
++  },
++  {
++   "key": "allow-auto-record-outgoing",
++   "group": "General/Recording",
++   "kind": "local",
++   "values": "Y|N (client >= 1.3.2)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Records every outgoing session automatically.",
++   "default_only": false
++  },
++  {
++   "key": "hide-recording-button",
++   "group": "General/Recording",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Removes the record button from the session toolbar; auto-recording continues and cannot be stopped there.",
++   "default_only": false
++  },
++  {
++   "key": "video-save-directory",
++   "group": "General/Recording",
++   "kind": "local",
++   "values": "directory path",
++   "choices": [],
++   "default": "macOS ~/Movies/<app>; Linux ~/Videos/<app>; Windows %USERPROFILE%\\Videos\\<app>; Android /Storage/emulated/0/<app>/ScreenRecord",
++   "insert": "",
++   "description": "Folder where session recordings are saved.",
++   "default_only": false
++  },
++  {
++   "key": "windows-service-video-save-directory",
++   "group": "General/Recording",
++   "kind": "settings",
++   "values": "absolute Windows path (empty/relative ignored)",
++   "choices": [],
++   "default": "<system drive>\\ProgramData\\<app_name>\\recording",
++   "insert": "",
++   "description": "Recording folder used by the installed Windows service for controlled-side recordings. Requires install.",
++   "default_only": false
++  },
++  {
++   "key": "allow-auto-update",
++   "group": "General/Other",
++   "kind": "settings",
++   "values": "Y|N (client >= 1.4.6, Windows, incoming or bidirectional builds only)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Installs newer versions automatically on installed Windows clients, from the update URL of the Custom Server section. Checked once a day.",
++   "default_only": false
++  },
++  {
++   "key": "enable-confirm-closing-tabs",
++   "group": "General/UI",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Asks for confirmation before closing a window that holds several remote tabs.",
++   "default_only": false
++  },
++  {
++   "key": "enable-abr",
++   "group": "General/Performance",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Adaptive bitrate: adjusts stream quality to match available bandwidth.",
++   "default_only": false
++  },
++  {
++   "key": "allow-remove-wallpaper",
++   "group": "General/Performance",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides this device's desktop wallpaper while an incoming session is active.",
++   "default_only": false
++  },
++  {
++   "key": "enable-open-new-connections-in-tabs",
++   "group": "General/UI",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Opens each new connection as a tab rather than in a separate window.",
++   "default_only": false
++  },
++  {
++   "key": "allow-always-software-render",
++   "group": "General/Performance",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Forces software rendering instead of GPU rendering.",
++   "default_only": false
++  },
++  {
++   "key": "enable-hwcodec",
++   "group": "General/Performance",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Uses hardware video encoding when it is available, for smoother video.",
++   "default_only": false
++  },
++  {
++   "key": "peer-card-ui-type",
++   "group": "General/UI",
++   "kind": "local",
++   "values": "0 (big tiles)|1 (small tiles)|2 (list)",
++   "choices": [],
++   "default": "0",
++   "insert": "0",
++   "description": "Layout of the peer list on the home screen.",
++   "default_only": false
++  },
++  {
++   "key": "peer-sorting",
++   "group": "General/UI",
++   "kind": "local",
++   "values": "Remote ID|Remote Host|Username",
++   "choices": [],
++   "default": "Remote ID",
++   "insert": "",
++   "description": "Sort order of the peer list on the home screen.",
++   "default_only": false
++  },
++  {
++   "key": "sync-ab-with-recent-sessions",
++   "group": "General/Address book",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Keeps the address book in sync with recent sessions.",
++   "default_only": false
++  },
++  {
++   "key": "sync-ab-tags",
++   "group": "General/Address book",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Sorts the address book tag list (the UI calls it 'Sort tags' despite the key name).",
++   "default_only": false
++  },
++  {
++   "key": "filter-ab-by-intersection",
++   "group": "General/Address book",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "With several tags selected, shows only peers that have all of them rather than any.",
++   "default_only": false
++  },
++  {
++   "key": "use-texture-render",
++   "group": "General/Performance",
++   "kind": "local",
++   "values": "Y|N (desktop only)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "linux:Y, macOS:N, win7:N, win10+:Y",
++   "insert": "",
++   "description": "Renders remote video through textures for smoothness; turn off if you see rendering problems.",
++   "default_only": false
++  },
++  {
++   "key": "enable-udp-punch",
++   "group": "General/Network",
++   "kind": "local",
++   "values": "Y|N (client >= 1.4.1, Pro >= 1.6.2)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N with your own server (Y on RustDesk's public servers)",
++   "insert": "",
++   "description": "Allows UDP hole punching for direct peer-to-peer links. Off by default with a self-hosted server, so set Y to turn it on.",
++   "default_only": false
++  },
++  {
++   "key": "enable-ipv6-punch",
++   "group": "General/Network",
++   "kind": "local",
++   "values": "Y|N (client >= 1.4.1, Pro >= 1.6.2)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N with your own server (Y on RustDesk's public servers)",
++   "insert": "",
++   "description": "Allows peer-to-peer connections over IPv6.",
++   "default_only": false
++  },
++  {
++   "key": "view-only",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: open new sessions in view-only mode.",
++   "default_only": false
++  },
++  {
++   "key": "show-monitors-toolbar",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: show the monitor switcher in the session toolbar.",
++   "default_only": false
++  },
++  {
++   "key": "collapse-toolbar",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: start sessions with the remote toolbar collapsed.",
++   "default_only": false
++  },
++  {
++   "key": "show-remote-cursor",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: draw the remote machine's cursor in the session view.",
++   "default_only": false
++  },
++  {
++   "key": "follow-remote-cursor",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: move the view to follow the remote cursor.",
++   "default_only": false
++  },
++  {
++   "key": "follow-remote-window",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: move the view to follow the focused remote window.",
++   "default_only": false
++  },
++  {
++   "key": "zoom-cursor",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: scale the cursor with the current image zoom.",
++   "default_only": false
++  },
++  {
++   "key": "show-quality-monitor",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: show the stream quality overlay (FPS, bitrate, delay).",
++   "default_only": false
++  },
++  {
++   "key": "disable-audio",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: mute sound from the remote side.",
++   "default_only": false
++  },
++  {
++   "key": "enable-file-copy-paste",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N per docs (code falls back to Y)",
++   "insert": "",
++   "description": "Per-peer default: allow copying and pasting files during the session (Windows only).",
++   "default_only": false
++  },
++  {
++   "key": "disable-clipboard",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: turn off clipboard text sync in the session.",
++   "default_only": false
++  },
++  {
++   "key": "lock-after-session-end",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: lock the remote machine when the session ends.",
++   "default_only": false
++  },
++  {
++   "key": "privacy-mode",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: switch on privacy mode right after connecting.",
++   "default_only": false
++  },
++  {
++   "key": "i444",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: request true color (YUV 4:4:4) video.",
++   "default_only": false
++  },
++  {
++   "key": "reverse-mouse-wheel",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: invert scroll wheel direction.",
++   "default_only": false
++  },
++  {
++   "key": "swap-left-right-mouse",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: swap the left and right mouse buttons.",
++   "default_only": false
++  },
++  {
++   "key": "displays-as-individual-windows",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: open each remote monitor in its own window.",
++   "default_only": false
++  },
++  {
++   "key": "use-all-my-displays-for-the-remote-session",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: spread the remote session across all local monitors.",
++   "default_only": false
++  },
++  {
++   "key": "view-style",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "original|adaptive",
++   "choices": [
++    "original",
++    "adaptive"
++   ],
++   "default": "original (code uses adaptive on Android/iOS)",
++   "insert": "",
++   "description": "Per-peer default: show the remote screen at 1:1 scale or fitted to the window.",
++   "default_only": false
++  },
++  {
++   "key": "scroll-style",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "scrollauto|scrollbar|scrolledge (scrolledge needs >= 1.4.4)",
++   "choices": [
++    "scrollauto",
++    "scrollbar",
++    "scrolledge"
++   ],
++   "default": "scrollauto",
++   "insert": "scrollauto",
++   "description": "Per-peer default: how to pan a remote screen that is larger than the window.",
++   "default_only": false
++  },
++  {
++   "key": "edge-scroll-edge-thickness",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "integer 20-150 (client >= 1.4.4)",
++   "choices": [],
++   "default": "100",
++   "insert": "100",
++   "description": "Width of the edge zone that triggers panning; only used when scroll-style=scrolledge.",
++   "default_only": false
++  },
++  {
++   "key": "image-quality",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "best|balanced|low|custom",
++   "choices": [
++    "best",
++    "balanced",
++    "low",
++    "custom"
++   ],
++   "default": "balanced",
++   "insert": "balanced",
++   "description": "Per-peer default: image quality preset for sessions.",
++   "default_only": false
++  },
++  {
++   "key": "custom-image-quality",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "a number from 10 to 2000",
++   "choices": [],
++   "default": "50.0",
++   "insert": "50.0",
++   "description": "Per-peer default: quality value used when image-quality=custom.",
++   "default_only": false
++  },
++  {
++   "key": "custom-fps",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "integer 5-120",
++   "choices": [],
++   "default": "30",
++   "insert": "30",
++   "description": "Per-peer default: frame rate limit used when image-quality=custom.",
++   "default_only": false
++  },
++  {
++   "key": "codec-preference",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "auto|vp8|vp9|av1|h264|h265",
++   "choices": [
++    "auto",
++    "vp8",
++    "vp9",
++    "av1",
++    "h264",
++    "h265"
++   ],
++   "default": "auto",
++   "insert": "auto",
++   "description": "Per-peer default: preferred video codec; options other than VP8/VP9 depend on hardware support.",
++   "default_only": false
++  },
++  {
++   "key": "terminal-persistent",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Per-peer default: keep remote terminal sessions running after you disconnect.",
++   "default_only": false
++  },
++  {
++   "key": "trackpad-speed",
++   "group": "Display/Session defaults",
++   "kind": "display",
++   "values": "integer 10-1000",
++   "choices": [],
++   "default": "100",
++   "insert": "100",
++   "description": "Per-peer default: trackpad speed for sessions.",
++   "default_only": false
++  },
++  {
++   "key": "preset-address-book-name",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "existing address book name from the web console",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Adds this device to the named address book on the Pro server; can be used without a tag.",
++   "default_only": false
++  },
++  {
++   "key": "preset-address-book-tag",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "existing tag name in that address book",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Tag given to this device's entry in the preset address book.",
++   "default_only": false
++  },
++  {
++   "key": "preset-address-book-alias",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "free text (client >= 1.4.3, Pro >= 1.6.6)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Alias given to this device's entry in the preset address book.",
++   "default_only": false
++  },
++  {
++   "key": "preset-address-book-password",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "free text (client >= 1.4.3, Pro >= 1.6.6)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Connection password saved with this device's entry in the preset address book.",
++   "default_only": false
++  },
++  {
++   "key": "preset-address-book-note",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "free text (client >= 1.4.3, Pro >= 1.6.6)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Note attached to this device's entry in the preset address book.",
++   "default_only": false
++  },
++  {
++   "key": "disable-group-panel",
++   "group": "Others/UI hiding",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the group panel, labelled 'Accessible devices' since 1.3.8, beside the address book.",
++   "default_only": false
++  },
++  {
++   "key": "pre-elevate-service",
++   "group": "Others/Windows",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Makes the Windows portable build request administrator elevation automatically at launch.",
++   "default_only": false
++  },
++  {
++   "key": "disable-floating-window",
++   "group": "Others/Android",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Android: hides the floating window that helps stop the OS from killing the service.",
++   "default_only": false
++  },
++  {
++   "key": "floating-window-size",
++   "group": "Others/Android",
++   "kind": "local",
++   "values": "integer 32-320",
++   "choices": [],
++   "default": "120",
++   "insert": "120",
++   "description": "Android: floating window size; below 120 it is hard to tap and may not keep the service alive.",
++   "default_only": false
++  },
++  {
++   "key": "floating-window-untouchable",
++   "group": "Others/Android",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Android: taps pass through the floating window to the app underneath, and the window can no longer be moved.",
++   "default_only": false
++  },
++  {
++   "key": "floating-window-transparency",
++   "group": "Others/Android",
++   "kind": "local",
++   "values": "integer 0-10",
++   "choices": [],
++   "default": "10",
++   "insert": "10",
++   "description": "Android: floating window opacity; 0 hides it and makes it untouchable automatically.",
++   "default_only": false
++  },
++  {
++   "key": "floating-window-svg",
++   "group": "Others/Android",
++   "kind": "local",
++   "values": "SVG markup on one line (AndroidSVG-supported subset)",
++   "choices": [],
++   "default": "RustDesk icon",
++   "insert": "",
++   "description": "Android: custom icon drawn in the floating window.",
++   "default_only": false
++  },
++  {
++   "key": "keep-screen-on",
++   "group": "Others/Android",
++   "kind": "local",
++   "values": "never|during-controlled|service-on",
++   "choices": [
++    "never",
++    "during-controlled",
++    "service-on"
++   ],
++   "default": "during-controlled",
++   "insert": "during-controlled",
++   "description": "Android controlled side: when to keep the screen on; needs the floating window.",
++   "default_only": false
++  },
++  {
++   "key": "keep-awake-during-incoming-sessions",
++   "group": "Others/Power",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Stops this device from sleeping while it is being controlled.",
++   "default_only": false
++  },
++  {
++   "key": "keep-awake-during-outgoing-sessions",
++   "group": "Others/Power",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Stops this device from sleeping while it is controlling another machine.",
++   "default_only": false
++  },
++  {
++   "key": "enable-directx-capture",
++   "group": "Others/Windows",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Windows controlled side: capture the screen with DirectX first instead of using GDI directly.",
++   "default_only": false
++  },
++  {
++   "key": "enable-android-software-encoding-half-scale",
++   "group": "Others/Android",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Android controlled side: software encoder halves resolution above 1200px; N keeps full size.",
++   "default_only": false
++  },
++  {
++   "key": "allow-remote-cm-modification",
++   "group": "Others/Accept window",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Lets the controlling side click this device's accept window (accept sessions, change permissions).",
++   "default_only": false
++  },
++  {
++   "key": "enable-perm-change-in-accept-window",
++   "group": "Others/Accept window",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets the local user toggle permissions in the accept window before accepting; on Android only some of them.",
++   "default_only": false
++  },
++  {
++   "key": "remove-preset-password-warning",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Hides the security warning the GUI shows when the build ships a preset password.",
++   "default_only": false
++  },
++  {
++   "key": "hide-general-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.5.0)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the General settings tab; works even with disable-settings on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-security-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the Security settings tab; ignored while disable-settings is on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-network-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the Network settings tab; ignored while disable-settings is on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-server-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the ID/relay server settings; ignored while disable-settings is on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-proxy-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the proxy settings; ignored while disable-settings is on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-websocket-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the WebSocket option; ignored while disable-settings is on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-remote-printer-settings",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the remote printer settings; ignored while disable-settings is on.",
++   "default_only": false
++  },
++  {
++   "key": "hide-username-on-card",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Leaves usernames off peer cards so long names do not crowd out other info.",
++   "default_only": false
++  },
++  {
++   "key": "hide-help-cards",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the UAC and permission help cards in the GUI.",
++   "default_only": false
++  },
++  {
++   "key": "display-name",
++   "group": "Others/Identity",
++   "kind": "builtin",
++   "values": "free text",
++   "choices": [],
++   "default": "(empty: logged-in account name, else OS username)",
++   "insert": "",
++   "description": "Name shown to the remote side in the connection prompt when you connect out.",
++   "default_only": false
++  },
++  {
++   "key": "disable-udp",
++   "group": "Others/Network",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Uses TCP only: talks to the server over TCP 21116 instead of UDP 21116.",
++   "default_only": false
++  },
++  {
++   "key": "preset-user-name",
++   "group": "Others/Pro device presets",
++   "kind": "builtin",
++   "values": "existing Pro user name",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Assigns this device to the given Pro server user.",
++   "default_only": false
++  },
++  {
++   "key": "preset-strategy-name",
++   "group": "Others/Pro device presets",
++   "kind": "builtin",
++   "values": "existing Pro strategy name",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Assigns the given Pro strategy to this device.",
++   "default_only": false
++  },
++  {
++   "key": "preset-device-group-name",
++   "group": "Others/Pro device presets",
++   "kind": "builtin",
++   "values": "existing device group name (client >= 1.3.8, Pro >= 1.5.0)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Puts this device in the given Pro device group.",
++   "default_only": false
++  },
++  {
++   "key": "preset-device-username",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "free text (client >= 1.4.3, Pro >= 1.6.6)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Device username to record for this device in the Pro console.",
++   "default_only": false
++  },
++  {
++   "key": "preset-device-name",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "free text (client >= 1.4.3, Pro >= 1.6.6)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Device name (hostname) to record for this device in the Pro console.",
++   "default_only": false
++  },
++  {
++   "key": "preset-note",
++   "group": "Others/Pro device presets",
++   "kind": "settings",
++   "values": "free text (client >= 1.4.3, Pro >= 1.6.6)",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Note to attach to this device in the Pro console.",
++   "default_only": false
++  },
++  {
++   "key": "default-connect-password",
++   "group": "Others/Outgoing",
++   "kind": "builtin",
++   "values": "free text",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Password this client tries for outgoing connections; unrelated to the incoming preset password.",
++   "default_only": false
++  },
++  {
++   "key": "enable-trusted-devices",
++   "group": "Others/Security",
++   "kind": "settings",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "Lets devices marked as trusted skip 2FA verification.",
++   "default_only": false
++  },
++  {
++   "key": "hide-tray",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Removes the system tray icon.",
++   "default_only": false
++  },
++  {
++   "key": "hide-stop-service",
++   "group": "Others/UI hiding",
++   "kind": "builtin",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides stop-service controls while the service runs (settings, tray, Android); start stays visible.",
++   "default_only": false
++  },
++  {
++   "key": "one-way-clipboard-redirection",
++   "group": "Others/Clipboard & files",
++   "kind": "builtin",
++   "values": "Y|N (controlled side >= 1.3.1)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Blocks clipboard sync from this controlled device to the controller; the other direction still works.",
++   "default_only": false
++  },
++  {
++   "key": "one-way-file-transfer",
++   "group": "Others/Clipboard & files",
++   "kind": "builtin",
++   "values": "Y|N (controlled side >= 1.3.1)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Blocks file transfer from this controlled device to the controller; the other direction still works.",
++   "default_only": false
++  },
++  {
++   "key": "sync-init-clipboard",
++   "group": "Others/Clipboard & files",
++   "kind": "display",
++   "values": "Y|N (controlling side >= 1.3.1)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Sends the controller's current clipboard to the remote side as soon as a session connects.",
++   "default_only": false
++  },
++  {
++   "key": "allow-logon-screen-password",
++   "group": "Others/Security",
++   "kind": "builtin",
++   "values": "Y|N (controlled side >= 1.3.1; >= 1.4.7 applies to all approve modes)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Allows password entry while the remote is at the logon/lock screen, including in click-only approve mode.",
++   "default_only": false
++  },
++  {
++   "key": "allow-https-21114",
++   "group": "Others/Network",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.3.9)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Keeps port 21114 on an HTTPS API server URL instead of stripping it as a likely mistake.",
++   "default_only": false
++  },
++  {
++   "key": "allow-d3d-render",
++   "group": "Others/Windows",
++   "kind": "local",
++   "values": "Y|N (client >= 1.3.9, Windows only)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Uses D3D rendering for higher FPS and lower CPU; may show a black screen on some systems.",
++   "default_only": false
++  },
++  {
++   "key": "allow-hostname-as-id",
++   "group": "Others/Identity",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.4.0)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "On first run, tries the hostname (spaces become '-') as the device ID; a random ID is used on conflict.",
++   "default_only": false
++  },
++  {
++   "key": "allow-websocket",
++   "group": "Others/Network",
++   "kind": "settings",
++   "values": "Y|N (client >= 1.4.0, Pro >= 1.5.7)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Connects to the servers over WebSocket (relay-only); needs a correctly configured reverse proxy.",
++   "default_only": false
++  },
++  {
++   "key": "allow-numeric-one-time-password",
++   "group": "Others/Security",
++   "kind": "settings",
++   "values": "Y|N (client >= 1.4.1, Pro >= 1.5.9)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Generates one-time passwords made of digits only.",
++   "default_only": false
++  },
++  {
++   "key": "register-device",
++   "group": "Others/Pro device presets",
++   "kind": "builtin",
++   "values": "Y|N (Pro >= 1.6.0, custom2 license, >= 2 concurrent connections)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "Y",
++   "insert": "Y",
++   "description": "N keeps the device out of the console, which breaks login, --assign, presets, audit logs and strategies.",
++   "default_only": false
++  },
++  {
++   "key": "main-window-always-on-top",
++   "group": "Others/UI",
++   "kind": "builtin",
++   "values": "Y|N (client 1.4.2)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Keeps the main window above all other windows.",
++   "default_only": false
++  },
++  {
++   "key": "relay-server",
++   "group": "Others/Network",
++   "kind": "settings",
++   "values": "host[:port]",
++   "choices": [],
++   "default": "(empty)",
++   "insert": "",
++   "description": "Relay server address (the Relay Server field); the docs only link to a GitHub issue about it.",
++   "default_only": false
++  },
++  {
++   "key": "disable-discovery-panel",
++   "group": "Others/UI hiding",
++   "kind": "local",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Hides the 'Discovered' (LAN peers) panel next to Favorites.",
++   "default_only": false
++  },
++  {
++   "key": "touch-mode",
++   "group": "Others/Input",
++   "kind": "display",
++   "values": "Y|N",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Touch or mouse input mode. Since client 1.4.3 a value set here has no effect when controlling desktop devices.",
++   "default_only": false
++  },
++  {
++   "key": "show-virtual-mouse",
++   "group": "Others/Input",
++   "kind": "local",
++   "values": "Y|N (client >= 1.4.3)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Mobile controlling desktop: shows the virtual mouse helper; the docs advise default-settings, not override.",
++   "default_only": true
++  },
++  {
++   "key": "show-virtual-joystick",
++   "group": "Others/Input",
++   "kind": "local",
++   "values": "Y|N (client >= 1.4.3; needs show-virtual-mouse=Y)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Mobile controlling desktop: shows the virtual joystick; the docs advise default-settings, not override.",
++   "default_only": true
++  },
++  {
++   "key": "allow-insecure-tls-fallback",
++   "group": "Others/Network",
++   "kind": "settings",
++   "values": "Y|N (client >= 1.4.4)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "If server TLS certificate verification fails, connects anyway without verifying.",
++   "default_only": false
++  },
++  {
++   "key": "allow-ask-for-note",
++   "group": "Others/Outgoing",
++   "kind": "local",
++   "values": "Y|N (client >= 1.4.4)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Asks the controlling user for a note when a session ends; turning it on in the UI requires login.",
++   "default_only": false
++  },
++  {
++   "key": "disable-change-permanent-password",
++   "group": "Others/Lockdown",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.4.5)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Stops users from setting or changing the permanent password in the UI or CLI.",
++   "default_only": false
++  },
++  {
++   "key": "disable-change-id",
++   "group": "Others/Lockdown",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.4.5)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Stops users from changing the device ID in the UI or CLI.",
++   "default_only": false
++  },
++  {
++   "key": "disable-unlock-pin",
++   "group": "Others/Lockdown",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.4.5)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "Ignores any settings-unlock PIN; unlocking settings needs administrator rights.",
++   "default_only": false
++  },
++  {
++   "key": "allow-command-line-settings-when-settings-disabled",
++   "group": "Others/Lockdown",
++   "kind": "builtin",
++   "values": "Y|N (client >= 1.4.7)",
++   "choices": [
++    "Y",
++    "N"
++   ],
++   "default": "N",
++   "insert": "N",
++   "description": "With disable-settings on, still allows configuration from the command line; only the UI stays locked.",
++   "default_only": false
++  }
++ ],
++ "controls": {
++  "access-mode": "Permission type",
++  "enable-keyboard": "Enable keyboard/mouse",
++  "enable-clipboard": "Enable clipboard",
++  "enable-file-transfer": "Enable file transfer",
++  "enable-audio": "Enable audio",
++  "enable-tunnel": "Enable TCP tunneling",
++  "enable-remote-restart": "Enable remote restart",
++  "enable-record-session": "Enable recording session",
++  "enable-block-input": "Enable blocking user input",
++  "allow-remote-config-modification": "Enable remote configuration modification",
++  "enable-remote-printer": "Enable remote printer",
++  "enable-camera": "Enable remote camera",
++  "enable-terminal": "Enable remote terminal",
++  "direct-server": "Enable direct IP access",
++  "verification-method": "Allow hiding the connection window",
++  "approve-mode": "Password Approve mode",
++  "allow-hide-cm": "Allow hiding the connection window",
++  "allow-remove-wallpaper": "Remove wallpaper during incoming sessions",
++  "theme": "Theme",
++  "allow-darktheme": "Theme",
++  "enable-lan-discovery": "Deny LAN discovery",
++  "allow-auto-disconnect": "Automatically close incoming sessions",
++  "custom-rendezvous-server": "Host (Custom Server)",
++  "api-server": "API (Custom Server)"
++ },
++ "hard": {
++  "conn-type": "Use \"Connection Type\" under General.",
++  "disable-installation": "Use \"Disable Installation\" under General.",
++  "disable-settings": "Use \"Disable Settings\" under General.",
++  "password": "Use \"Set Permanent Password\" under Security.",
++  "app-name": "Use \"Custom Application Name\" under General.",
++  "disable-ab": "It is a top-level setting, which these boxes cannot set.",
++  "disable-account": "It is a top-level setting, which these boxes cannot set.",
++  "disable-tcp-listen": "It is a top-level setting, which these boxes cannot set.",
++  "salt": "It is a top-level setting, which these boxes cannot set."
++ },
++ "control_mode": {
++  "access-mode": "permissionsDorO",
++  "enable-keyboard": "permissionsDorO",
++  "enable-clipboard": "permissionsDorO",
++  "enable-file-transfer": "permissionsDorO",
++  "enable-audio": "permissionsDorO",
++  "enable-tunnel": "permissionsDorO",
++  "enable-remote-restart": "permissionsDorO",
++  "enable-record-session": "permissionsDorO",
++  "enable-block-input": "permissionsDorO",
++  "allow-remote-config-modification": "permissionsDorO",
++  "enable-remote-printer": "permissionsDorO",
++  "enable-camera": "permissionsDorO",
++  "enable-terminal": "permissionsDorO",
++  "direct-server": "permissionsDorO",
++  "verification-method": "permissionsDorO",
++  "approve-mode": "permissionsDorO",
++  "allow-hide-cm": "permissionsDorO",
++  "allow-remove-wallpaper": "permissionsDorO",
++  "theme": "themeDorO",
++  "allow-darktheme": "themeDorO",
++  "enable-lan-discovery": "permissionsDorO",
++  "allow-auto-disconnect": "permissionsDorO",
++  "custom-rendezvous-server": "incoming",
++  "api-server": "incoming"
++ }
++}
+\ No newline at end of file
+diff --git a/rdgenerator/templates/_other_settings.html b/rdgenerator/templates/_other_settings.html
+new file mode 100644
+index 0000000..1f749d7
+--- /dev/null
++++ b/rdgenerator/templates/_other_settings.html
+@@ -0,0 +1,204 @@
++<div class="rd-hint" style="margin:10px 0 12px;">
++    Any other client option, one <code>key=value</code> per line, for example <code>enable-udp-punch=N</code>
++    (on/off options take Y or N).<br>
++    <b>Default settings</b> are starting values: users can still change them in the client.<br>
++    <b>Override settings</b> are enforced: users cannot change them.<br>
++    A line in Override settings replaces what a control above sets for the same key. A line in Default settings
++    does too, unless that control is set to Override, because an override always wins.
++</div>
++<label for="{{ form.defaultManual.id_for_label }}">Default settings</label>
++{{ form.defaultManual }}
++<div class="rd-lint" id="rd-lint-defaultManual" aria-live="polite"></div>
++<label for="{{ form.overrideManual.id_for_label }}">Override settings</label>
++{{ form.overrideManual }}
++<div class="rd-lint" id="rd-lint-overrideManual" aria-live="polite"></div>
++<button type="button" id="rd-ref-open" class="rd-ref-open">Browse client options&hellip;</button>
++<div class="rd-hint" id="rd-ref-summary"></div>
++<dialog id="rd-ref-dialog" class="rd-ref" aria-labelledby="rd-ref-title">
++    <div class="rd-ref-head">
++        <h3 id="rd-ref-title">Client options</h3>
++        <button type="button" id="rd-ref-close" aria-label="Close">&times;</button>
++    </div>
++    <input type="search" id="rd-ref-filter" placeholder="Filter by key, group or description" autocomplete="off">
++    <label class="rd-ref-all"><input type="checkbox" id="rd-ref-all"> Also show the <span id="rd-ref-set-count"></span>
++        options the form already sets with its own controls</label>
++    <div class="rd-ref-scroll">
++        <table>
++            <thead><tr><th>Option</th><th>Values</th><th>What it does</th><th>Add to</th></tr></thead>
++            <tbody id="rd-ref-body"></tbody>
++        </table>
++    </div>
++    <div class="rd-hint" style="margin-top:8px;">
++        Summarised from RustDesk's
++        <a href="https://rustdesk.com/docs/en/self-host/client-configuration/advanced-settings/" target="_blank"
++           rel="noopener noreferrer">advanced settings documentation</a>, where each option has more detail.
++        "Session" options are the defaults for each remote device, applied when you first connect to it.
++    </div>
++</dialog>
++{{ client_settings|json_script:"rd-client-settings" }}
++<style>
++    .rd-hint code, .rd-lint code, .rd-ref code { background:#222; padding:0 3px; border-radius:3px; }
++    #id_defaultManual, #id_overrideManual { font-family: ui-monospace, Menlo, Consolas, monospace; min-height: 6em; }
++    .rd-lint { font-size:.85em; margin:-4px 0 12px; line-height:1.4; }
++    .rd-lint div { padding:1px 0; }
++    .rd-lint .err { color:#ff7b72; }
++    .rd-lint .warn { color:#e3b341; }
++    .rd-lint .info { color:#8ab4f8; }
++    .rd-ref-open { margin:2px 0 4px; }
++    dialog.rd-ref { width:min(1100px, 92vw); max-height:88vh; padding:16px 18px; background:#111; color:#e0e0e0;
++        border:1px solid #444; border-radius:8px; box-sizing:border-box; }
++    dialog.rd-ref[open] { display:flex; flex-direction:column; }
++    dialog.rd-ref::backdrop { background:rgba(0,0,0,.65); }
++    .rd-ref-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
++    .rd-ref-head h3 { margin:0; color:#fff; }
++    #rd-ref-close { font-size:1.4em; line-height:1; padding:2px 10px; }
++    .rd-ref-all { display:block; margin:0 0 8px; color:#bbb; font-size:.9em; }
++    #rd-ref-filter { width:100%; padding:8px; margin-bottom:8px; background:#222; border:1px solid #444; border-radius:4px; color:#fff; box-sizing:border-box; }
++    .rd-ref-scroll { flex:1; min-height:0; overflow:auto; border:1px solid #333; border-radius:4px; }
++    .rd-ref table { width:100%; border-collapse:collapse; font-size:.82em; }
++    .rd-ref th { position:sticky; top:0; background:#1a1a1a; text-align:left; padding:6px; }
++    .rd-ref td { border-top:1px solid #2a2a2a; padding:5px 6px; vertical-align:top; }
++    .rd-ref td:first-child { white-space:nowrap; }
++    .rd-ref button.done { background:#2e7d32; }
++    .rd-ref .tag { display:inline-block; font-size:.85em; color:#999; }
++    .rd-ref .set { color:#e3b341; }
++    .rd-ref button { padding:2px 6px; font-size:.85em; margin:0 2px 2px 0; }
++</style>
++<script>
++(function () {
++    const data = JSON.parse(document.getElementById('rd-client-settings').textContent);
++    const catalog = new Map(data.keys.map(k => [k.key, k]));
++    const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
++    function controlWritesOverride(key) {   // where the matching form control puts its value right now
++        const mode = own(data.control_mode, key);
++        if (mode === 'incoming') {
++            const dir = document.querySelector('input[name="direction"]:checked');
++            return !!dir && dir.value === 'incoming';
++        }
++        const sel = mode && document.getElementById('id_' + mode);
++        return !!sel && sel.value === 'override';
++    }
++    const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
++    const boxes = {defaultManual: 'Default settings', overrideManual: 'Override settings'};
++    const kindLabel = {settings: '', local: 'client', display: 'session', builtin: 'built-in'};
++    const SECRETS = new Set(['default-connect-password', 'proxy-password', 'preset-address-book-password']);
++
++    function esc(s) {
++        return String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
++    }
++    function parse(text) {
++        const out = [];
++        text.split(/\r\n|\r|\n/).forEach((line, i) => {
++            if (!line.trim()) return;
++            const eq = line.indexOf('=');
++            out.push(eq < 0 ? {n: i + 1, line} : {n: i + 1, line, key: line.slice(0, eq).trim(), value: line.slice(eq + 1).trim()});
++        });
++        return out;
++    }
++    function lint() {
++        const parsed = {};
++        for (const id in boxes) parsed[id] = parse(document.getElementById('id_' + id).value);
++        for (const id in boxes) {
++            const other = id === 'defaultManual' ? 'overrideManual' : 'defaultManual';
++            const otherKeys = new Set(parsed[other].filter(p => p.key).map(p => p.key));
++            const seen = new Map();
++            const msgs = [];
++            for (const p of parsed[id]) {
++                const at = 'Line ' + p.n + ': ';
++                if (p.key === undefined) { msgs.push(['warn', at + 'no "=", so this line is ignored.']); continue; }
++                if (!KEY_RE.test(p.key)) { msgs.push(['err', at + '"' + esc(p.key.slice(0, 40)) + '" is not a valid option name.']); continue; }
++                if (seen.has(p.key)) msgs.push(['warn', at + '<code>' + esc(p.key) + '</code> is also on line ' + seen.get(p.key) + '; the last line wins.']);
++                seen.set(p.key, p.n);
++                const hard = own(data.hard, p.key);
++                if (hard) { msgs.push(['err', at + '<code>' + esc(p.key) + '</code> has no effect here. ' + esc(hard)]); continue; }
++                const k = catalog.get(p.key);
++                const control = own(data.controls, p.key);
++                if (control && id === 'defaultManual' && controlWritesOverride(p.key))
++                    msgs.push(['warn', at + 'has no effect: "' + esc(control) + '" above sets this as an override. Put the line in Override settings, or set that control to Default.']);
++                else if (control) msgs.push(['info', at + 'replaces the value from "' + esc(control) + '" above.']);
++                if (!k) {
++                    if (!control) msgs.push(['warn', at + '<code>' + esc(p.key) + '</code> is not in RustDesk\'s documented options. Check the spelling.']);
++                    continue;
++                }
++                if ((SECRETS.has(p.key) || (p.key === 'proxy-url' && p.value.includes('@'))) && p.value)
++                    msgs.push(['warn', at + 'the client carries this password in readable form, so it cannot go on the public downloads page.']);
++                if (k.choices.length && !k.choices.includes(p.value)) msgs.push(['warn', at + '<code>' + esc(p.key) + '</code> expects ' + k.choices.map(esc).join(' or ') + '.']);
++                if (k.default_only && id === 'overrideManual') msgs.push(['warn', at + 'RustDesk says to put <code>' + esc(p.key) + '</code> in Default settings.']);
++                if (id === 'defaultManual' && otherKeys.has(p.key)) msgs.push(['info', at + '<code>' + esc(p.key) + '</code> is also in Override settings, which wins.']);
++            }
++            document.getElementById('rd-lint-' + id).innerHTML = msgs.map(m => '<div class="' + m[0] + '">' + m[1] + '</div>').join('');
++        }
++    }
++    function add(id, k, button) {   // the dialog stays open, so several options can be added in a row
++        const box = document.getElementById('id_' + id);
++        box.value = box.value.replace(/\s*$/, '') + (box.value.trim() ? '\n' : '') + k.key + '=' + k.insert;
++        lint();
++        const label = button.textContent;
++        button.textContent = 'Added';
++        button.classList.add('done');
++        setTimeout(() => { button.textContent = label; button.classList.remove('done'); }, 1200);
++    }
++    const setByForm = k => own(data.controls, k.key) !== undefined;
++    function render() {
++        const f = filter.value.toLowerCase();
++        const all = document.getElementById('rd-ref-all').checked;
++        const body = document.getElementById('rd-ref-body');
++        body.innerHTML = '';
++        for (const k of data.keys) {
++            const control = own(data.controls, k.key);
++            if (control && !all) continue;
++            const hay = (k.key + ' ' + k.group + ' ' + k.description + ' ' + (control || '')).toLowerCase();
++            if (f && !hay.includes(f)) continue;
++            const tr = document.createElement('tr');
++            const tag = kindLabel[k.kind] ? ' &middot; ' + kindLabel[k.kind] : '';
++            tr.innerHTML = '<td><code>' + esc(k.key) + '</code><br><span class="tag">' + esc(k.group) + tag + '</span></td>' +
++                '<td>' + esc(k.values) + (k.default ? '<br><span class="tag">default ' + esc(k.default) + '</span>' : '') + '</td>' +
++                '<td>' + esc(k.description) + (control ? '<br><span class="set">Set above by "' + esc(control) + '"</span>' : '') +
++                (k.default_only ? '<br><span class="tag">Use in Default settings only.</span>' : '') + '</td>' +
++                '<td></td>';
++            for (const id in boxes) {
++                if (id === 'overrideManual' && k.default_only) continue;
++                const b = document.createElement('button');
++                b.type = 'button';
++                b.textContent = id === 'defaultManual' ? 'Default' : 'Override';
++                b.title = 'Add ' + k.key + ' to ' + boxes[id];
++                b.addEventListener('click', () => add(id, k, b));
++                tr.lastChild.appendChild(b);
++            }
++            body.appendChild(tr);
++        }
++    }
++    const filter = document.getElementById('rd-ref-filter');
++    const dialog = document.getElementById('rd-ref-dialog');
++    const setCount = data.keys.filter(setByForm).length;
++    document.getElementById('rd-ref-set-count').textContent = setCount;
++    document.getElementById('rd-ref-summary').textContent = 'The ' + (data.keys.length - setCount) +
++        ' documented RustDesk options this form has no control for, with what they do; adds a line to either box.';
++    document.getElementById('rd-ref-open').addEventListener('click', () => {
++        if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
++        filter.focus();
++    });
++    document.getElementById('rd-ref-close').addEventListener('click', () => dialog.close ? dialog.close() : dialog.removeAttribute('open'));
++    dialog.addEventListener('keydown', e => {   // Esc closes it, also from the search box (which would only clear)
++        if (e.key === 'Escape') { e.preventDefault(); dialog.close(); }
++    });
++    dialog.addEventListener('click', e => {   // a click on the backdrop closes it
++        const r = dialog.getBoundingClientRect();
++        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close();
++    });
++    document.getElementById('rd-ref-all').addEventListener('change', render);
++    filter.addEventListener('input', render);
++    filter.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); });   // not "Generate"
++    for (const el of document.querySelectorAll('#id_permissionsDorO, #id_themeDorO, input[name="direction"]'))
++        el.addEventListener('change', lint);
++    for (const id in boxes) document.getElementById('id_' + id).addEventListener('input', lint);
++    // "Load Configuration" fills the boxes without firing input events
++    let last = '';
++    setInterval(() => {
++        const now = document.getElementById('id_defaultManual').value + '\0' + document.getElementById('id_overrideManual').value;
++        if (now !== last) { last = now; lint(); }
++    }, 1000);
++    render();
++    lint();
++})();
++</script>
+diff --git a/rdgenerator/templates/_update_link.html b/rdgenerator/templates/_update_link.html
+new file mode 100644
+index 0000000..0b99f44
+--- /dev/null
++++ b/rdgenerator/templates/_update_link.html
+@@ -0,0 +1,96 @@
++<div class="rd-hint">
++    Installed Windows clients with Auto update on download this URL and run it to update themselves, so it must be a
++    direct link to an installer, not a web page. Empty keeps https://rustdesk.com/download, which installs stock
++    RustDesk without your settings. Nightly builds only update from RustDesk's GitHub releases.
++</div>
++{% if update_base %}
++<div class="rd-note" id="rd-update-note">
++    <div class="rd-note-title">Automatic updates from your console (Windows, RustDesk 1.4 and later)</div>
++    <div id="rd-update-status" class="rd-note-status" aria-live="polite"></div>
++    <ul>
++        <li>The link hands out the newest build of this configuration that you <b>published</b>, once its RustDesk
++            version is newer than the client's. A client never reinstalls the build it runs.</li>
++        <li>Clients check once a day, and only after RustDesk has released a newer version. Then rebuild here with that
++            version and publish it. Rebuilding with the same version does not reach clients.</li>
++        <li>Auto update is off on clients until a build turns it on:
++            <button type="button" id="rd-add-autoupdate">Add <code>allow-auto-update=Y</code> to Default settings</button></li>
++    </ul>
++    <div id="rd-update-http" class="rd-note-warn" hidden>
++        Your console URL starts with <code>http://</code>. Clients would download an installer and run it with
++        administrator rights over an unencrypted connection, where anyone on the path could replace it. Set an
++        <code>https://</code> console URL with <code>rustdesk-config</code> in the LXC before you rely on this.
++    </div>
++</div>
++<style>
++    .rd-note { border:1px solid #3d5a80; border-left:4px solid #4a90d9; background:#0f1722; border-radius:6px;
++        padding:10px 12px; margin:-2px 0 10px; font-size:.86em; line-height:1.45; color:#cfd8e3; }
++    .rd-note-title { font-weight:700; color:#fff; margin-bottom:4px; }
++    .rd-note ul { margin:6px 0 0; padding-left:18px; }
++    .rd-note li { margin:3px 0; }
++    .rd-note code { background:#222; padding:0 3px; border-radius:3px; }
++    .rd-note button { padding:2px 8px; font-size:.95em; margin-left:2px; }
++    .rd-note-status { padding:4px 8px; border-radius:4px; background:#16202c; margin:4px 0; }
++    .rd-note-status.ok { color:#7ee787; }
++    .rd-note-status.wait { color:#e3b341; }
++    .rd-note-warn { margin-top:8px; padding:6px 8px; border-radius:4px; background:#2a1515; color:#ffb4ac;
++        border:1px solid #6e2b26; }
++    #id_downloadLink.rd-auto { border-color:#4a90d9; }
++</style>
++{{ update_base|json_script:"rd-update-base" }}
++<script>
++(function () {
++    const base = JSON.parse(document.getElementById('rd-update-base').textContent);
++    const link = document.getElementById('id_downloadLink');
++    const name = document.getElementById('id_exename');
++    const version = document.getElementById('id_version');
++    const platform = document.getElementById('id_platform');
++    const status = document.getElementById('rd-update-status');
++    const arch = {'windows': 'windows-x86_64', 'windows-x86': 'windows-x86'};
++    document.getElementById('rd-update-http').hidden = !base.startsWith('http://');
++    function cleanName() {   // the file name the build gets (validation.sanitize_filename)
++        const n = (name.value || '').trim();
++        return /^[\x00-\x7f]*$/.test(n) ? n.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) : 'rustdesk';
++    }
++    function eligible() { return arch[platform.value] && /^\d+\.\d+\.\d+$/.test(version.value); }
++    function suggestion(n) {
++        return eligible() ? base + '/' + arch[platform.value] + '/' + version.value + '/' + n + '.exe' : '';
++    }
++    let auto = link.value === '';   // fill the field only while it is empty or still holds our own suggestion
++    const edited = () => { auto = link.value === '' || link.value === suggestion(cleanName()); };
++    link.addEventListener('input', edited);
++    link.addEventListener('change', edited);
++    function say(cls, text) { status.className = 'rd-note-status ' + cls; status.textContent = text; }
++    function update() {
++        const n = cleanName();
++        const s = n ? suggestion(n) : '';
++        link.placeholder = eligible() ? suggestion('<configuration name>') : 'https://rustdesk.com/download';
++        if (auto && link.value !== s) link.value = s;
++        link.classList.toggle('rd-auto', auto && s !== '');
++        if (!eligible()) {
++            say('wait', version.value === 'master'
++                ? 'Not filled in: nightly builds only update from RustDesk\'s GitHub releases.'
++                : 'Not filled in: only Windows clients update themselves.');
++        } else if (!auto) {
++            say('wait', 'Using the link you entered. Clear the field to use the console link again.');
++        } else if (!n) {
++            say('wait', 'Fills in when you enter the configuration name under General.');
++        } else if ((document.getElementById('id_removeNewVersionNotif') || {}).checked) {   // further down the page
++            say('wait', 'Filled in, but "Remove notification for new versions" is ticked: it also turns off the update check, so clients never update.');
++        } else {
++            say('ok', 'Filled in automatically from the configuration name, platform and version.');
++        }
++    }
++    document.getElementById('rd-add-autoupdate').addEventListener('click', e => {
++        const box = document.getElementById('id_defaultManual');
++        if (!/^\s*allow-auto-update\s*=/m.test(box.value)) {
++            box.value = box.value.replace(/\s*$/, '') + (box.value.trim() ? '\n' : '') + 'allow-auto-update=Y';
++            box.dispatchEvent(new Event('input'));
++        }
++        e.target.closest('button').textContent = 'Added to Default settings';
++    });
++    // the platform icons and "Load Configuration" change values without firing events
++    setInterval(update, 500);
++    update();
++})();
++</script>
++{% endif %}
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index 1e1293d..232ba33 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -161,6 +161,12 @@
+             100% { opacity: 1; }
+         }
+ 
++        .rd-hint {
++            color: #999;
++            font-size: .85em;
++            line-height: 1.4;
++            margin: -4px 0 8px;
++        }
+         .help-text {
+             color: #ffd700;
+             font-style: italic;
+@@ -303,19 +309,19 @@
+             <div class="section">
+                 <h2><i class="fas fa-server"></i> Custom Server</h2>
+                     <label for="{{ form.serverIP.id_for_label }}">Host:</label>
+-                    {{ form.serverIP }}<br><br>
++                    {{ form.serverIP }}<div class="rd-hint">The host name or IP of your ID/relay server (hbbs and hbbr), without a port. If empty, rdgen uses this site's default and, without one, RustDesk's public servers.</div><br>
+                     <label for="{{ form.serverPort.id_for_label }}">Port:</label>
+-                    {{ form.serverPort }}<br><br>
++                    {{ form.serverPort }}<div class="rd-hint">The ID server port; empty means 21116. The relay uses the next port, and the WebSocket ports the two after that (21116 gives 21117, 21118 and 21119).</div><br>
+                     <label for="{{ form.key.id_for_label }}">Key:</label>
+-                    {{ form.key }}<br><br>
++                    {{ form.key }}<div class="rd-hint">The server's public key (the contents of id_ed25519.pub). Clients only connect to a server that holds the matching private key. If empty: this site's default, else RustDesk's public key.</div><br>
+                     <label for="{{ form.apiServer.id_for_label }}">API:</label>
+-                    {{ form.apiServer }}<br><br>
++                    {{ form.apiServer }}<div class="rd-hint">The console URL the client signs in to and gets its address book from (CortenDesk here). If empty: this site's default, else <i>host</i>:21114.</div><br>
+                     <label for="{{ form.urlLink.id_for_label }}">Custom URL for links (replaces https://rustdesk.com):</label>
+-                    {{ form.urlLink }}<br><br>
++                    {{ form.urlLink }}<div class="rd-hint">The Homepage link in the client's About page, and <i>URL</i>/privacy.html for its Privacy link. Empty keeps https://rustdesk.com.</div><br>
+                     <label for="{{ form.downloadLink.id_for_label }}">Custom URL for downloading updates (replaces https://rustdesk.com/download):</label>
+-                    {{ form.downloadLink }}<br><br>
++                    {{ form.downloadLink }}{% include '_update_link.html' %}<br>
+                     <label for="{{ form.compname.id_for_label }}">Company name for copyright (replaces Purslane Tech Pte. Ltd.):</label>
+-                    {{ form.compname }}<br><br>
++                    {{ form.compname }}<div class="rd-hint">Shown as the copyright holder in the About page and in the installer's license text. Empty keeps Purslane Ltd (RustDesk's company).</div><br>
+             </div>
+         </div>
+         <div class="container">
+@@ -387,11 +393,7 @@
+             <div class="section">
+                 <h2><i class="fas fa-cog"></i> Other</h2>
+                     <label for="{{ form.removeWallpaper.id_for_label }}">{{ form.removeWallpaper }} Remove wallpaper during incoming sessions</label><br>
+-                    <a href="https://rustdesk.com/docs/en/self-host/client-configuration/advanced-settings/">Click here for a list of Default/Override settings</a>
+-                    <label for="{{ form.defaultManual.id_for_label }}">Default settings</label><br>
+-                    {{ form.defaultManual }}<br><br>
+-                    <label for="{{ form.overrideManual.id_for_label }}">Override settings</label><br>
+-                    {{ form.overrideManual }}<br><br>
++                    {% include '_other_settings.html' %}
+             </div>
+         </div>
+         <div class="platform">
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+new file mode 100644
+index 0000000..97bc1ce
+--- /dev/null
++++ b/rdgenerator/tests/test_ui.py
+@@ -0,0 +1,92 @@
++"""Builder form: site defaults, the Other section reference, and the LAN/auto-close settings."""
++import base64
++import json
++import re
++
++from django.contrib.auth import get_user_model
++from django.test import Client, TestCase, override_settings
++
++from rdgen import settings as rdgen_settings
++from rdgenerator import views
++from rdgenerator.tests.test_pull import StubTestCase, decrypt_cfg
++from rdgenerator.validation import MANUAL_KEY
++
++KEY = 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw='
++
++
++class FormPageTests(TestCase):
++    def setUp(self):
++        self.c = Client()
++        self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++
++    def test_site_defaults_prefill_the_server_fields(self):
++        defaults = dict(rdgen_settings.RDGEN_DEFAULTS, server='rd.example.com', port='21116', key=KEY,
++                        api_server='https://rustdesk.example.com', company='Example Ltd')
++        with override_settings(RDGEN_DEFAULTS=defaults):
++            page = self.c.get('/').content.decode()
++        self.assertRegex(page, r'name="serverPort"[^>]*value="21116"')
++        self.assertRegex(page, r'name="compname"[^>]*value="Example Ltd"')
++        self.assertIn('direct link to an installer', ' '.join(page.split()))
++
++    def test_update_link_suggested_only_with_a_base(self):
++        with override_settings(RDGEN_UPDATE_BASE='https://rustdesk.example.com/clients'):
++            page = self.c.get('/').content.decode()
++        self.assertIn('<script id="rd-update-base" type="application/json">"https://rustdesk.example.com/clients"</script>', page)
++        self.assertIn('allow-auto-update=Y', page)
++        with override_settings(RDGEN_UPDATE_BASE=''):
++            page = self.c.get('/').content.decode()
++        self.assertNotIn('rd-update-base', page)
++
++    def test_invalid_site_default_is_dropped(self):
++        with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
++            page = self.c.get('/').content.decode()
++        self.assertNotRegex(page, r'name="serverPort"[^>]*value=')
++
++    def test_other_section_has_the_reference(self):
++        page = self.c.get('/').content.decode()
++        self.assertIn('Browse client options', page)
++        self.assertIn('<dialog id="rd-ref-dialog"', page)
++        self.assertIn('target="_blank"', page)
++        m = re.search(r'<script id="rd-client-settings" type="application/json">(.*?)</script>', page, re.S)
++        data = json.loads(m.group(1))
++        self.assertEqual(len(data['keys']), 140)
++
++
++class ReferenceDataTests(TestCase):
++    def test_reference_data_is_consistent(self):
++        data = views.client_settings()
++        keys = [k['key'] for k in data['keys']]
++        self.assertEqual(len(keys), len(set(keys)))
++        for k in data['keys']:
++            self.assertTrue(MANUAL_KEY.fullmatch(k['key']), k['key'])
++            self.assertIn(k['kind'], ('settings', 'local', 'display', 'builtin'))
++            self.assertTrue(k['description'])
++            self.assertNotIn('—', k['description'])
++            if k['choices'] and k['insert']:
++                self.assertIn(k['insert'], k['choices'], k['key'])
++        for key in list(data['controls']) + list(data['hard']):
++            self.assertTrue(MANUAL_KEY.fullmatch(key), key)
++        self.assertFalse(set(data['hard']) & set(keys))
++
++
++class LanAndAutoCloseTests(StubTestCase):
++    def custom(self, **body):
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 200, r.content)
++        req = [x for x in self.stub.requests if x['path'].endswith('/dispatches')][-1]
++        secrets_json = json.loads(decrypt_cfg(req['body']['inputs']['cfg'])['secrets.json'])
++        return json.loads(base64.b64decode(secrets_json['custom']))
++
++    def test_ticked_boxes_reach_the_settings_maps(self):
++        custom = self.custom(denyLan=True, autoClose=True, permissionsDorO='override')
++        self.assertEqual(custom['override-settings']['enable-lan-discovery'], 'N')
++        self.assertEqual(custom['override-settings']['allow-auto-disconnect'], 'Y')
++        custom = self.custom(denyLan=True, autoClose=True)
++        self.assertEqual(custom['default-settings']['enable-lan-discovery'], 'N')
++        self.assertEqual(custom['default-settings']['allow-auto-disconnect'], 'Y')
++
++    def test_unticked_boxes_leave_rustdesk_defaults(self):
++        custom = self.custom()
++        for section in ('default-settings', 'override-settings'):
++            self.assertNotIn('enable-lan-discovery', custom[section])
++            self.assertNotIn('allow-auto-disconnect', custom[section])
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index e976f5a..10a396f 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -1,4 +1,5 @@
+ import base64
++import functools
+ import json
+ import logging
+ import os
+@@ -29,8 +30,12 @@ def site_defaults():
+     """
+     values = {
+         'serverIP': _settings.RDGEN_DEFAULTS.get('server', ''),
++        'serverPort': _settings.RDGEN_DEFAULTS.get('port', ''),
+         'apiServer': _settings.RDGEN_DEFAULTS.get('api_server', ''),
+         'key': _settings.RDGEN_DEFAULTS.get('key', ''),
++        'urlLink': _settings.RDGEN_DEFAULTS.get('url_link', ''),
++        'downloadLink': _settings.RDGEN_DEFAULTS.get('download_link', ''),
++        'compname': _settings.RDGEN_DEFAULTS.get('company', ''),
+     }
+     key_file = _settings.RDGEN_DEFAULTS.get('key_file', '')
+     if not values['key'] and key_file:
+@@ -82,15 +87,15 @@ def generate_custom_client(params, full_url=None):
+     if not server:
+         server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
+     if not serverPort:
+-        serverPort = '21116' #default rustdesk rendezvous port
++        serverPort = defaults.get('serverPort') or '21116' #default rustdesk rendezvous port
+     if not key:
+         key = defaults.get('key') or 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=' #default rustdesk key
+     if not apiServer:
+         apiServer = defaults.get('apiServer') or server+":21114"
+     if not urlLink:
+-        urlLink = "https://rustdesk.com"
++        urlLink = defaults.get('urlLink') or "https://rustdesk.com"
+     if not downloadLink:
+-        downloadLink = "https://rustdesk.com/download"
++        downloadLink = defaults.get('downloadLink') or "https://rustdesk.com/download"
+     direction = params.get('direction', 'both')
+     installation = params.get('installation', 'installationY')
+     settings = params.get('settings', 'settingsY')
+@@ -100,7 +105,7 @@ def generate_custom_client(params, full_url=None):
+     filename = params.get('exename', 'rustdesk')
+     compname = params.get('compname', '')
+     if not compname:
+-        compname = "Purslane Ltd"
++        compname = defaults.get('compname') or "Purslane Ltd"
+     androidappid = params.get('androidappid', '')
+     if not androidappid:
+         androidappid = "com.carriez.flutter_hbb"
+@@ -230,6 +235,14 @@ def generate_custom_client(params, full_url=None):
+         if direction == 'incoming':
+             decodedCustom['override-settings']['custom-rendezvous-server'] = server
+             decodedCustom['override-settings']['api-server'] = apiServer
++    # The client reads these two through Config::get_option(), i.e. from the default/override maps. The top-level
++    # keys above land in HARD_SETTINGS, which nothing reads for them, so on their own the two boxes did nothing.
++    # Written only when ticked, so an unticked box keeps RustDesk's own default and lets the user change it.
++    target = 'override-settings' if permissionsDorO == 'override' else 'default-settings'
++    if denyLan:
++        decodedCustom[target]['enable-lan-discovery'] = 'N'
++    if autoClose:
++        decodedCustom[target]['allow-auto-disconnect'] = 'Y'
+ 
+     if defaultManual:
+         for line in defaultManual.splitlines():
+@@ -361,6 +374,13 @@ def build_files(gh_run, url_name='download'):
+     return files
+ 
+ 
++@functools.lru_cache(maxsize=1)
++def client_settings():
++    """Reference data for the Other section: RustDesk's documented options and the form controls that set them."""
++    with open(os.path.join(os.path.dirname(__file__), 'client_settings.json'), encoding='utf-8') as fh:
++        return json.load(fh)
++
++
+ def generator_view(request):
+     if request.method == 'POST':
+         form = GenerateForm(request.POST, request.FILES)
+@@ -379,7 +399,9 @@ def generator_view(request):
+     else:
+         form = GenerateForm(initial=site_defaults())
+     #return render(request, 'maintenance.html')
+-    return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET})
++    return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
++                                              'client_settings': client_settings(),
++                                              'update_base': _settings.RDGEN_UPDATE_BASE})
+ 
+ 
+ def check_for_file(request):

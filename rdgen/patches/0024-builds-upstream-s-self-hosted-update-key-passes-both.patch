@@ -1,0 +1,156 @@
+From 9aada38ccb417a13741e29e5afd0022ee0e543a9 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Sun, 18 Oct 2026 07:49:21 -0400
+Subject: [PATCH 24/26] builds: upstream's self-hosted update key passes both
+ checks
+
+Upstream (2026-10-17, "auto update with rustdesk-api") puts
+update_public_key into every build's config. The runner's decrypt step
+refuses keys it does not know, so every build would have stopped at
+"Load Secrets" with "unknown keys: update_public_key".
+
+- validation.py and the runner's validate.py accept it as an ed25519
+  public key: 44 characters of base64 ending in "=" (empty on the runner,
+  where it is always present). allow_custom_update.py tries base64 before
+  hex, so a 64-character hex key would decode to 48 wrong bytes; it is
+  refused. The value is pasted into the workflow's shell, like the other
+  checked fields.
+- The key reaches rdgen only through /api/generate (upstream added no
+  form field). With it, the client checks <downloadLink>/api/version/latest
+  (a rustdesk-api endpoint) and trusts update metadata signed with that
+  key. Without it, the workflow step is skipped and clients are unchanged.
+- Tests: the config the server really dispatches (Windows, Linux, macOS,
+  with a key) must pass the runner's check; this test fails without the
+  runner rule. Bad keys get 400. No workflow downloads anything from
+  upstream master, and every allow_custom_update step copies this commit's
+  script (pullify, patch 0008).
+---
+ .github/actions/decrypt-secrets/validate.py |  1 +
+ rdgenerator/tests/test_pull.py              | 20 ++++++++++++++++++
+ rdgenerator/tests/test_workflows.py         | 23 +++++++++++++++++----
+ rdgenerator/validation.py                   |  4 ++++
+ 4 files changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/.github/actions/decrypt-secrets/validate.py b/.github/actions/decrypt-secrets/validate.py
+index 4dd5852..f7ff83c 100644
+--- a/.github/actions/decrypt-secrets/validate.py
++++ b/.github/actions/decrypt-secrets/validate.py
+@@ -33,6 +33,7 @@ RULES = {
+     'compname': r'[A-Za-z0-9 ._()+,-]{1,64}',
+     'androidappid': r'[A-Za-z][A-Za-z0-9_]{0,40}(?:\.[A-Za-z][A-Za-z0-9_]{0,40}){1,6}',
+     'filename': r'[A-Za-z0-9_-]{1,64}',
++    'update_public_key': r'(?:[A-Za-z0-9+/]{43}=)?',
+ }
+ _COMPILED = {k: re.compile(v) for k, v in RULES.items()}
+ 
+diff --git a/rdgenerator/tests/test_pull.py b/rdgenerator/tests/test_pull.py
+index 9f62b66..776a68d 100644
+--- a/rdgenerator/tests/test_pull.py
++++ b/rdgenerator/tests/test_pull.py
+@@ -17,6 +17,7 @@ from rdgenerator import poller
+ from rdgenerator.github import GitHub
+ from rdgenerator.models import GithubRun
+ from rdgenerator.tests.ghstub import GitHubStub
++from rdgenerator.tests.test_workflows import load_validate
+ 
+ API_TOKEN = 'tok_' + 'b' * 40
+ 
+@@ -119,6 +120,25 @@ class DispatchTests(StubTestCase):
+         # ciphertext only: the plaintext password is nowhere in the request
+         self.assertNotIn('hunter2', json.dumps(req['body']))
+ 
++    def test_dispatched_config_passes_the_runner_check(self):
++        # The runner's decrypt step refuses unknown and missing keys (validate.py), so every key the server
++        # puts into secrets.json must be known there. Upstream's update_public_key (2026-10-17) was not: every
++        # build would have stopped at "Load Secrets".
++        v = load_validate()
++        key = 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw='
++        for body in ({}, {'platform': 'linux', 'appname': 'acme-rescue'}, {'platform': 'macos'},
++                     {'update_public_key': key, 'removeNewVersionNotif': True}):
++            r = self.generate(**body)
++            self.assertEqual(r.status_code, 200, r.content)
++            secrets_json = json.loads(decrypt_cfg(self.dispatched_inputs()['cfg'])['secrets.json'])
++            self.assertEqual(v.validate_secrets(secrets_json), [], body)
++        # upstream turns the "new version" notice back on for clients that update from your server
++        self.assertEqual((secrets_json['update_public_key'], secrets_json['removeNewVersionNotif']), (key, 'false'))
++        for bad in ('00' * 32, 'x";id;"', key[:-1]):
++            r = self.generate(update_public_key=bad)
++            self.assertEqual(r.status_code, 400, bad)
++            self.assertIn('update_public_key', r.json()['details'])
++
+     def test_oversize_images_rejected_clearly(self):
+         r = self.generate(iconbase64=png_uri((1024, 1024), noise=True), privacybase64=png_uri((800, 600), noise=True))
+         self.assertEqual(r.status_code, 413)
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index 2d782c2..c41c5b4 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -35,7 +35,7 @@ def secrets_json(u, **over):
+          'iconlink_url': 'embedded', 'logolink_url': 'false', 'privacylink_url': 'false', 'appname': 'Acme Remote',
+          'urlLink': 'https://example.com', 'downloadLink': 'https://example.com/dl', 'delayFix': 'true',
+          'rdgen': 'true', 'xOffline': 'false', 'removeNewVersionNotif': 'false', 'compname': 'Acme Ltd',
+-         'androidappid': 'com.acme.remote', 'filename': 'acme'}
++         'androidappid': 'com.acme.remote', 'filename': 'acme', 'update_public_key': ''}
+     d.update(over)
+     return d
+ 
+@@ -46,6 +46,19 @@ class PullifyTests(SimpleTestCase):
+         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+         self.assertIn('nothing to do', r.stdout)
+ 
++    def test_nothing_comes_from_upstream_master(self):
++        # every patch file is this commit's copy, staged by decrypt-secrets (curl, wget and pwsh forms)
++        steps = 0
++        for name in os.listdir(WORKFLOWS):
++            with open(os.path.join(WORKFLOWS, name), encoding='utf-8') as fh:
++                text = fh.read()
++            self.assertNotIn('raw.githubusercontent.com/bryangerlach', text, name)
++            for step in text.split('- name: Apply allow_custom_update patch')[1:]:
++                steps += 1
++                self.assertIn('cp "$RUNNER_TEMP/rdgen-patches/allow_custom_update.py" ./allow_custom_update.py',
++                              step.split('- name:')[0], name)
++        self.assertGreater(steps, 0)
++
+     def test_macos_developer_id_signing_and_notarization(self):
+         with open(os.path.join(ROOT, '.github', 'workflows', 'generator-macos.yml'), encoding='utf-8') as fh:
+             text = fh.read()
+@@ -228,7 +241,8 @@ class RunnerValidatorParityTests(SimpleTestCase):
+         u = str(uuid.uuid4())
+         for field, value in [('serverIP', 'a.com";id;"'), ('appname', "x'$(id)"), ('compname', 'a|b'),
+                              ('apiServer', "https://a/'x"), ('urlLink', 'https://a/?a=1&b'),
+-                             ('downloadLink', 'ftp://a'), ('androidappid', 'com'), ('key', 'short')]:
++                             ('downloadLink', 'ftp://a'), ('androidappid', 'com'), ('key', 'short'),
++                             ('update_public_key', 'x";id;"'), ('update_public_key', '00' * 32)]:
+             self.assertIn(field, validate_build_fields({field: value}), field)
+             runner_key = self.FIELD_MAP.get(field, field)
+             self.assertTrue(v.validate_secrets(secrets_json(u, **{runner_key: value})), field)
+@@ -279,11 +293,12 @@ class RunnerStepsTests(SimpleTestCase):
+         pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
+         self.assertEqual(pairs['appname'], 'Acme Remote')
+         self.assertEqual(pairs['uuid'], u)
+-        self.assertEqual(len(pairs), 19)
++        self.assertEqual(len(pairs), 20)
++        self.assertEqual(pairs['update_public_key'], '')
+         self.assertIn('::add-mask::rd.example.com', r2.stdout)
+         self.assertNotIn(f'::add-mask::{u}', r2.stdout)
+         self.assertEqual(os.listdir(os.path.join(tmp, 'rt', 'rdgen-assets')), ['icon.png'])
+-        self.assertIn('allowCustom.py', os.listdir(os.path.join(tmp, 'rt', 'rdgen-patches')))
++        self.assertTrue({'allowCustom.py', 'allow_custom_update.py'} <= set(os.listdir(os.path.join(tmp, 'rt', 'rdgen-patches'))))
+ 
+     def test_replayed_cfg_rejected(self):
+         r1, r2, _ = self.run_steps(secrets_json(str(uuid.uuid4())), event_uuid=str(uuid.uuid4()))
+diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
+index 9456cc5..1057daf 100644
+--- a/rdgenerator/validation.py
++++ b/rdgenerator/validation.py
+@@ -37,6 +37,10 @@ RULES = {
+                     'a version such as 1.5.0.1 (digits and dots)'),
+     'androidappid': (re.compile(r'[A-Za-z][A-Za-z0-9_]{0,40}(?:\.[A-Za-z][A-Za-z0-9_]{0,40}){1,6}'),
+                      'a Java package name such as com.example.remote'),
++    # upstream's self-hosted update key (API only): pasted into the workflow's shell and decoded by
++    # allow_custom_update.py, which tries base64 first, so a hex key would decode to the wrong 48 bytes
++    'update_public_key': (re.compile(r'[A-Za-z0-9+/]{43}='),
++                          'an ed25519 public key: 44 characters of base64 ending in ='),
+ }
+ 
+ MANUAL_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')

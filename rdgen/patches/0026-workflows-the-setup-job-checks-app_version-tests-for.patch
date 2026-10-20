@@ -1,0 +1,145 @@
+From df6dfd7641ba204f6bb4302eba0e9e5a777a2ad3 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Mon, 19 Oct 2026 00:15:11 -0400
+Subject: [PATCH 26/26] workflows: the setup job checks app_version; tests for
+ it
+
+Upstream's app_version (2026-10-18) is a dispatch input, outside the
+encrypted config the runner validates, and "Set custom app version"
+pastes it into a sed command (GNU sed's e flag runs commands). Every job
+with that step needs the setup job, which already checks version, proto
+and build_uuid.
+
+- The setup job's decode step also refuses an app_version that is not
+  empty, x.y.z or x.y.z.w (the server's rule), so no build job runs with
+  anything else, even when the dispatch did not come from rdgen.
+- Tests: the runner check (bad values stop the setup job, the same values
+  fail the server rule; this test fails without the check), and the
+  dispatch input goes out only when set and bad values get 400.
+- ghstub accepts the dispatch inputs the tree's workflows really declare
+  (like GitHub) instead of a fixed list, so rdgen sending an input a
+  workflow lacks fails the tests.
+---
+ .github/workflows/fetch-encrypted-secrets.yml |  3 +++
+ rdgenerator/tests/ghstub.py                   | 15 ++++++++++++++-
+ rdgenerator/tests/test_pull.py                | 12 ++++++++++++
+ rdgenerator/tests/test_workflows.py           | 18 ++++++++++++++++--
+ 4 files changed, 45 insertions(+), 3 deletions(-)
+
+diff --git a/.github/workflows/fetch-encrypted-secrets.yml b/.github/workflows/fetch-encrypted-secrets.yml
+index 8ef3eef..992229d 100644
+--- a/.github/workflows/fetch-encrypted-secrets.yml
++++ b/.github/workflows/fetch-encrypted-secrets.yml
+@@ -45,6 +45,9 @@ jobs:
+               fail("rdgen protocol mismatch: update the rdgen server or this repository")
+           if not re.fullmatch(r"master|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", inputs.get("version", "")):
+               fail("version is not master or x.y.z")
++          # app_version reaches sed in "Set custom app version" (every build job needs this job)
++          if not re.fullmatch(r"(?:[0-9]{1,4}(?:\.[0-9]{1,4}){2,3})?", inputs.get("app_version") or ""):
++              fail("app_version is not x.y.z or x.y.z.w")
+           cfg = inputs.get("cfg", "")
+           if not cfg or len(cfg) > 65535:
+               fail("cfg input missing or too large")
+diff --git a/rdgenerator/tests/ghstub.py b/rdgenerator/tests/ghstub.py
+index f380b92..b99a876 100644
+--- a/rdgenerator/tests/ghstub.py
++++ b/rdgenerator/tests/ghstub.py
+@@ -14,12 +14,24 @@ import json
+ import re
+ import threading
+ import zipfile
++from pathlib import Path
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from urllib.parse import parse_qs, urlparse
+ 
+ WORKFLOW_INPUTS = {'version', 'cfg', 'build_uuid', 'proto'}
+ # optional inputs a workflow declares on top (GitHub rejects anything undeclared)
+ OPTIONAL_INPUTS = {'generator-macos.yml': {'mac_arch'}, 'generator-linux.yml': {'linux_arch', 'linux_formats'}}
++WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / '.github' / 'workflows'
++
++
++def declared_inputs(workflow):
++    """The workflow_dispatch inputs this tree's workflow declares (what GitHub accepts), or None."""
++    try:
++        text = (WORKFLOWS_DIR / workflow).read_text(encoding='utf-8')
++    except OSError:
++        return None
++    m = re.search(r'^  workflow_dispatch:\n    inputs:\n((?:      .*\n|[ \t]*\n)+)', text, re.M)
++    return set(re.findall(r'^      ([A-Za-z0-9_-]+):\s*$', m.group(1), re.M)) if m else None
+ INPUTS_MAX = 65535
+ 
+ 
+@@ -202,7 +214,8 @@ class GitHubStub:
+                 inputs = (body or {}).get('inputs') or {}
+                 if (body or {}).get('ref') != self.branch:
+                     return 422, {'message': 'No ref found'}, None
+-                extra = set(inputs) - WORKFLOW_INPUTS - OPTIONAL_INPUTS.get(m.group(1), set())
++                allowed = declared_inputs(m.group(1)) or (WORKFLOW_INPUTS | OPTIONAL_INPUTS.get(m.group(1), set()))
++                extra = set(inputs) - allowed
+                 if extra:
+                     return 422, {'message': 'Unexpected inputs provided: ' + ','.join(sorted(extra))}, None
+                 if WORKFLOW_INPUTS - set(inputs):
+diff --git a/rdgenerator/tests/test_pull.py b/rdgenerator/tests/test_pull.py
+index 776a68d..7d9c108 100644
+--- a/rdgenerator/tests/test_pull.py
++++ b/rdgenerator/tests/test_pull.py
+@@ -120,6 +120,18 @@ class DispatchTests(StubTestCase):
+         # ciphertext only: the plaintext password is nowhere in the request
+         self.assertNotIn('hunter2', json.dumps(req['body']))
+ 
++    def test_app_version_goes_out_only_when_set(self):
++        r = self.generate(app_version='1.5.0.3')
++        self.assertEqual(r.status_code, 200, r.content)
++        self.assertEqual(self.dispatched_inputs()['app_version'], '1.5.0.3')
++        r = self.generate()
++        self.assertEqual(r.status_code, 200, r.content)
++        self.assertNotIn('app_version', self.dispatched_inputs())
++        for bad in ('1.5', '1.5.0;id', '1.5.0|e id'):
++            r = self.generate(app_version=bad)
++            self.assertEqual(r.status_code, 400, bad)
++            self.assertIn('app_version', r.json()['details'])
++
+     def test_dispatched_config_passes_the_runner_check(self):
+         # The runner's decrypt step refuses unknown and missing keys (validate.py), so every key the server
+         # puts into secrets.json must be known there. Upstream's update_public_key (2026-10-17) was not: every
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index c41c5b4..9dd99ef 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -259,13 +259,14 @@ class RunnerValidatorParityTests(SimpleTestCase):
+ class RunnerStepsTests(SimpleTestCase):
+     """Run the setup job's decode script and decrypt.py as a runner would."""
+ 
+-    def run_steps(self, sec, event_uuid=None, proto='1', with_icon=True):
++    def run_steps(self, sec, event_uuid=None, proto='1', with_icon=True, app_version=None):
+         tmp = tempfile.mkdtemp(prefix='rdgen-runner-')
+         self.addCleanup(shutil.rmtree, tmp, True)
+         images = {'icon.png': Image.new('RGBA', (300, 300), (0, 128, 255, 255)) if with_icon else None,
+                   'logo.png': None, 'privacy.png': None}
+         inputs, _ = buildcfg.pack(sec, images, settings.ZIP_PASSWORD, lambda cfg: {
+-            'version': '1.4.9', 'cfg': cfg, 'build_uuid': event_uuid or sec['uuid'], 'proto': proto})
++            'version': '1.4.9', 'cfg': cfg, 'build_uuid': event_uuid or sec['uuid'], 'proto': proto,
++            **({} if app_version is None else {'app_version': app_version})})
+         event = os.path.join(tmp, 'event.json')
+         with open(event, 'w') as fh:
+             json.dump({'inputs': inputs}, fh)
+@@ -300,6 +301,19 @@ class RunnerStepsTests(SimpleTestCase):
+         self.assertEqual(os.listdir(os.path.join(tmp, 'rt', 'rdgen-assets')), ['icon.png'])
+         self.assertTrue({'allowCustom.py', 'allow_custom_update.py'} <= set(os.listdir(os.path.join(tmp, 'rt', 'rdgen-patches'))))
+ 
++    def test_app_version_checked_before_any_build_job(self):
++        # a dispatch input, outside the encrypted config: the setup job (which every build job needs) checks it,
++        # because "Set custom app version" pastes it into sed, whose e flag runs commands
++        u = str(uuid.uuid4())
++        for good in ('1.5.0', '1.5.0.12', ''):
++            r1, r2, _ = self.run_steps(secrets_json(u), app_version=good)
++            self.assertEqual(r1.returncode, 0, (good, r1.stdout + r1.stderr))
++        for bad in ('1.5', '1.5.0|e id', '1.5.0"', "1.5.0'\nx", '1.5.0.1.2', ' 1.5.0'):
++            r1, _, _ = self.run_steps(secrets_json(u), app_version=bad)
++            self.assertNotEqual(r1.returncode, 0, bad)
++            self.assertIn('app_version', r1.stdout, bad)
++            self.assertIn('app_version', validate_build_fields({'app_version': bad}), bad)
++
+     def test_replayed_cfg_rejected(self):
+         r1, r2, _ = self.run_steps(secrets_json(str(uuid.uuid4())), event_uuid=str(uuid.uuid4()))
+         self.assertNotEqual(r2.returncode, 0)

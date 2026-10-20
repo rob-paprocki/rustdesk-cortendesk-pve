@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# rustdesk-config: set the addresses RustDesk clients and browsers use, everywhere they are needed
+# (hbbs relay list, CortenDesk .env + saved settings, rdgen form defaults, the creds file).
+#   rustdesk-config            interactive (current values are the defaults)
+#   rustdesk-config --stdin    lines: public host, console URL, reverse-proxy IP (empty lines keep the current value;
+#                              "none" clears the proxy)
+#   rustdesk-config --show     print the current values
+#   rustdesk-config --check    test the console URL the way clients and the web client use it
+#  public host   DNS name or IP clients use for the ID/relay server (ports 21115-21117; never behind a proxy)
+#  console URL   what browsers and the clients' "API server" use, e.g. https://rustdesk.example.com or http://<LAN IP>
+#  proxy IP      your reverse proxy / tunnel connector (e.g. cloudflared). Needed when the console URL is https
+#                through a proxy on another host (CortenDesk only trusts X-Forwarded-Proto from it; without it pages
+#                load http:// assets that browsers block); also makes the logs show real client IPs
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+
+# Clients POST their check-ins (/api/heartbeat, /api/sysinfo) and logins to the console URL. A redirect, such as the
+# http -> https one Cloudflare and most proxies send, turns a POST into a GET: the console never hears from them.
+check_url() {  # check_url <console url>
+  local url=$1 out code loc
+  out=$(curl -s -o /dev/null -m 10 -w '%{http_code} %{redirect_url}' -X POST -H 'Content-Type: application/json' \
+          --data '{}' "$url/api/heartbeat" 2>/dev/null) || out="000 "
+  code=${out%% *}; loc=${out#* }
+  case "$code" in
+    200) echo "client check-ins:  OK ($url/api/heartbeat)" ;;
+    30?) echo "client check-ins:  BROKEN: $url redirects to ${loc%/api/heartbeat}, and clients cannot follow a redirected"
+         echo "                   check-in. Set the console URL to ${loc%/api/heartbeat} (rustdesk-config), then rebuild the clients." ;;
+    000) echo "client check-ins:  no answer from $url here (this LXC may not reach its own public name)" ;;
+    *)   echo "client check-ins:  HTTP $code from $url/api/heartbeat" ;;
+  esac
+  # after a 101 curl keeps the socket open until -m runs out and exits non-zero; the status it printed still counts
+  code=$(curl -s -o /dev/null -m 4 --http1.1 -w '%{http_code}' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+           -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$url/ws/id" 2>/dev/null || true)
+  case "$code" in
+    101) echo "web client:        OK (${url/#http/ws}/ws/id)" ;;
+    *)   echo "web client:        ${url/#http/ws}/ws/id answered HTTP ${code:-000} instead of switching to a WebSocket" ;;
+  esac
+}
+cur_host=$(env_get "$CD_ENV" CORTENDESK_ID_SERVER); cur_host=${cur_host%:21116}
+cur_url=$(env_get "$CD_ENV" APP_URL)
+cur_proxy=$(env_get "$CD_ENV" TRUSTED_PROXIES | sed -e 's/^127\.0\.0\.1,::1,\{0,1\}//')
+if [ "${1:-}" = --show ]; then
+  printf 'public host: %s\nconsole URL: %s\nproxy IP:    %s\n' "$cur_host" "$cur_url" "${cur_proxy:-none}"; exit 0
+fi
+if [ "${1:-}" = --check ]; then check_url "$cur_url"; exit 0; fi
+if [ "${1:-}" = --stdin ]; then
+  IFS= read -r host || true; IFS= read -r url || true; IFS= read -r proxy || true
+else
+  read -r -p "Public host for the ID/relay server (DNS-only name or IP) [$cur_host]: " host
+  read -r -p "Console URL (browsers + the clients' API server) [$cur_url]: " url
+  read -r -p "Reverse proxy / tunnel IP, or 'none' [${cur_proxy:-none}]: " proxy
+fi
+host=${host:-$cur_host}; url=${url:-$cur_url}; url=${url%/}; proxy=${proxy:-$cur_proxy}
+[ "$proxy" = none ] && proxy=""
+# a public name that redirects http to https must be entered as https: clients can't follow the redirect
+if [[ "$url" =~ ^http://([A-Za-z0-9.-]+)(:[0-9]+)?$ ]]; then
+  urlhost=${BASH_REMATCH[1]}
+  if ! [[ "$urlhost" =~ ^[0-9.]+$ ]]; then
+    loc=$(curl -s -o /dev/null -m 10 -w '%{redirect_url}' "$url/" 2>/dev/null || true)
+    if [[ "$loc" == "https://$urlhost/"* || "$loc" == "https://$urlhost" ]]; then
+      echo "rustdesk-config: $url redirects to https, so the console URL is https://$urlhost" >&2
+      echo "  (clients cannot follow that redirect when they check in or log in)" >&2
+      url="https://$urlhost"
+    fi
+  fi
+fi
+[[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || { echo "rustdesk-config: invalid host '$host'" >&2; exit 2; }
+[[ "$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || { echo "rustdesk-config: console URL must look like http(s)://name[:port]" >&2; exit 2; }
+[ -z "$proxy" ] || [[ "$proxy" =~ ^[0-9a-fA-F.:/,]+$ ]] || { echo "rustdesk-config: invalid proxy address '$proxy'" >&2; exit 2; }
+if [[ "$url" == https://* ]] && [ -z "$proxy" ]; then
+  echo "rustdesk-config: WARNING: the console URL is https but no proxy IP is set: CortenDesk will ignore" >&2
+  echo "  X-Forwarded-Proto and emit http:// asset URLs that browsers block. Set your reverse proxy / tunnel IP." >&2
+fi
+
+# hbbs: the relay it hands to clients (resolved once at startup, so restart)
+sed -i "s|^relay-servers=.*|relay-servers=$host:21117|" "$SRV_CONF"
+svc restart rustdesk-hbbs
+
+# CortenDesk: .env is the source of truth for the web client; saved Settings rows are synced to match
+env_set "$CD_ENV" APP_URL "$url"
+env_set "$CD_ENV" CORTENDESK_ID_SERVER "$host:21116"
+env_set "$CD_ENV" CORTENDESK_RELAY_SERVER "$host:21117"
+env_set "$CD_ENV" TRUSTED_PROXIES "127.0.0.1,::1${proxy:+,$proxy}"
+art config:cache >/dev/null
+jq -n --arg i "$host:21116" --arg r "$host:21117" '{id_server:$i, relay_server:$r}' |
+  cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
+svc restart "$FPM"   # opcache.validate_timestamps=0
+
+# rdgen: form defaults, the hosts it answers to, the key copy it can read, and the console's link to it
+if [ -f "$RDGEN_ENV" ]; then
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$host"
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$url"
+  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "${url%/}/clients"
+  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "${url%/}/share"
+  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1"
+  server_pub_copy || true
+  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "http://$(lan_ip):8190"
+  art config:cache >/dev/null
+  jq -n --arg u "http://$(lan_ip):8190" '{rdgen_url:$u}' | cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
+  svc restart "$FPM"
+  svc restart rdgen
+fi
+
+if ! [[ "$host" =~ ^[0-9.]+$ ]] && ! getent hosts "$host" >/dev/null 2>&1; then
+  echo "rustdesk-config: WARNING: $host does not resolve from this LXC; hbbs drops relay names it cannot resolve at" >&2
+  echo "  startup, so clients get NO relay until it does (the daily updater restarts hbbs once it resolves)." >&2
+fi
+creds_set "ID/Relay server" "$host  (ports 21115-21117 TCP, 21116 UDP; DNS-only, not proxied)"
+creds_set "API server" "$url"
+creds_set "Console URL" "$url  (LAN: http://$(lan_ip))"
+echo "public host: $host | console URL: $url | proxy: ${proxy:-none}"
+check_url "$url"

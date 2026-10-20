@@ -1,0 +1,337 @@
+From 9582683dca5c0a43139fcc22fe4fb535a77a28f8 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 00:48:30 -0400
+Subject: [PATCH 06/26] security: remove the inbound callback endpoints of the
+ push model
+
+GitHub runners no longer call back into rdgen, so these are gone:
+
+  /get_zip             served the encrypted config (upstream fixed only its
+                       traversal, in 3d098ab)
+  /get_png             served uploaded images; had the same
+                       os.path.join traversal as /download
+                       (?filename=/proc/self/environ)
+  /save_custom_client  unauthenticated multipart upload; uuid=../x wrote
+                       files anywhere the service could write
+  /cleanzip            unauthenticated delete; never matched the zip name
+                       anyway (secrets_<new uuid4>.zip vs build uuid)
+  /updategh            unauthenticated status write; nothing sent it any
+                       more
+  /startgh             unauthenticated proxy that dispatched workflows with
+                       the PAT and concatenated user input into the API URL
+  /creategh            a helper function mapped as a view
+
+Also dropped the unused helpers (save_png, resize_and_encode_icon) and
+the imports they needed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgen/urls.py            |  12 +--
+ rdgenerator/api_views.py |   2 -
+ rdgenerator/forms.py     |   2 -
+ rdgenerator/views.py     | 219 +++------------------------------------
+ 4 files changed, 16 insertions(+), 219 deletions(-)
+
+diff --git a/rdgen/urls.py b/rdgen/urls.py
+index 274bbfd..e593015 100644
+--- a/rdgen/urls.py
++++ b/rdgen/urls.py
+@@ -5,7 +5,7 @@ Every view requires a logged-in user (LoginRequiredMiddleware) except the
+ login page and /api/*, which accepts a bearer token or a session.
+ """
+ from django.contrib.auth import views as auth_views
+-from django.urls import path, re_path
++from django.urls import path
+ 
+ from rdgenerator import views as views
+ from rdgenerator import api_views as api_views
+@@ -15,13 +15,9 @@ urlpatterns = [
+     path('generator', views.generator_view, name='generator'),
+     path('check_for_file', views.check_for_file, name='check_for_file'),
+     path('download', views.download, name='download'),
+-    re_path(r'^creategh', views.create_github_run),
+-    re_path(r'^updategh', views.update_github_run),
+-    re_path(r'^startgh', views.startgh),
+-    re_path(r'^get_png', views.get_png),
+-    re_path(r'^save_custom_client', views.save_custom_client),
+-    re_path(r'^get_zip', views.get_zip),
+-    re_path(r'^cleanzip', views.cleanup_secrets),
++    # Pull model: there are no inbound callbacks from GitHub any more.
++    # /get_zip, /get_png, /save_custom_client, /cleanzip, /updategh,
++    # /startgh and /creategh are gone.
+     # JSON API endpoints
+     path('api/generate', api_views.api_generate, name='api_generate'),
+     path('api/status', api_views.api_status, name='api_status'),
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index f5d0254..fafa7fa 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -1,5 +1,4 @@
+ import json
+-import re
+ from functools import wraps
+ 
+ from django.contrib.auth.decorators import login_not_required
+@@ -7,7 +6,6 @@ from django.core.exceptions import RequestDataTooBig
+ from django.http import JsonResponse
+ from django.middleware.csrf import CsrfViewMiddleware
+ from django.views.decorators.csrf import csrf_exempt
+-from django.conf import settings as _settings
+ from .forms import GenerateForm
+ from .validation import validate_build_fields
+ from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index ff31fa2..a00ba49 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -1,5 +1,3 @@
+-import re
+-
+ from django import forms
+ from PIL import Image
+ 
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 5af49c6..2c6d664 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -1,26 +1,21 @@
+-import io
+-from pathlib import Path
+-from django.http import FileResponse, Http404, HttpResponse, JsonResponse, HttpResponseForbidden
+-from django.urls import reverse
+-from urllib.parse import urlencode
+-from django.shortcuts import render, get_object_or_404
+-from django.core.files.base import ContentFile
+-import os
+-import secrets
+-import re
+-import requests
+ import base64
+ import json
++import logging
++import os
+ import uuid
+-import pyzipper
++from urllib.parse import urlencode
++
+ from django.conf import settings as _settings
+-from django.db.models import Q
+-from .forms import GenerateForm
+-from .validation import sanitize_filename, validate_build_fields
++from django.http import FileResponse, Http404
++from django.shortcuts import render
++from django.urls import reverse
++from django.utils import timezone
++
+ from . import buildcfg, github
++from .forms import GenerateForm
++from .models import GithubRun
+ from .poller import allowed_output_name, valid_uuid
+-from django.utils import timezone
+-import logging
++from .validation import sanitize_filename, validate_build_fields
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -46,21 +41,6 @@ def site_defaults():
+             values['key'] = ''
+     bad = validate_build_fields(values)
+     return {k: v for k, v in values.items() if v and k not in bad}
+-from .models import GithubRun
+-from PIL import Image
+-from urllib.parse import quote
+-
+-# get_png, download and save_custom_client build file paths from request values;
+-# only accept a UUID and a plain file name so "../" or absolute paths cannot escape png/ and exe/.
+-_UUID_RE = re.compile(r'^[0-9a-fA-F-]{36}$')
+-_NAME_RE = re.compile(r'^[\w.-]+$')
+-
+-def _safe_parts(uuid_val, filename):
+-    if not uuid_val or not _UUID_RE.match(uuid_val):
+-        return False
+-    if filename is not None and (not _NAME_RE.match(filename) or filename.startswith('.')):
+-        return False
+-    return True
+ 
+ 
+ def generate_custom_client(params, full_url=None):
+@@ -441,178 +421,3 @@ def serve_build_file(request):
+ 
+ def download(request):
+     return serve_build_file(request)
+-
+-
+-def get_png(request):
+-    filename = request.GET['filename']
+-    uuid = request.GET['uuid']
+-    if not _safe_parts(uuid, filename):
+-        return HttpResponseForbidden("Invalid filename")
+-    file_path = os.path.join('png',uuid,filename)
+-    with open(file_path, 'rb') as file:
+-        response = HttpResponse(file, headers={
+-            'Content-Type': 'application/vnd.microsoft.portable-executable',
+-            'Content-Disposition': f'attachment; filename="{filename}"'
+-        })
+-
+-    return response
+-
+-def create_github_run(myuuid):
+-    new_github_run = GithubRun(
+-        uuid=myuuid,
+-        status="Starting generator...please wait"
+-    )
+-    new_github_run.save()
+-
+-def update_github_run(request):
+-    data = json.loads(request.body)
+-    myuuid = data.get('uuid')
+-    mystatus = data.get('status')
+-    GithubRun.objects.filter(Q(uuid=myuuid)).update(status=mystatus)
+-    return HttpResponse('')
+-
+-def resize_and_encode_icon(imagefile):
+-    maxWidth = 200
+-    try:
+-        with io.BytesIO() as image_buffer:
+-            for chunk in imagefile.chunks():
+-                image_buffer.write(chunk)
+-            image_buffer.seek(0)
+-
+-            img = Image.open(image_buffer)
+-            imgcopy = img.copy()
+-    except (IOError, OSError):
+-        raise ValueError("Uploaded file is not a valid image format.")
+-
+-    # Check if resizing is necessary
+-    if img.size[0] <= maxWidth:
+-        with io.BytesIO() as image_buffer:
+-            imgcopy.save(image_buffer, format=imagefile.content_type.split('/')[1])
+-            image_buffer.seek(0)
+-            return_image = ContentFile(image_buffer.read(), name=imagefile.name)
+-        return base64.b64encode(return_image.read())
+-
+-    # Calculate resized height based on aspect ratio
+-    wpercent = (maxWidth / float(img.size[0]))
+-    hsize = int((float(img.size[1]) * float(wpercent)))
+-
+-    # Resize the image while maintaining aspect ratio using LANCZOS resampling
+-    imgcopy = imgcopy.resize((maxWidth, hsize), Image.Resampling.LANCZOS)
+-
+-    with io.BytesIO() as resized_image_buffer:
+-        imgcopy.save(resized_image_buffer, format=imagefile.content_type.split('/')[1])
+-        resized_image_buffer.seek(0)
+-
+-        resized_imagefile = ContentFile(resized_image_buffer.read(), name=imagefile.name)
+-
+-    # Return the Base64 encoded representation of the resized image
+-    resized64 = base64.b64encode(resized_imagefile.read())
+-    #print(resized64)
+-    return resized64
+- 
+-#the following is used when accessed from an external source, like the rustdesk api server
+-def startgh(request):
+-    #print(request)
+-    data_ = json.loads(request.body)
+-    ####from here run the github action, we need user, repo, access token.
+-    url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-'+data_.get('platform')+'.yml/dispatches'  
+-    data = {
+-        "ref": _settings.GHBRANCH,
+-        "inputs":{
+-            "server":data_.get('server'),
+-            "key":data_.get('key'),
+-            "apiServer":data_.get('apiServer'),
+-            "custom":data_.get('custom'),
+-            "uuid":data_.get('uuid'),
+-            "iconlink":data_.get('iconlink'),
+-            "logolink":data_.get('logolink'),
+-            "appname":data_.get('appname'),
+-            "extras":data_.get('extras'),
+-            "filename":data_.get('filename')
+-        }
+-    } 
+-    headers = {
+-        'Accept':  'application/vnd.github+json',
+-        'Content-Type': 'application/json',
+-        'Authorization': 'Bearer '+_settings.GHBEARER,
+-        'X-GitHub-Api-Version': '2026-03-10'
+-    }
+-    response = requests.post(url, json=data, headers=headers)
+-    print(response)
+-    return HttpResponse(status=204)
+-
+-def save_png(file, uuid, domain, name):
+-    file_save_path = "png/%s/%s" % (uuid, name)
+-    Path("png/%s" % uuid).mkdir(parents=True, exist_ok=True)
+-
+-    if isinstance(file, str):  # Check if it's a base64 string
+-        try:
+-            header, encoded = file.split(';base64,')
+-            decoded_img = base64.b64decode(encoded)
+-            file = ContentFile(decoded_img, name=name) # Create a file-like object
+-        except ValueError:
+-            print("Invalid base64 data")
+-            return None  # Or handle the error as you see fit
+-        except Exception as e:  # Catch general exceptions during decoding
+-            print(f"Error decoding base64: {e}")
+-            return None
+-        
+-    with open(file_save_path, "wb+") as f:
+-        for chunk in file.chunks():
+-            f.write(chunk)
+-    # imageJson = {}
+-    # imageJson['url'] = domain
+-    # imageJson['uuid'] = uuid
+-    # imageJson['file'] = name
+-    #return "%s/%s" % (domain, file_save_path)
+-    return domain, uuid, name
+-
+-def save_custom_client(request):
+-    file = request.FILES['file']
+-    myuuid = request.POST.get('uuid')
+-    if not _safe_parts(myuuid, file.name):
+-        return HttpResponseForbidden("Invalid filename")
+-    file_save_path = "exe/%s/%s" % (myuuid, file.name)
+-    Path("exe/%s" % myuuid).mkdir(parents=True, exist_ok=True)
+-    with open(file_save_path, "wb+") as f:
+-        for chunk in file.chunks():
+-            f.write(chunk)
+-
+-    return HttpResponse("File saved successfully!")
+-
+-def cleanup_secrets(request):
+-    # Pass the UUID as a query param or in JSON body
+-    data = json.loads(request.body)
+-    my_uuid = data.get('uuid')
+-    
+-    if not my_uuid:
+-        return HttpResponse("Missing UUID", status=400)
+-
+-    # 1. Find the files in your temp directory matching the UUID
+-    temp_dir = os.path.join('temp_zips')
+-    
+-    # We look for any file starting with 'secrets_' and containing the uuid
+-    for filename in os.listdir(temp_dir):
+-        if my_uuid in filename and filename.endswith('.zip'):
+-            file_path = os.path.join(temp_dir, filename)
+-            try:
+-                os.remove(file_path)
+-                print(f"Successfully deleted {file_path}")
+-            except OSError as e:
+-                print(f"Error deleting file: {e}")
+-
+-    return HttpResponse("Cleanup successful", status=200)
+-
+-def get_zip(request):
+-    filename = request.GET['filename']
+-    base_dir = os.path.abspath('temp_zips')
+-    file_path = os.path.abspath(os.path.join(base_dir, filename))
+-    if not file_path.startswith(base_dir + os.sep):
+-        return HttpResponseForbidden("Invalid filename")
+-    with open(file_path, 'rb') as file:
+-        response = HttpResponse(file, headers={
+-            'Content-Type': 'application/vnd.microsoft.portable-executable',
+-            'Content-Disposition': f'attachment; filename="{filename}"'
+-        })
+-
+-    return response

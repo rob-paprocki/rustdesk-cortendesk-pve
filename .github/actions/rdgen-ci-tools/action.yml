@@ -1,0 +1,23 @@
+name: rdgen CI tools
+description: >-
+  Python venv with the rdgen test-suite dependencies (hash-pinned) on PATH as python3, and actionlint
+  (release binary, sha256-pinned) for tools/rdgen-rebase.py.
+runs:
+  using: composite
+  steps:
+    - name: Python venv and actionlint
+      shell: bash
+      env:
+        ACTIONLINT_VERSION: 1.7.12
+        ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      run: |
+        python3 -m venv "$RUNNER_TEMP/venv"
+        "$RUNNER_TEMP/venv/bin/pip" install --quiet --disable-pip-version-check --require-hashes --only-binary :all: \
+          -r "$GITHUB_WORKSPACE/.github/rdgen-ci-requirements.txt"
+        curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" \
+          "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+        echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tgz" | sha256sum -c --quiet -
+        mkdir -p "$RUNNER_TEMP/bin"
+        tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP/bin" actionlint
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+        echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"

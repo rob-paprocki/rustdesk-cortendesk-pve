@@ -1,0 +1,70 @@
+From d68afdba821128ef4031859d69a6c88730379b78 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Mon, 5 Oct 2026 20:09:22 -0400
+Subject: [PATCH 23/26] validation: Windows app names that RustDesk 1.5.0 can
+ install
+
+From 1.5.0 on, RustDesk's Windows installer refuses to install unless the
+app name matches [a-zA-Z0-9-]+ (validate_install_app_name, run before the
+elevated install script). The error never reaches the window: "Accept and
+install" just does nothing. rdgen allowed spaces and other characters, so a
+client named "Rustdesk Rescue Client (rpaprocki)" built fine and could not
+be installed. Windows builds of 1.5.0 and nightly now get a clear error on
+the app name instead; 1.4.x and the other platforms keep the wider rules.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgenerator/tests/test_security.py | 10 ++++++++++
+ rdgenerator/validation.py          | 10 ++++++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/rdgenerator/tests/test_security.py b/rdgenerator/tests/test_security.py
+index ba544eb..ffec9b2 100644
+--- a/rdgenerator/tests/test_security.py
++++ b/rdgenerator/tests/test_security.py
+@@ -191,6 +191,16 @@ class ValidationTests(TestCase):
+                'androidappid': 'com', 'serverPort': '70000', 'defaultManual': 'bad key=1'}
+         self.assertEqual(set(validate_build_fields(bad)), set(bad))
+ 
++    def test_windows_app_name_must_install(self):
++        # RustDesk 1.5.0 on Windows installs only [A-Za-z0-9-]+ names; 1.4.x and other platforms take more
++        name = 'Rustdesk Rescue Client (rpaprocki)'
++        for platform, version, bad in (('windows', '1.5.0', True), ('windows-x86', 'master', True),
++                                       ('windows', '1.4.9', False), ('macos', '1.5.0', False), ('linux', '1.5.0', False)):
++            errors = validate_build_fields({'appname': name, 'platform': platform, 'version': version})
++            self.assertEqual('appname' in errors, bad, (platform, version))
++        self.assertEqual(validate_build_fields({'appname': 'Rustdesk-Rescue-rpaprocki', 'platform': 'windows',
++                                                'version': '1.5.0'}), {})
++
+     def test_filename_sanitized(self):
+         self.assertEqual(sanitize_filename('my client\tname\n'), 'my_client_name')
+         self.assertEqual(sanitize_filename('../x'), '___x')
+diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
+index 7833032..9456cc5 100644
+--- a/rdgenerator/validation.py
++++ b/rdgenerator/validation.py
+@@ -42,6 +42,10 @@ RULES = {
+ MANUAL_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
+ MAX_MANUAL_CHARS = 8000
+ MAX_PASSWORD_CHARS = 128
++# RustDesk 1.5.0 installs on Windows only under an app name of letters, digits and hyphens (validate_install_app_name
++# in src/platform/windows.rs, not in 1.4.x): with any other character "Accept and install" quietly does nothing.
++WINDOWS_INSTALL_NAME = re.compile(r'[A-Za-z0-9-]+')
++WINDOWS_PLATFORMS = ('windows', 'windows-x86')
+ MAX_DATA_URI_CHARS = 6 * 1024 * 1024
+ 
+ 
+@@ -102,6 +106,12 @@ def validate_build_fields(data):
+             errors[field] = 'Must be a string.'
+         elif value and not rx.fullmatch(value):
+             errors[field] = f'Unsupported value. Allowed: {allowed}.'
++    appname, version = data.get('appname') or '', str(data.get('version') or '')
++    if ('appname' not in errors and isinstance(appname, str) and appname and data.get('platform') in WINDOWS_PLATFORMS
++            and not version.startswith('1.4.') and not WINDOWS_INSTALL_NAME.fullmatch(appname)):
++        errors['appname'] = ('From RustDesk 1.5.0 on, Windows installs a client only if its name has nothing but '
++                             'letters, digits and hyphens (such as Rustdesk-Rescue). With spaces or other characters, '
++                             '"Accept and install" does nothing.')
+     port = data.get('serverPort') or ''
+     if isinstance(port, str) and port.isdigit() and not 1 <= int(port) <= 65532:
+         # relay/websocket ports are derived as port+1..port+3

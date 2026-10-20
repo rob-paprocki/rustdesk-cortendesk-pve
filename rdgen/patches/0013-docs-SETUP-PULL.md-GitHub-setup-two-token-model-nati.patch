@@ -1,0 +1,214 @@
+From 6cdb2b668fb517855c13c16c0b51c2e3af199de2 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 01:12:31 -0400
+Subject: [PATCH 13/26] docs: SETUP-PULL.md (GitHub setup, two-token model,
+ native install, updates)
+
+- How the pull model works, and why the build repository must be a
+  PRIVATE repository filled by a push, not a fork (a fork of a public
+  repo is public).
+- Token decision: two fine-grained PATs, both limited to the one repo.
+  The install/update token has Contents, Workflows and Secrets RW and is
+  used interactively, not stored. The runtime token has Actions RW and
+  Metadata R and lives in /etc/rdgen/rdgen.env. Rationale: code
+  execution in the web process then cannot push a workflow that dumps
+  the repo's signing secrets or runs arbitrary code on your billing.
+- Required and optional repository secrets. GENURL is gone.
+- Native install steps for Alpine 3.24 and Debian 13 (Django 5.2 from
+  trixie-backports), nginx LAN port or sub-path, CortenDesk link.
+- Update contract: what rdgen-github-bootstrap update does, and the
+  deploy order the LXC update script should follow.
+- What the patch series fixes and what it cannot, plus the JSON API.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ SETUP-PULL.md | 179 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 179 insertions(+)
+ create mode 100644 SETUP-PULL.md
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+new file mode 100644
+index 0000000..066d52c
+--- /dev/null
++++ b/SETUP-PULL.md
+@@ -0,0 +1,179 @@
++# rdgen: hardened pull-model setup
++
++This tree is upstream [bryangerlach/rdgen](https://github.com/bryangerlach/rdgen) with a patch series on top. The patches let rdgen run on a LAN without accepting any inbound connections from the internet:
++
++```
++  browser (LAN) ──► nginx :8190 ──► gunicorn 127.0.0.1:8000 (rdgen, login + CSRF)
++                                        │ POST workflow_dispatch {version, cfg, build_uuid, proto}
++                                        ▼
++                               api.github.com ──► your PRIVATE build repo (Actions)
++                                        ▲              │ upload-artifact rdgen-<uuid>-* (1 day)
++     rdgen_poll (same LXC) ─────────────┘◄─────────────┘ download, then DELETE artifacts + run
++```
++
++GitHub never connects to rdgen. There is no `GENURL`, no Cloudflare tunnel and no `/get_zip`, `/get_png`, `/save_custom_client`, `/cleanzip` or `/updategh`.
++
++The whole config, images included, travels AES-256 encrypted (`ZIP_PASSWORD`) inside the `cfg` dispatch input. Builds come back as short-lived artifacts, which the poller downloads and then deletes. Successful runs are deleted along with their logs; failed runs are kept for 48 hours so you can read the logs, then deleted too.
++
++## 1. GitHub
++
++### Repository
++
++Create a private repository, e.g. `rdgen-build`, and leave it empty. If GitHub added a README, license or .gitignore, `init` replaces that first commit. Don't fork rdgen: a fork of a public repository is always public, and on a public repository any signed-in GitHub user can download your builds (which carry the preset password) until the poller deletes them. The run logs would be public too.
++
++`rdgen-github-bootstrap init` pushes the patched tree (upstream history plus these commits) into the repository, and refuses forks and public repositories. Actions are enabled unless you turned them off for your account (Settings > Actions).
++
++### Two tokens
++
++| | Install/update token | Runtime token |
++|---|---|---|
++| Used by | `rdgen-github-bootstrap` (root, interactive) | the rdgen web process and the poller (user `rdgen`) |
++| Type | fine-grained PAT, only this repository | fine-grained PAT, only this repository |
++| Permissions | Contents: RW, Workflows: RW, Secrets: RW, Metadata: R (automatic). Optional: Administration: RW to let the tool enable Actions. | Actions: RW, Metadata: R |
++| Stored | not stored (stdin or a temporary 0600 file). Keep it in `/root` (0600) only if you want unattended upstream updates | `GHBEARER` in `/etc/rdgen/rdgen.env` (root:rdgen 0640) |
++| Expiry | short (7-30 days); create a new one for each update | long (up to a year). Rotate it by editing the env file and restarting both services |
++
++The runtime token can dispatch, poll, and download and delete artifacts and runs, but it cannot change code or secrets. If an attacker got remote code execution in rdgen, the runtime token would only let them trigger builds of the existing, validated workflows. They could not push a workflow that dumps your Actions secrets (Windows/Android/macOS signing keys) or runs arbitrary code on runners billed to you. The write permissions (Contents RW, Workflows RW for pushing `.github/workflows/*`, Secrets RW for `ZIP_PASSWORD`) are only needed at install and update time; with a single token, the web process would hold them for as long as the token lives.
++
++For the tool to create the repository itself, the token would need "All repositories" plus Administration: RW, which is much broader. Creating it in the web UI takes one click.
++
++### Secrets in the build repository
++
++| Secret | Required | Set by |
++|---|---|---|
++| `ZIP_PASSWORD` | yes | `rdgen-github-bootstrap init` / `set-secret`. It is sealed with PyNaCl against the repository's public key. |
++| `SIGN_BASE_URL`, `SIGN_API_KEY` | no | You, only if you run a signing service. Without them, Windows builds are unsigned. |
++| `ANDROID_SIGNING_KEY` and related | no | You. See upstream's `setup.md`. |
++| `MACOS_P12_BASE64`, `MACOS_P12_PASSWORD` | no | You: a Developer ID Application certificate with its private key, as a base64 `.p12`, and the `.p12` password. Mac builds are then signed with Apple's codesign (hardened runtime, timestamp), the DMG too. Without them, Mac builds are ad-hoc signed. |
++| `APPLE_API_ISSUER_ID`, `APPLE_API_KEY_ID`, `APPLE_API_KEY_P8` | no | You: an App Store Connect API key (Issuer ID, Key ID and the contents of the `.p8` file). With them, Apple notarizes each signed DMG and the ticket is stapled to it. rcodesign's `MACOS_NOTARIZE_JSON` (base64) works instead. |
++
++`GENURL` is not used any more.
++
++### Cost
++
++Private repositories use your Actions minutes. The Free plan includes 2,000 minutes a month and 500 MB of artifact storage.
++
++| Build | Rough cost | Notes |
++|---|---|---|
++| Windows | about 65 billed minutes | Linux bridge plus the Windows job |
++| macOS | more | The per-minute rate is about 10x Linux |
++| Linux | depends on how much you keep | The full matrix (aarch64, AppImage, flatpak) is the most expensive; trim it if you only need x86_64 .deb |
++
++Artifacts are kept for 1 day at most and are usually deleted within a minute of upload, so artifact storage stays close to zero.
++
++## 2. Native install (Alpine 3.24, or Debian 13)
++
++```sh
++# Alpine 3.24
++apk add python3 py3-django py3-pillow py3-gunicorn py3-requests py3-pycryptodomex py3-pynacl nginx git
++# Debian 13: python3-django from trixie-backports (5.2; trixie main has 4.2,
++# which lacks LoginRequiredMiddleware), plus python3-pil python3-gunicorn
++# python3-requests python3-pycryptodome python3-nacl nginx git
++
++adduser -S -D -H -h /var/lib/rdgen -s /sbin/nologin rdgen        # Debian: adduser --system --group ...
++# code: root-owned, read-only for the service
++git clone <this patched tree> /opt/rdgen        # or: rdgen-github-bootstrap init --tree /opt/rdgen --patches ...
++python3 -m venv --system-site-packages /opt/rdgen/.venv
++/opt/rdgen/.venv/bin/pip install --no-deps --require-hashes -r /opt/rdgen/deploy/requirements-venv.txt   # pyzipper only
++install -d -m 0750 -o rdgen -g rdgen /var/lib/rdgen /var/lib/rdgen/builds /var/log/rdgen
++install -d -m 0750 -o root -g rdgen /etc/rdgen
++install -m 0640 -o root -g rdgen /opt/rdgen/deploy/rdgen.env.example /etc/rdgen/rdgen.env   # then fill it in
++cd /var/lib/rdgen && su -s /bin/sh rdgen -c 'RDGEN_ENV_FILE=/etc/rdgen/rdgen.env /opt/rdgen/.venv/bin/python3 /opt/rdgen/manage.py migrate'
++printf '%s\n' "$ADMIN_PASSWORD" | su -s /bin/sh rdgen -c 'RDGEN_ENV_FILE=/etc/rdgen/rdgen.env /opt/rdgen/.venv/bin/python3 /opt/rdgen/manage.py rdgen_admin --username admin --password-stdin'
++# services
++install -m 0755 /opt/rdgen/deploy/openrc/rdgen /opt/rdgen/deploy/openrc/rdgen-poller /etc/init.d/
++rc-update add rdgen default && rc-update add rdgen-poller default          # Debian: deploy/systemd/*.service
++# nginx: LAN-only port 8190
++install -m 0644 /opt/rdgen/deploy/nginx/rdgen-proxy.conf /etc/nginx/rdgen-proxy.conf
++install -m 0644 /opt/rdgen/deploy/nginx/rdgen-lan.conf /etc/nginx/http.d/rdgen.conf
++```
++
++Notes:
++
++- Start gunicorn with `.venv/bin/python3 -m gunicorn`. A `--system-site-packages` venv has no `bin/gunicorn`, and the distro's `/usr/bin/gunicorn` runs the system Python, which lacks pyzipper.
++- Env file values:
++  - `SECRET_KEY`: `python3 -c 'import secrets;print(secrets.token_urlsafe(64))'`
++  - `ZIP_PASSWORD`: `secrets.token_hex(48)`
++  - `ALLOWED_HOSTS`: the LXC's IP and host name
++  - `GHUSER`, `REPONAME`: the build repository
++  - `GHBRANCH`: the branch `init` pushed to, which is the repository's default branch (`init` prints it)
++  - `GHBEARER`: the runtime token
++- Optional defaults: `RDGEN_DEFAULT_SERVER`, `RDGEN_DEFAULT_API_SERVER` and `RDGEN_DEFAULT_KEY_FILE` (the hbbs `id_ed25519.pub` in the same LXC) prefill the form.
++- To serve rdgen under a sub-path instead of a port, set `RDGEN_URL_PREFIX=/rdgen` and include `deploy/nginx/rdgen-subpath.conf` in an existing server block. Keep its allow/deny list if that server block is reachable from the internet.
++- Memory, measured on Alpine: gunicorn master about 18 MB, worker about 57 MB, poller about 57 MB. Add about 2 MB for nginx.
++- Disk: a Windows build (exe + msi) is 50-60 MB. Builds are pruned after `RDGEN_RETENTION_DAYS` (default 30).
++
++Then push the build repository:
++
++```sh
++umask 077; cat > /root/rdgen-install.token   # paste the install token, Ctrl-D
++rdgen-github-bootstrap --token-file /root/rdgen-install.token \
++  init --tree /var/lib/rdgen-src --patches /usr/local/share/rdgen/patches --python /opt/rdgen/.venv/bin/python3
++shred -u /root/rdgen-install.token
++```
++
++`init` does the following:
++- builds upstream master plus the patches, then runs `tools/pullify.py`
++- verifies the result: compileall, pullify check, `manage.py check`, and a migrations check
++- creates or verifies the private repository
++- pushes the tree to the repository's default branch and waits until GitHub reports that branch as the default (workflow_dispatch only sees workflows there)
++- sets `ZIP_PASSWORD`
++- enables Actions if needed
++- checks that GitHub lists the five generator workflows, which rdgen dispatches by file name. Listing needs Actions: read, which the install token doesn't have, so pass the runtime token as a second stdin line with `--token-stdin --runtime-token-stdin`; without it, the check is skipped. GitHub can leave workflows unregistered when they were first pushed to a branch that only later became the default. If they don't show up within 90 seconds, `init` pushes an empty commit so that GitHub reads them again, then waits 2 more minutes.
++
++In CortenDesk, set Settings > Build Installers URL (or `CORTENDESK_RDGEN_URL`) to `http://<lxc-ip>:8190/`. It opens in a new tab, and rdgen asks for its own login.
++
++CortenDesk does not read the client's `preset-*` keys, so rdgen's address-book, strategy and device-group presets have no effect there. Clients from rdgen at version 1.4.1 or later need an hbbs with KeyExchange; cortendesk-server has it.
++
++## 3. Updates
++
++```sh
++rdgen-github-bootstrap update --src /var/lib/rdgen-src --patches /usr/local/share/rdgen/patches \
++    --python /opt/rdgen/.venv/bin/python3                 # dry run: builds and verifies only
++rdgen-github-bootstrap --token-file /root/rdgen-install.token --notify \
++    update --src ... --patches ... --python ... --apply   # push to the build repo
++```
++
++If `git ls-remote` shows upstream master unchanged, the command exits 0 at once. Otherwise it rebuilds the tree from scratch. Every patch is applied with `git am -3` except the generated-workflow patch (the one with the trailer `Rdgen-Mechanical: pullify`); for that one `tools/pullify.py` runs instead, so upstream's workflow churn never needs a hand rebase. The result is verified, and it is force-pushed to the build repository only with `--apply`.
++
++A failure changes nothing. If a patch no longer applies, `pullify.py` meets something it cannot convert (a new callback, an action it has no pin for, a new dispatchable workflow), or a check fails, nothing is pushed and the current version keeps working. The command exits 4, and with `--notify` it reports through `rustdesk-notify`.
++
++Deploying the rebuilt tree to `/opt/rdgen` is up to the LXC's update script. Use the same order as `rustdesk-update`:
++  1. stop both services
++  2. back up `/var/lib/rdgen/db.sqlite3` and `/etc/rdgen`
++  3. swap the code, keeping the old tree as `.prev`
++  4. run `manage.py migrate`
++  5. start the services
++  6. health check: `GET /accounts/login/` returns 200 and the poller is running
++  7. on failure, roll back
++
++## 4. What is protected, and what is not
++
++The patches fix these upstream problems (the commit messages have the details):
++- `/download?filename=/proc/self/environ` (leaked `GHBEARER`, `ZIP_PASSWORD`, `SECRET_KEY`)
++- the unauthenticated file write at `/save_custom_client`
++- the unauthenticated dispatch proxy `/startgh`
++- CSRF turned off, and no login
++- `ALLOWED_HOSTS=*`, and published default secrets
++- shell/sed injection through server, key, URL and name fields: checked on the server and again on the runner
++- `key=value` newline injection into `GITHUB_ENV`
++- patches and printer-adapter fetched from `bryangerlach/rdgen@master` at build time
++- actions referenced by `@master`/`@main` (every action is SHA-pinned)
++- unpinned `pip install pyzipper` on runners
++- the Linux .deb (which contains `custom_.txt` with the preset password) kept as an artifact for 90 days
++- temp zips piling up forever
++
++They do not change these:
++- GitHub sees the decrypted config (server, key, preset password) in runner memory and in the built binaries while a build runs. Values are masked in logs.
++- The preset password is only base64-encoded in every client (`custom_.txt`), so treat it as low-grade.
++- Unsigned Windows builds trigger SmartScreen and antivirus warnings.
++- The UI loads Font Awesome from cdnjs and a Google font (upstream `generator.html`), which your browser fetches.
++- Failed runs and their logs stay in your private repository for 48 hours. They contain masked values and ciphertext.
++
++## 5. JSON API
++
++Send `Authorization: Bearer $RDGEN_API_TOKEN`, or use a logged-in session plus `X-CSRFToken`.
++
++- `POST /api/generate`: same fields as upstream. Omitted booleans take the form's defaults. A blank server/key/API uses `RDGEN_DEFAULT_*`.
++- `GET /api/status?uuid=`: returns `{status, ready, finished, error, files:[{name,size,sha256,url}], ...}`.
++- `GET /api/download?uuid=&filename=`: streams a stored build file.

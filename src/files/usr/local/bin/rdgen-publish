@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# rdgen-publish: copy finished rdgen builds into CortenDesk's Client Downloads, as chosen per build on rdgen's form
+# ("Add the finished files to CortenDesk's Client Downloads": no / hidden / published).
+#   rdgen-publish                       import the builds that are waiting (runs every minute; it returns at once
+#                                       unless rdgen flagged a finished build)
+#   rdgen-publish --retry <build uuid>  try a build again, e.g. after a failure (the uuid is in rdgen's build URL)
+# rdgen never writes into CortenDesk. This job reads the files as the rdgen user and hands them to
+# import-download.php, which runs as cortendesk and checks them against rdgen's size and sha256. CortenDesk's
+# /downloads page is public, so a client with a preset permanent password always arrives hidden.
+set -Eeuo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+FLAG=$RDGEN_DATA/publish.pending
+VENV_PY=$RDGEN_APP/.venv/bin/python3
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+NAME_RE='^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}$'
+[ -x "$VENV_PY" ] || exit 0
+manage() { (cd "$RDGEN_DATA" && as_user rdgen env RDGEN_ENV_FILE="$RDGEN_ENV" PYTHONDONTWRITEBYTECODE=1 "$VENV_PY" "$RDGEN_APP/manage.py" "$@"); }
+notify() { /usr/local/bin/rustdesk-notify send "$@" 9>&- >/dev/null 2>&1 || true; }
+
+if [ "${1:-}" = --retry ]; then
+  [[ "${2:-}" =~ $UUID_RE ]] || { echo "usage: rdgen-publish --retry <build uuid>" >&2; exit 2; }
+  if [ "$(manage rdgen_publish mark "$2" pending)" = deleted ]; then
+    echo "build $2 was deleted on rdgen's Recent builds; nothing to add" >&2; exit 1
+  fi
+  as_user rdgen touch "$FLAG"
+fi
+[ -e "$FLAG" ] || exit 0   # the common case: nothing finished since the last run
+if command -v flock >/dev/null; then   # never import while rustdesk-update has CortenDesk in maintenance mode
+  update_lock
+  flock -n 9 || exit 0     # the flag stays, so the next run tries again
+fi
+as_user rdgen rm -f "$FLAG"   # before listing: a build that finishes meanwhile sets it again
+trap 'as_user rdgen touch "$FLAG" >/dev/null 2>&1 || true' ERR   # crashed: try again next minute
+
+# import_file <meta json> <path>: rdgen's bytes -> import-download.php; returns the importer's exit code
+import_file() {
+  # cat's stderr is dropped: when the importer stops reading early, its reason must not be replaced by "Broken pipe"
+  { printf '%s\n' "$1"; as_user rdgen sh -c '[ -f "$1" ] && [ ! -L "$1" ] && exec cat -- "$1"' _ "$2" 2>/dev/null || true; } |
+    cd_php /usr/local/lib/cortendesk/import-download.php
+}
+
+publish_build() {  # publish_build <build json>
+  local b=$1 uuid label publish f name meta out rc ok=0 failed="" skipped=() what
+  uuid=$(jq -r .uuid <<<"$b"); label=$(jq -r '.label | .[0:80]' <<<"$b"); publish=$(jq -r .publish <<<"$b")
+  [[ "$uuid" =~ $UUID_RE ]] || return 0
+  while IFS= read -r f; do
+    name=$(jq -r .name <<<"$f")
+    [[ "$name" =~ $NAME_RE ]] || { failed="unexpected file name"; break; }
+    meta=$(jq -c --argjson f "$f" '{uuid, label, version, filename, platform, publish,
+                                    name: $f.name, size: $f.size, sha256: $f.sha256}' <<<"$b")
+    rc=0; out=$(import_file "$meta" "$RDGEN_DATA/builds/$uuid/$name" 2>&1) || rc=$?
+    if [ $rc -eq 1 ]; then   # e.g. the database was busy; rows already imported are not duplicated
+      sleep 5; rc=0; out=$(import_file "$meta" "$RDGEN_DATA/builds/$uuid/$name" 2>&1) || rc=$?
+    fi
+    case $rc in
+      0) ok=$((ok + 1)); echo "$uuid $name: $out" ;;
+      3) skipped+=("$name") ;;
+      *) failed="$name: $(tail -n 1 <<<"$out" | cut -c1-300)"; break ;;
+    esac
+  done < <(jq -c '.files[]' <<<"$b")
+  what="$publish"; [ "$publish" = hidden ] && what="hidden, publish them under Client Downloads"
+  if [ -n "$failed" ]; then
+    if [ "$(manage rdgen_publish mark "$uuid" failed --note "$failed (run: rdgen-publish --retry $uuid)")" = deleted ]; then
+      # deleted on rdgen's Recent builds while this ran: its files vanished, so the failure is expected
+      echo "$uuid: deleted in rdgen while it was being added ($ok file(s) had arrived)"
+      [ $ok -eq 0 ] || notify info "🗑️ $label was deleted while being added" \
+        "It was deleted in rdgen after $ok file(s) had reached CortenDesk's Client Downloads ($what). Delete them there if you don't want them."
+      return 0
+    fi
+    echo "!! $uuid: $failed" >&2
+    notify warning "⚠️ rdgen build not added to CortenDesk" "$label: $failed. Retry inside the LXC: \`rdgen-publish --retry $uuid\`"
+  elif [ $ok -eq 0 ]; then
+    manage rdgen_publish mark "$uuid" skipped --note "CortenDesk accepts none of these file types (${skipped[*]})"
+  else
+    manage rdgen_publish mark "$uuid" "done" --note "Added $ok file(s) to CortenDesk's Client Downloads ($what).${skipped[*]:+ Not accepted by CortenDesk: ${skipped[*]}.}"
+    notify success "📦 $label is in CortenDesk's Client Downloads" "$ok file(s) from the rdgen build, $what."
+  fi
+}
+
+pending=$(manage rdgen_publish pending)
+while IFS= read -r b; do
+  [ -n "$b" ] && publish_build "$b"
+done < <(jq -c '.[]' <<<"$pending")
+exit 0

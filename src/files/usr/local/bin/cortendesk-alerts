@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# cortendesk-alerts: send CortenDesk's own alerts (pending device approvals, failed console logins, security alarms,
+# repeated connection failures, devices going offline/online) through rustdesk-notify, i.e. to the same Discord
+# webhook or Apprise URLs as the update notices.
+# CortenDesk can only notify through an Apprise API server. alert-relay.php stands in for one on 127.0.0.1:8296 and
+# queues each alert in /var/spool/cortendesk-alerts; this script sends the queue as root, because only root can read
+# the notification settings.
+#   cortendesk-alerts                       send what is queued (every minute: cron / systemd timer)
+#   cortendesk-alerts install               set up the relay: key, queue, local nginx listener, timer (idempotent);
+#                                           connects CortenDesk too when the update notices use Discord or Apprise
+#   cortendesk-alerts connect [--if-unset]  point CortenDesk's Settings > Notifications at the relay and send a test;
+#                                           --if-unset leaves an endpoint that points elsewhere alone
+#                                           (rustdesk-notify setup runs this for the Discord and Apprise methods)
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+SPOOL=/var/spool/cortendesk-alerts
+KEY=$CD_ETC/alert-relay.key
+RELAY=http://127.0.0.1:8296
+MAX_AGE=3600   # an alert that still cannot be sent after an hour is dropped
+ZWSP=$'\xe2\x80\x8b'
+# the quieter default; device offline/online can be switched on under Settings > Notifications
+EVENTS='["device.pending_approval","console.login_failed","security.alarm","remote_connection.failure"]'
+
+flush() {
+  [ -d "$SPOOL" ] || return 0
+  # root-only lock file: any user who can open a file can flock it, and so hold the alerts back
+  (umask 077 && : >>/run/cortendesk-alerts.lock) && chmod 600 /run/cortendesk-alerts.lock
+  exec 8>/run/cortendesk-alerts.lock
+  flock -n 8 || return 0   # still busy with the previous run's queue
+  local f msg type title body age n=0 now
+  now=$(date +%s)
+  for f in "$SPOOL"/*.alert; do
+    [ -e "$f" ] || break
+    [ $n -lt 20 ] || break   # the rest goes next minute
+    n=$((n + 1))
+    # read as cortendesk: the queue belongs to the web app, so a planted link cannot make root read anything
+    if ! msg=$(as_user cortendesk sh -c '[ -f "$1" ] && [ ! -L "$1" ] && exec head -c 8192 -- "$1"' _ "$f" 2>/dev/null); then
+      rm -f -- "$f"; continue
+    fi
+    type=$(printf '%s\n' "$msg" | sed -n 1p)
+    title=$(printf '%s\n' "$msg" | sed -n 2p)
+    body=$(printf '%s\n' "$msg" | sed -n '3,$p')
+    case "$type" in info | success | warning | failure) ;; *) type=info ;; esac
+    # no @everyone / @here / <@id> pings from text a stranger can choose (a failed login's user name)
+    title=${title//@/@$ZWSP} body=${body//@/@$ZWSP}
+    if /usr/local/bin/rustdesk-notify send "$type" "${title:-CortenDesk}" "$body" >/dev/null 2>&1; then
+      rm -f -- "$f"
+      continue
+    fi
+    age=$((now - $(stat -c %Y -- "$f" 2>/dev/null || echo "$now")))
+    if [ "$age" -gt "$MAX_AGE" ]; then
+      echo "$(date '+%F %T') dropped an alert that could not be sent for an hour: $title" >&2
+      rm -f -- "$f"
+    else
+      echo "$(date '+%F %T') sending failed; will retry: $title" >&2
+      return 0
+    fi
+  done
+}
+
+install_relay() {
+  [ -f "$CD_APP/artisan" ] || { echo "cortendesk-alerts: CortenDesk is not installed" >&2; return 1; }
+  install -d -m 0700 -o cortendesk -g cortendesk "$SPOOL"
+  if [ ! -s "$KEY" ]; then
+    (umask 027 && openssl rand -hex 24 >"$KEY.tmp") && chgrp cortendesk "$KEY.tmp" && mv -f "$KEY.tmp" "$KEY"
+  fi
+  local d=/etc/nginx/sites-enabled
+  [ "$OS" = alpine ] && d=/etc/nginx/http.d
+  ln -sfn /etc/nginx/rustdesk-alert-relay.conf "$d/rustdesk-alert-relay.conf"
+  if ! nginx -t -q 2>/dev/null; then
+    rm -f "$d/rustdesk-alert-relay.conf"
+    echo "cortendesk-alerts: nginx rejected the relay listener; left out" >&2
+    return 1
+  fi
+  if [ "$OS" = alpine ]; then
+    sed -i '/cortendesk-alerts/d' /etc/crontabs/root
+    echo "* * * * * /usr/local/bin/cortendesk-alerts >>/var/log/cortendesk-alerts.log 2>&1" >>/etc/crontabs/root
+    svc restart crond
+  else
+    printf '%s\n' '[Unit]' "Description=Send CortenDesk's queued alerts through rustdesk-notify" \
+      "ConditionDirectoryNotEmpty=$SPOOL" '' '[Service]' 'Type=oneshot' \
+      'ExecStart=/usr/local/bin/cortendesk-alerts' >/etc/systemd/system/cortendesk-alerts.service
+    printf '%s\n' '[Unit]' "Description=Check for CortenDesk alerts every 15 seconds" '' '[Timer]' \
+      'OnCalendar=*-*-* *:*:00/15' 'AccuracySec=1s' '' '[Install]' 'WantedBy=timers.target' \
+      >/etc/systemd/system/cortendesk-alerts.timer
+    systemctl daemon-reload
+    systemctl enable -q --now cortendesk-alerts.timer
+  fi
+  svc reload nginx
+  # with Discord or Apprise set up for the update notices, CortenDesk's alerts follow (unless pointed elsewhere)
+  local method; method=$(env_get "$UPDATE_ENV" NOTIFY_METHOD)
+  [ -n "$method" ] || { [ -n "$(env_get "$UPDATE_ENV" DISCORD_WEBHOOK)" ] && method=discord; }
+  case "$method" in discord | apprise) connect --if-unset ;; esac
+  return 0
+}
+
+connect() {
+  local if_unset=false out
+  [ "${1:-}" = --if-unset ] && if_unset=true
+  [ -s "$KEY" ] || install_relay
+  out=$(K=$(cat "$KEY") R=$RELAY jq -n --argjson u "$if_unset" --argjson ev "$EVENTS" \
+          '{endpoint:env.R, key:env.K, if_unset:$u, events:$ev}' |
+        cd_php /usr/local/lib/cortendesk/apprise-seed.php 2>&1) || {
+    echo "cortendesk-alerts: could not configure CortenDesk's notifications: ${out##*$'\n'}" >&2; return 1; }
+  case "$out" in
+    *skipped=other*) echo "CortenDesk's own alerts (Settings > Notifications) go to an Apprise API server set there; left as it is." ;;
+    *skipped=same*) ;;
+    *test_delivery=sent*)
+      echo "CortenDesk's own alerts (approvals, failed console logins, security alarms) also come here; choose them under Settings > Notifications."
+      flush ;;
+    *) echo "cortendesk-alerts: CortenDesk did not accept the relay: ${out##*$'\n'}" >&2; return 1 ;;
+  esac
+}
+
+case "${1:-}" in
+  "") flush ;;
+  install) install_relay ;;
+  connect) shift; connect "$@" ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

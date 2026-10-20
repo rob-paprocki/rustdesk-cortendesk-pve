@@ -1,0 +1,1375 @@
+From 104851fc6287ce6c898c47d04c36326e381ca0dc Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 01:11:23 -0400
+Subject: [PATCH 12/26] tests: hardening and pull-model test suite with a local
+ GitHub API stub
+
+rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with
+`manage.py test rdgenerator`:
+
+- ghstub.py: a threaded stand-in for api.github.com. It checks the bearer
+  token, records every request, validates dispatch inputs like GitHub
+  (declared names only, 65,535 characters), steps runs through
+  queued/in_progress/completed, serves artifact zips through a 302 to a
+  second "blob" port (and records whether Authorization reached it), and
+  implements delete/cancel plus the bootstrap endpoints (repo create,
+  secrets public key and sealed secret, Actions permissions, workflows).
+  It is also runnable on its own for manual tests.
+- test_security: settings refuse missing, published or short secrets, and
+  env-file values stay out of os.environ. Login is required everywhere.
+  Login, the generator and session API calls without a CSRF token get
+  403. The API answers 401 without auth and accepts the bearer token
+  without CSRF. The push-model endpoints are 404. /download and
+  /api/download reject /proc/self/environ, ../, absolute paths,
+  non-canonical uuids and names missing from the manifest. Validators
+  accept upstream defaults and reject injections; filename sanitizing is
+  tested.
+- test_pull: the dispatch payload (inputs, ref, return_run_details, the
+  decrypted zip members, images normalized to 256/512 px, no plaintext in
+  the request), 413 for oversize images, 422 surfaced as 502, the
+  unconfigured case. Poller: eager download, hostile zip members
+  (traversal, symlink, junk) dropped, all artifacts and the run deleted,
+  the token never sent to the blob host. Also: partial files kept on
+  failure, the failed run deleted only after the keep window, success
+  without artifacts, finding the run by name after a 204 dispatch,
+  timeout cancel, size cap, 401 backoff without leaking the token,
+  local prune.
+- test_workflows: pullify --check is clean, only the expected workflows
+  remain, every action is SHA-pinned. The server and runner validators
+  agree. The setup job's decode script and decrypt.py are run as on a
+  runner (heredoc GITHUB_ENV, masks, staged assets and patches, and
+  rejection of a replayed cfg, a protocol mismatch, an injection and a
+  flag/image mismatch).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgenerator/tests.py                |   3 -
+ rdgenerator/tests/__init__.py       |   0
+ rdgenerator/tests/ghstub.py         | 360 ++++++++++++++++++++++++++++
+ rdgenerator/tests/test_bootstrap.py | 178 ++++++++++++++
+ rdgenerator/tests/test_pull.py      | 239 ++++++++++++++++++
+ rdgenerator/tests/test_security.py  | 197 +++++++++++++++
+ rdgenerator/tests/test_workflows.py | 297 +++++++++++++++++++++++
+ 7 files changed, 1271 insertions(+), 3 deletions(-)
+ delete mode 100644 rdgenerator/tests.py
+ create mode 100644 rdgenerator/tests/__init__.py
+ create mode 100644 rdgenerator/tests/ghstub.py
+ create mode 100644 rdgenerator/tests/test_bootstrap.py
+ create mode 100644 rdgenerator/tests/test_pull.py
+ create mode 100644 rdgenerator/tests/test_security.py
+ create mode 100644 rdgenerator/tests/test_workflows.py
+
+diff --git a/rdgenerator/tests.py b/rdgenerator/tests.py
+deleted file mode 100644
+index 7ce503c..0000000
+--- a/rdgenerator/tests.py
++++ /dev/null
+@@ -1,3 +0,0 @@
+-from django.test import TestCase
+-
+-# Create your tests here.
+diff --git a/rdgenerator/tests/__init__.py b/rdgenerator/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/rdgenerator/tests/ghstub.py b/rdgenerator/tests/ghstub.py
+new file mode 100644
+index 0000000..501026e
+--- /dev/null
++++ b/rdgenerator/tests/ghstub.py
+@@ -0,0 +1,360 @@
++"""A tiny stand-in for api.github.com, used by the tests and for manual runs.
++
++It implements just the endpoints rdgen and rdgen-github-bootstrap call,
++checks the bearer token, records every request, and serves artifact zips
++through a 302 to a second "blob" port, like GitHub does. The blob server
++records whether an Authorization header reached it (it must not).
++
++Manual use:
++    python -m rdgenerator.tests.ghstub --token T --owner me --repo rdgen-build
++"""
++import base64
++import io
++import json
++import re
++import threading
++import zipfile
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from urllib.parse import parse_qs, urlparse
++
++WORKFLOW_INPUTS = {'version', 'cfg', 'build_uuid', 'proto'}
++INPUTS_MAX = 65535
++
++
++def make_zip(files):
++    buf = io.BytesIO()
++    with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_STORED) as zf:
++        for name, data in files.items():
++            zf.writestr(name, data)
++    return buf.getvalue()
++
++
++class GitHubStub:
++    def __init__(self, token='ghp_stub_token_0123456789', owner='me', repo='rdgen-build', branch='master'):
++        self.token, self.owner, self.repo, self.branch = token, owner, repo, branch
++        self.lock = threading.Lock()
++        self.requests = []
++        self.blob_requests = []
++        self.runs = {}
++        self.artifacts = {}
++        self.next_run = 1000
++        self.next_artifact = 5000
++        # Called with the run dict right after a dispatch; returns a list of
++        # (artifact_name, {filename: bytes}) that the run will upload.
++        self.artifacts_for = lambda run: []
++        self.polls_to_complete = 2
++        self.conclusion = 'success'
++        self.return_run_details = True
++        # bootstrap bits
++        self.repo_exists = False
++        self.repo_private = True
++        self.secrets = {}
++        self.actions_enabled = False
++        self.pubkey = None
++        self.privkey = None
++        # bare git repo standing in for the GitHub repo; /actions/workflows
++        # lists .github/workflows of its default branch
++        self.workflow_source = None
++        # like GitHub: the first branch pushed to an empty repository becomes the default, and the repo endpoint
++        # reports the old default for this many more reads after that
++        self.default_lag = 0
++        self._lag_left = 0
++        # a second, Actions-only token (rdgen's runtime token); the main token then answers this status for
++        # Actions reads, like a fine-grained install token without "Actions: read"
++        self.runtime_token = None
++        self.install_actions_status = None
++        # GitHub sometimes keeps a branch's workflows unregistered until a later push makes it read them again
++        self.stale_registration = False
++        self._stale_head = None
++
++    # ---------------------------------------------------------------
++    def start(self):
++        stub = self
++
++        class Api(BaseHTTPRequestHandler):
++            def log_message(self, *a):
++                pass
++
++            def _reply(self, code, body=None, headers=None):
++                data = b'' if body is None else json.dumps(body).encode()
++                self.send_response(code)
++                for k, v in (headers or {}).items():
++                    self.send_header(k, v)
++                if body is not None:
++                    self.send_header('Content-Type', 'application/json')
++                self.send_header('Content-Length', str(len(data)))
++                self.end_headers()
++                self.wfile.write(data)
++
++            def _handle(self, method):
++                url = urlparse(self.path)
++                length = int(self.headers.get('Content-Length') or 0)
++                raw = self.rfile.read(length) if length else b''
++                try:
++                    body = json.loads(raw) if raw else None
++                except ValueError:
++                    body = None
++                auth = self.headers.get('Authorization', '')
++                token = auth[len('Bearer '):] if auth.startswith('Bearer ') else ''
++                rec = {'method': method, 'path': url.path, 'query': parse_qs(url.query),
++                       'auth_ok': bool(token) and token in (stub.token, stub.runtime_token),
++                       'runtime': bool(stub.runtime_token) and token == stub.runtime_token,
++                       'api_version': self.headers.get('X-GitHub-Api-Version'),
++                       'body': body, 'raw_len': len(raw)}
++                with stub.lock:
++                    stub.requests.append(rec)
++                if not rec['auth_ok']:
++                    return self._reply(401, {'message': 'Bad credentials'})
++                code, payload, headers = stub.route(method, url.path, parse_qs(url.query), body, rec['runtime'])
++                return self._reply(code, payload, headers)
++
++            def do_GET(self):
++                self._handle('GET')
++
++            def do_POST(self):
++                self._handle('POST')
++
++            def do_PUT(self):
++                self._handle('PUT')
++
++            def do_DELETE(self):
++                self._handle('DELETE')
++
++        class Blob(BaseHTTPRequestHandler):
++            def log_message(self, *a):
++                pass
++
++            def do_GET(self):
++                url = urlparse(self.path)
++                m = re.fullmatch(r'/blob/(\d+)', url.path)
++                with stub.lock:
++                    stub.blob_requests.append({'path': url.path, 'auth_present': 'Authorization' in self.headers})
++                    art = stub.artifacts.get(int(m.group(1))) if m else None
++                if not art or art['deleted']:
++                    self.send_response(404)
++                    self.end_headers()
++                    return
++                data = art['zip']
++                self.send_response(200)
++                self.send_header('Content-Type', 'application/zip')
++                self.send_header('Content-Length', str(len(data)))
++                self.end_headers()
++                self.wfile.write(data)
++
++        self.api_server = ThreadingHTTPServer(('127.0.0.1', 0), Api)
++        self.blob_server = ThreadingHTTPServer(('127.0.0.1', 0), Blob)
++        for srv in (self.api_server, self.blob_server):
++            threading.Thread(target=srv.serve_forever, daemon=True).start()
++        self.api_url = f'http://127.0.0.1:{self.api_server.server_address[1]}'
++        self.blob_url = f'http://127.0.0.1:{self.blob_server.server_address[1]}'
++        return self
++
++    def stop(self):
++        for srv in (self.api_server, self.blob_server):
++            srv.shutdown()
++            srv.server_close()
++
++    # ---------------------------------------------------------------
++    def add_artifact(self, run_id, name, files):
++        aid = self.next_artifact
++        self.next_artifact += 1
++        data = files if isinstance(files, bytes) else make_zip(files)
++        self.artifacts[aid] = {'id': aid, 'name': name, 'run_id': run_id, 'zip': data,
++                               'size_in_bytes': len(data), 'deleted': False, 'expired': False}
++        return aid
++
++    def _run_json(self, run):
++        return {'id': run['id'], 'status': run['status'], 'conclusion': run['conclusion'],
++                'display_title': run['display_title'], 'event': 'workflow_dispatch',
++                'path': f".github/workflows/{run['workflow']}",
++                'html_url': f"https://github.com/{self.owner}/{self.repo}/actions/runs/{run['id']}",
++                'created_at': '2026-09-30T00:00:00Z'}
++
++    def _head(self, branch):
++        if not self.workflow_source:
++            return ''
++        import subprocess
++        return subprocess.run(['git', '--git-dir', self.workflow_source, 'rev-parse', '-q', '--verify',
++                               f'refs/heads/{branch}'], capture_output=True, text=True).stdout.strip()
++
++    def _default_branch(self):
++        if self.workflow_source:
++            import subprocess
++            heads = subprocess.run(['git', '--git-dir', self.workflow_source, 'for-each-ref', '--format=%(refname:short)',
++                                    'refs/heads/'], capture_output=True, text=True).stdout.split()
++            if heads and self.branch not in heads:
++                self.branch, self._lag_left, old = heads[0], self.default_lag, self.branch
++                if self._lag_left:
++                    self._stale = old
++        if self._lag_left:
++            self._lag_left -= 1
++            return self._stale
++        return self.branch
++
++    def route(self, method, path, query, body, runtime=False):
++        repo = f'/repos/{self.owner}/{self.repo}'
++        with self.lock:
++            m = re.fullmatch(repo + r'/actions/workflows/([\w.-]+)/dispatches', path)
++            if m and method == 'POST':
++                inputs = (body or {}).get('inputs') or {}
++                if (body or {}).get('ref') != self.branch:
++                    return 422, {'message': 'No ref found'}, None
++                if set(inputs) - WORKFLOW_INPUTS:
++                    return 422, {'message': 'Unexpected inputs provided: ' + ','.join(sorted(set(inputs) - WORKFLOW_INPUTS))}, None
++                if WORKFLOW_INPUTS - set(inputs):
++                    return 422, {'message': 'Required input missing'}, None
++                if len(json.dumps(inputs, separators=(',', ':'))) > INPUTS_MAX:
++                    return 422, {'message': 'inputs are too large'}, None
++                rid = self.next_run
++                self.next_run += 1
++                run = {'id': rid, 'workflow': m.group(1), 'inputs': inputs, 'status': 'queued', 'conclusion': None,
++                       'polls': 0, 'deleted': False, 'cancelled': False,
++                       'display_title': f"Custom Client Generator {inputs.get('build_uuid', '')}"}
++                self.runs[rid] = run
++                run['planned'] = list(self.artifacts_for(run))
++                if not self.return_run_details or not body.get('return_run_details'):
++                    return 204, None, None
++                return 200, {'workflow_run_id': rid, 'run_url': f'{self.api_url}{repo}/actions/runs/{rid}',
++                             'html_url': f'https://github.com/{self.owner}/{self.repo}/actions/runs/{rid}'}, None
++            m = re.fullmatch(repo + r'/actions/runs/(\d+)', path)
++            if m:
++                run = self.runs.get(int(m.group(1)))
++                if not run or run['deleted']:
++                    return 404, {'message': 'Not Found'}, None
++                if method == 'GET':
++                    run['polls'] += 1
++                    if run['status'] != 'completed':
++                        if run['polls'] >= self.polls_to_complete:
++                            run['status'], run['conclusion'] = 'completed', self.conclusion
++                        else:
++                            run['status'] = 'in_progress'
++                        if run['planned'] and run['status'] in ('in_progress', 'completed'):
++                            for name, files in run['planned']:
++                                self.add_artifact(run['id'], name, files)
++                            run['planned'] = []
++                    return 200, self._run_json(run), None
++                if method == 'DELETE':
++                    if run['status'] != 'completed':
++                        return 403, {'message': 'Cannot delete a workflow run that is not completed'}, None
++                    run['deleted'] = True
++                    for art in self.artifacts.values():
++                        if art['run_id'] == run['id']:
++                            art['deleted'] = True
++                    return 204, None, None
++            m = re.fullmatch(repo + r'/actions/runs/(\d+)/cancel', path)
++            if m and method == 'POST':
++                run = self.runs.get(int(m.group(1)))
++                if run:
++                    run['status'], run['conclusion'], run['cancelled'] = 'completed', 'cancelled', True
++                return 202, {}, None
++            m = re.fullmatch(repo + r'/actions/runs/(\d+)/artifacts', path)
++            if m and method == 'GET':
++                rid = int(m.group(1))
++                arts = [{'id': a['id'], 'name': a['name'], 'size_in_bytes': a['size_in_bytes'], 'expired': a['expired'],
++                         'archive_download_url': f"{self.api_url}{repo}/actions/artifacts/{a['id']}/zip"}
++                        for a in self.artifacts.values() if a['run_id'] == rid and not a['deleted']]
++                return 200, {'total_count': len(arts), 'artifacts': arts}, None
++            m = re.fullmatch(repo + r'/actions/artifacts/(\d+)/zip', path)
++            if m and method == 'GET':
++                art = self.artifacts.get(int(m.group(1)))
++                if not art or art['deleted']:
++                    return 404, {'message': 'Not Found'}, None
++                return 302, None, {'Location': f"{self.blob_url}/blob/{art['id']}?sig=short-lived"}
++            m = re.fullmatch(repo + r'/actions/artifacts/(\d+)', path)
++            if m and method == 'DELETE':
++                art = self.artifacts.get(int(m.group(1)))
++                if not art or art['deleted']:
++                    return 404, {'message': 'Not Found'}, None
++                art['deleted'] = True
++                return 204, None, None
++            m = re.fullmatch(repo + r'/actions/workflows/([\w.-]+)/runs', path)
++            if m and method == 'GET':
++                runs = [self._run_json(r) for r in self.runs.values() if r['workflow'] == m.group(1) and not r['deleted']]
++                runs.reverse()
++                return 200, {'total_count': len(runs), 'workflow_runs': runs}, None
++            # ---- bootstrap endpoints ----
++            if path == '/user' and method == 'GET':
++                return 200, {'login': self.owner}, None
++            if path == repo and method == 'GET':
++                if not self.repo_exists:
++                    return 404, {'message': 'Not Found'}, None
++                return 200, {'full_name': f'{self.owner}/{self.repo}', 'private': self.repo_private,
++                             'default_branch': self._default_branch(), 'fork': False}, None
++            if path == '/user/repos' and method == 'POST':
++                if (body or {}).get('name') != self.repo:
++                    return 422, {'message': 'unexpected repo name'}, None
++                self.repo_exists, self.repo_private = True, bool(body.get('private'))
++                return 201, {'full_name': f'{self.owner}/{self.repo}', 'private': self.repo_private}, None
++            if path == repo + '/actions/secrets/public-key' and method == 'GET':
++                if self.pubkey is None:
++                    from nacl.public import PrivateKey
++                    self.privkey = PrivateKey.generate()
++                    self.pubkey = base64.b64encode(bytes(self.privkey.public_key)).decode()
++                return 200, {'key_id': 'kid-1', 'key': self.pubkey}, None
++            m = re.fullmatch(repo + r'/actions/secrets/([A-Z0-9_]+)', path)
++            if m and method == 'PUT':
++                if (body or {}).get('key_id') != 'kid-1':
++                    return 422, {'message': 'bad key_id'}, None
++                self.secrets[m.group(1)] = body['encrypted_value']
++                return 201, None, None
++            if path == repo + '/actions/permissions':
++                if method == 'GET':
++                    return 200, {'enabled': self.actions_enabled, 'allowed_actions': 'all'}, None
++                if method == 'PUT':
++                    self.actions_enabled = bool((body or {}).get('enabled'))
++                    return 204, None, None
++            if path == repo + '/contents/.github/workflows' and method == 'GET':
++                ref = (query.get('ref') or [self.branch])[0]
++                import subprocess
++                out = subprocess.run(['git', '--git-dir', self.workflow_source or '/nonexistent', 'ls-tree', '--name-only',
++                                      f'refs/heads/{ref}', '.github/workflows/'], capture_output=True, text=True)
++                if out.returncode != 0 or not out.stdout.strip():
++                    return 404, {'message': 'Not Found'}, None
++                return 200, [{'name': n.rsplit('/', 1)[-1], 'type': 'file'} for n in out.stdout.split()], None
++            if path == repo + '/actions/workflows' and method == 'GET':
++                if self.runtime_token and not runtime and self.install_actions_status:
++                    return self.install_actions_status, {'message': 'Resource not accessible by personal access token'}, None
++                names = []
++                head = self._head(self.branch)
++                if self.stale_registration and self._stale_head is None:
++                    self._stale_head = head
++                if self.stale_registration and head != self._stale_head:
++                    self.stale_registration = False   # read again after a new push, and registered from then on
++                if self.workflow_source and not self.stale_registration:
++                    import subprocess
++                    out = subprocess.run(['git', '--git-dir', self.workflow_source, 'ls-tree', '--name-only',
++                                          f'refs/heads/{self.branch}', '.github/workflows/'],
++                                         capture_output=True, text=True).stdout.split()
++                    names = [n for n in out if n.endswith('.yml')]
++                wfs = [{'id': i + 1, 'path': n, 'state': 'active'} for i, n in enumerate(names)]
++                return 200, {'total_count': len(wfs), 'workflows': wfs}, None
++        return 404, {'message': 'Not Found (stub)'}, None
++
++    def decrypt_secret(self, name):
++        from nacl.public import SealedBox
++        return SealedBox(self.privkey).decrypt(base64.b64decode(self.secrets[name])).decode()
++
++
++if __name__ == '__main__':
++    import argparse
++    import time
++    ap = argparse.ArgumentParser()
++    ap.add_argument('--token', default='ghp_stub_token_0123456789')
++    ap.add_argument('--owner', default='me')
++    ap.add_argument('--repo', default='rdgen-build')
++    ap.add_argument('--port-file', help='write the API URL to this file')
++    ap.add_argument('--demo-filename', help='each run uploads <name>.exe/.msi as rdgen-<uuid>-build-0')
++    ns = ap.parse_args()
++    stub = GitHubStub(ns.token, ns.owner, ns.repo)
++    if ns.demo_filename:
++        fn = ns.demo_filename
++        stub.artifacts_for = lambda run: [
++            (f"rdgen-{run['inputs']['build_uuid']}-build-0", {f'{fn}.exe': b'MZ' + b'\0' * 65536, f'{fn}.msi': b'MSI' * 4096}),
++            ('encrypted-secrets-zip', {'secrets.zip': b'ciphertext'})]
++    stub.start()
++    print(stub.api_url, flush=True)
++    if ns.port_file:
++        with open(ns.port_file, 'w') as fh:
++            fh.write(stub.api_url)
++    while True:
++        time.sleep(3600)
+diff --git a/rdgenerator/tests/test_bootstrap.py b/rdgenerator/tests/test_bootstrap.py
+new file mode 100644
+index 0000000..c8d4c9b
+--- /dev/null
++++ b/rdgenerator/tests/test_bootstrap.py
+@@ -0,0 +1,178 @@
++"""rdgen-github-bootstrap init against the GitHub stub and local bare repositories."""
++import contextlib
++import importlib.machinery
++import importlib.util
++import io
++import json
++import os
++import subprocess
++import tempfile
++from pathlib import Path
++from unittest import mock
++
++from django.test import SimpleTestCase
++
++from rdgenerator.tests.ghstub import GitHubStub
++
++ROOT = Path(__file__).resolve().parents[2]
++TOKEN = 'ghp_stub_token_0123456789'
++RUNTIME = 'github_pat_runtime_stub_0123456789'
++
++
++def load_bootstrap():
++    loader = importlib.machinery.SourceFileLoader('rdgen_github_bootstrap', str(ROOT / 'tools' / 'rdgen-github-bootstrap'))
++    spec = importlib.util.spec_from_loader(loader.name, loader)
++    module = importlib.util.module_from_spec(spec)
++    loader.exec_module(module)
++    return module
++
++
++boot = load_bootstrap()
++IDENT = {'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@localhost', 'GIT_COMMITTER_NAME': 't',
++         'GIT_COMMITTER_EMAIL': 't@localhost', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull}
++
++
++def git(*args, cwd=None):
++    return subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True,
++                          env=dict(os.environ, **IDENT)).stdout.strip()
++
++
++class InitTests(SimpleTestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        base = Path(self.tmp.name)
++        self.tree, self.remote, self.seed = base / 'tree', base / 'remote.git', base / 'seed'
++        git('init', '-q', '-b', 'rdgen-build', str(self.tree))
++        (self.tree / 'tools').mkdir()
++        (self.tree / 'tools' / 'rdgen-github-bootstrap').write_text('# stand-in\n')
++        wf = self.tree / '.github' / 'workflows'
++        wf.mkdir(parents=True)
++        for name in boot.GENERATORS:
++            (wf / name).write_text('on: workflow_dispatch\n')
++        git('add', '-A', cwd=self.tree)
++        git('commit', '-qm', 'tree', cwd=self.tree)
++        self.head = git('rev-parse', 'HEAD', cwd=self.tree)
++        git('init', '-q', '--bare', str(self.remote))
++        self.env_file = base / 'rdgen.env'
++        self.env_file.write_text('ZIP_PASSWORD=' + 'a' * 48 + '\nGHBRANCH=master\n')
++        self.token_file = base / 'token'
++        self.token_file.write_text(TOKEN + '\n')
++        self.token_file.chmod(0o600)
++        self.state = base / 'state.json'
++        self.stub = GitHubStub(branch='main')
++        self.stub.repo_exists = True
++        self.stub.workflow_source = str(self.remote)
++        self.stub.start()
++        sleep = mock.patch.object(boot.time, 'sleep', lambda s: None)
++        sleep.start()
++        self.addCleanup(sleep.stop)
++
++    def tearDown(self):
++        self.stub.stop()
++        self.tmp.cleanup()
++
++    def seed_remote(self, files, commits=1):
++        git('init', '-q', '-b', 'main', str(self.seed))
++        for i in range(commits):
++            for name, body in files.items():
++                path = self.seed / name
++                path.parent.mkdir(parents=True, exist_ok=True)
++                path.write_text(body + str(i))
++            git('add', '-A', cwd=self.seed)
++            git('commit', '-qm', 'Initial commit' if i == 0 else f'edit {i}', cwd=self.seed)
++        git('push', '-q', str(self.remote), 'main', cwd=self.seed)
++        return git('rev-parse', 'HEAD', cwd=self.seed)
++
++    def init(self, *options, stdin=''):
++        argv = ['--env-file', str(self.env_file), '--owner', self.stub.owner, '--repo', self.stub.repo,
++                '--api', self.stub.api_url, '--git-url', f'file://{self.remote}', '--state', str(self.state),
++                '--token-file', str(self.token_file), *options, 'init', '--tree', str(self.tree)]
++        err, out = io.StringIO(), io.StringIO()
++        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
++                mock.patch.object(boot.sys, 'stdin', io.StringIO(stdin)):
++            code = boot.main(argv)
++        return code, err.getvalue()
++
++    def remote_head(self, branch):
++        return subprocess.run(['git', '--git-dir', str(self.remote), 'rev-parse', '-q', '--verify',
++                               f'refs/heads/{branch}'], capture_output=True, text=True).stdout.strip()
++
++    def test_empty_repo_uses_the_reported_default_branch(self):
++        code, err = self.init()
++        self.assertEqual(code, 0, err)
++        self.assertEqual(self.remote_head('main'), self.head)
++        self.assertEqual(self.remote_head('master'), '')
++        self.assertEqual(json.loads(self.state.read_text())['branch'], 'main')
++        self.assertIn('set GHBRANCH=main', err)
++        self.assertEqual(self.stub.decrypt_secret('ZIP_PASSWORD'), 'a' * 48)
++
++    def test_readme_only_first_commit_is_replaced(self):
++        self.seed_remote({'README.md': '# rdgen-build\n', 'LICENSE': 'MIT\n'})
++        code, err = self.init()
++        self.assertEqual(code, 0, err)
++        self.assertIn('replacing the first commit GitHub created on main', err)
++        self.assertEqual(self.remote_head('main'), self.head)
++
++    def test_edited_readme_is_not_replaced(self):
++        before = self.seed_remote({'README.md': '# rdgen-build\n'}, commits=2)
++        code, err = self.init()
++        self.assertEqual(code, 3, err)
++        self.assertIn('not an rdgen build tree', err)
++        self.assertEqual(self.remote_head('main'), before)
++
++    def test_other_content_is_not_replaced(self):
++        before = self.seed_remote({'README.md': '# x\n', 'src/app.py': 'print(1)\n'})
++        code, err = self.init()
++        self.assertEqual(code, 3, err)
++        self.assertEqual(self.remote_head('main'), before)
++
++    def test_first_push_to_another_branch_waits_for_the_default_switch(self):
++        self.stub.default_lag = 2
++        code, err = self.init('--branch', 'master')
++        self.assertEqual(code, 0, err)
++        self.assertEqual(self.remote_head('master'), self.head)
++        self.assertEqual(json.loads(self.state.read_text())['branch'], 'master')
++
++    def test_push_to_a_branch_that_is_not_the_default_fails_clearly(self):
++        self.seed_remote({'README.md': '# x\n', 'src/app.py': 'print(1)\n'})
++        code, err = self.init('--branch', 'master')
++        self.assertEqual(code, 3, err)
++        self.assertIn("the default branch of me/rdgen-build is 'main', but the tree was pushed to 'master'", err)
++        self.assertFalse(self.state.exists())
++
++    def test_workflows_checked_with_the_runtime_token(self):
++        # a fine-grained install token without Actions: read gets 404 here; the runtime token can list them
++        self.stub.runtime_token, self.stub.install_actions_status = RUNTIME, 404
++        code, err = self.init('--runtime-token-stdin', stdin=RUNTIME + '\n')
++        self.assertEqual(code, 0, err)
++        lists = [r for r in self.stub.requests if r['path'].endswith('/actions/workflows')]
++        self.assertTrue(lists and all(r['runtime'] for r in lists))
++
++    def test_without_a_runtime_token_an_unreadable_list_is_skipped(self):
++        self.stub.runtime_token, self.stub.install_actions_status = RUNTIME, 404
++        code, err = self.init()
++        self.assertEqual(code, 0, err)
++        self.assertIn('workflow check is skipped', err)
++
++    def test_unregistered_workflows_get_an_empty_commit(self):
++        self.stub.runtime_token, self.stub.stale_registration = RUNTIME, True
++        code, err = self.init('--runtime-token-stdin', stdin=RUNTIME + '\n')
++        self.assertEqual(code, 0, err)
++        self.assertIn('pushing an empty commit', err)
++        tip = self.remote_head('main')
++        self.assertEqual(git('--git-dir', str(self.remote), 'rev-parse', tip + '^'), self.head)
++        self.assertEqual(git('--git-dir', str(self.remote), 'rev-parse', tip + '^{tree}'),
++                         git('rev-parse', 'HEAD^{tree}', cwd=self.tree))
++        self.assertEqual(json.loads(self.state.read_text())['pushed'], self.head)
++        # the next init replaces the empty commit with the tree again
++        code, err = self.init('--runtime-token-stdin', stdin=RUNTIME + '\n')
++        self.assertEqual(code, 0, err)
++        self.assertEqual(self.remote_head('main'), self.head)
++
++    def test_missing_workflow_files_reported(self):
++        git('rm', '-q', '.github/workflows/generator-macos.yml', cwd=self.tree)
++        git('commit', '-qm', 'drop one', cwd=self.tree)
++        self.stub.runtime_token = RUNTIME
++        code, err = self.init('--runtime-token-stdin', stdin=RUNTIME + '\n')
++        self.assertEqual(code, 4, err)
++        self.assertIn('lacks generator-macos.yml', err)
+diff --git a/rdgenerator/tests/test_pull.py b/rdgenerator/tests/test_pull.py
+new file mode 100644
+index 0000000..376523c
+--- /dev/null
++++ b/rdgenerator/tests/test_pull.py
+@@ -0,0 +1,239 @@
++"""Pull model against a local GitHub stub: dispatch payload, poller, prune."""
++import base64
++import io
++import json
++import os
++import tempfile
++import zipfile
++from datetime import timedelta
++
++import pyzipper
++from django.conf import settings
++from django.test import Client, TestCase, override_settings
++from django.utils import timezone
++from PIL import Image
++
++from rdgenerator import poller
++from rdgenerator.github import GitHub
++from rdgenerator.models import GithubRun
++from rdgenerator.tests.ghstub import GitHubStub
++
++API_TOKEN = 'tok_' + 'b' * 40
++
++
++def png_uri(size, color=(0, 120, 255, 255), noise=False):
++    img = Image.effect_noise(size, 64).convert('RGBA') if noise else Image.new('RGBA', size, color)
++    buf = io.BytesIO()
++    img.save(buf, 'PNG')
++    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
++
++
++def decrypt_cfg(cfg):
++    with pyzipper.AESZipFile(io.BytesIO(base64.b64decode(cfg))) as zf:
++        zf.setpassword(settings.ZIP_PASSWORD.encode())
++        return {name: zf.read(name) for name in zf.namelist()}
++
++
++class StubTestCase(TestCase):
++    def setUp(self):
++        self.stub = GitHubStub().start()
++        self.tmp = tempfile.TemporaryDirectory()
++        self.override = override_settings(
++            GHUSER=self.stub.owner, REPONAME=self.stub.repo, GHBEARER=self.stub.token,
++            GITHUB_API_URL=self.stub.api_url, ARTIFACT_ROOT=self.tmp.name, RDGEN_API_TOKEN=API_TOKEN)
++        self.override.enable()
++        self.c = Client()
++        self.h = {'HTTP_AUTHORIZATION': f'Bearer {API_TOKEN}'}
++
++    def tearDown(self):
++        self.override.disable()
++        self.stub.stop()
++        self.tmp.cleanup()
++
++    def generate(self, **body):
++        body.setdefault('exename', 'acme client')
++        body.setdefault('platform', 'windows')
++        return self.c.post('/api/generate', json.dumps(body), content_type='application/json', **self.h)
++
++
++class DispatchTests(StubTestCase):
++    def test_dispatch_payload(self):
++        r = self.generate(serverIP='rd.example.com', key='OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=',
++                          permanentPassword='hunter2-long', iconbase64=png_uri((512, 512)),
++                          logobase64=png_uri((900, 300)))
++        self.assertEqual(r.status_code, 200, r.content)
++        u = r.json()['uuid']
++        req = [x for x in self.stub.requests if x['path'].endswith('/dispatches')][-1]
++        self.assertTrue(req['auth_ok'])
++        self.assertEqual(req['path'], '/repos/me/rdgen-build/actions/workflows/generator-windows.yml/dispatches')
++        body = req['body']
++        self.assertEqual(body['ref'], 'master')
++        self.assertIs(body['return_run_details'], True)
++        inputs = body['inputs']
++        self.assertEqual(set(inputs), {'version', 'cfg', 'build_uuid', 'proto'})
++        self.assertEqual(inputs['build_uuid'], u)
++        self.assertEqual(inputs['proto'], '1')
++        self.assertLessEqual(len(json.dumps(inputs, separators=(',', ':'))), 65535)
++        members = decrypt_cfg(inputs['cfg'])
++        self.assertEqual(set(members), {'secrets.json', 'assets/icon.png', 'assets/logo.png'})
++        secrets_json = json.loads(members['secrets.json'])
++        self.assertEqual(secrets_json['uuid'], u)
++        self.assertEqual(secrets_json['server'], 'rd.example.com')
++        self.assertEqual(secrets_json['iconlink_url'], 'embedded')
++        self.assertEqual(secrets_json['privacylink_url'], 'false')
++        self.assertNotIn('genurl', secrets_json)
++        self.assertEqual(Image.open(io.BytesIO(members['assets/icon.png'])).size, (256, 256))
++        self.assertLessEqual(max(Image.open(io.BytesIO(members['assets/logo.png'])).size), 512)
++        custom = json.loads(base64.b64decode(secrets_json['custom']))
++        self.assertEqual(custom['password'], 'hunter2-long')
++        run = GithubRun.objects.get(uuid=u)
++        self.assertEqual((run.status, run.github_run_id, run.platform, run.filename), ('queued', 1000, 'windows', 'acme_client'))
++        # ciphertext only: the plaintext password is nowhere in the request
++        self.assertNotIn('hunter2', json.dumps(req['body']))
++
++    def test_oversize_images_rejected_clearly(self):
++        r = self.generate(iconbase64=png_uri((1024, 1024), noise=True), privacybase64=png_uri((800, 600), noise=True))
++        self.assertEqual(r.status_code, 413)
++        self.assertIn('65,535', r.json()['error'])
++        self.assertFalse([x for x in self.stub.requests if x['path'].endswith('/dispatches')])
++
++    def test_non_square_icon_rejected(self):
++        r = self.generate(iconbase64=png_uri((300, 200)))
++        self.assertEqual(r.status_code, 400)
++
++    def test_github_rejection_reported(self):
++        with override_settings(GHBRANCH='does-not-exist'):
++            r = self.generate()
++        self.assertEqual(r.status_code, 502)
++        self.assertIn('HTTP 422', r.json()['error'])
++        self.assertEqual(GithubRun.objects.get().status, 'failure')
++
++    def test_not_configured(self):
++        with override_settings(GHBEARER=''):
++            r = self.generate()
++        self.assertEqual(r.status_code, 503)
++
++
++class PollerTests(StubTestCase):
++    def evil_zip(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, 'w') as zf:
++            zf.writestr('../../../../tmp/rdgen-test-pwned-acme_client.exe', b'evil')
++            zf.writestr('nested/dir/acme_client-x86_64.deb', b'deb')
++            zf.writestr('notes.txt', b'x')
++            link = zipfile.ZipInfo('acme_client-link.exe')
++            link.external_attr = 0o120777 << 16
++            zf.writestr(link, '/etc/passwd')
++        return buf.getvalue()
++
++    def artifacts(self, run):
++        u = run['inputs']['build_uuid']
++        return [(f'rdgen-{u}-build-for-windows-flutter-0', {'acme_client.exe': b'MZ' + b'\0' * 1000,
++                                                            'acme_client.msi': b'MSI' * 100}),
++                ('encrypted-secrets-zip', {'secrets.zip': b'ciphertext'}),
++                (f'rdgen-{u}-odd-1', self.evil_zip())]
++
++    def poll_until_terminal(self, u, passes=6):
++        for _ in range(passes):
++            poller.poll_once()
++            build = GithubRun.objects.get(uuid=u)
++            if build.is_terminal:
++                return build
++        return build
++
++    def test_success_flow_downloads_and_deletes(self):
++        self.stub.artifacts_for = self.artifacts
++        self.stub.polls_to_complete = 3
++        u = self.generate().json()['uuid']
++        build = self.poll_until_terminal(u)
++        self.assertEqual(build.status, 'success')
++        self.assertTrue(build.run_deleted)
++        names = [f['name'] for f in build.files]
++        self.assertEqual(names, ['acme_client-x86_64.deb', 'acme_client.exe', 'acme_client.msi'])
++        self.assertEqual(sorted(os.listdir(os.path.join(self.tmp.name, u))), names)
++        self.assertFalse(os.path.exists('/tmp/rdgen-test-pwned-acme_client.exe'))
++        self.assertFalse(any(os.path.islink(os.path.join(self.tmp.name, u, n)) for n in names))
++        # nothing left on GitHub, and the token never reached the blob host
++        self.assertFalse([a for a in self.stub.artifacts.values() if not a['deleted']])
++        self.assertTrue(all(r['deleted'] for r in self.stub.runs.values()))
++        self.assertTrue(self.stub.blob_requests)
++        self.assertFalse(any(b['auth_present'] for b in self.stub.blob_requests))
++        self.assertTrue(all(x['auth_ok'] for x in self.stub.requests))
++        # the API reports and serves the files
++        st = self.c.get(f'/api/status?uuid={u}', **self.h).json()
++        self.assertTrue(st['ready'])
++        exe = [f for f in st['files'] if f['name'] == 'acme_client.exe'][0]
++        r = self.c.get(exe['url'], **self.h)
++        self.assertEqual(b''.join(r.streaming_content), b'MZ' + b'\0' * 1000)
++
++    def test_failed_run_keeps_partial_files_and_run_until_prune(self):
++        self.stub.artifacts_for = lambda run: [(f"rdgen-{run['inputs']['build_uuid']}-x-0", {'acme_client.exe': b'MZ'})]
++        self.stub.conclusion = 'failure'
++        u = self.generate().json()['uuid']
++        build = self.poll_until_terminal(u)
++        self.assertEqual(build.status, 'failure')
++        self.assertFalse(build.run_deleted)
++        self.assertEqual([f['name'] for f in build.files], ['acme_client.exe'])
++        self.assertFalse(list(self.stub.runs.values())[0]['deleted'])
++        # within the keep window nothing happens; afterwards the run goes
++        poller.prune_remote(GitHub())
++        self.assertFalse(list(self.stub.runs.values())[0]['deleted'])
++        GithubRun.objects.filter(uuid=u).update(completed_at=timezone.now() - timedelta(hours=49))
++        poller.prune_remote(GitHub())
++        self.assertTrue(list(self.stub.runs.values())[0]['deleted'])
++        self.assertTrue(GithubRun.objects.get(uuid=u).run_deleted)
++
++    def test_success_without_artifacts_is_failure(self):
++        u = self.generate().json()['uuid']
++        build = self.poll_until_terminal(u)
++        self.assertEqual(build.status, 'failure')
++        self.assertIn('no usable rdgen-', build.last_error)
++
++    def test_run_found_by_name_when_dispatch_returns_204(self):
++        self.stub.return_run_details = False
++        self.stub.artifacts_for = lambda run: [(f"rdgen-{run['inputs']['build_uuid']}-x-0", {'acme_client.exe': b'MZ'})]
++        u = self.generate().json()['uuid']
++        self.assertIsNone(GithubRun.objects.get(uuid=u).github_run_id)
++        build = self.poll_until_terminal(u)
++        self.assertEqual(build.github_run_id, 1000)
++        self.assertEqual(build.status, 'success')
++
++    def test_timeout_cancels_run(self):
++        self.stub.polls_to_complete = 99
++        u = self.generate().json()['uuid']
++        GithubRun.objects.filter(uuid=u).update(created_at=timezone.now() - timedelta(hours=7))
++        poller.poll_once()
++        build = GithubRun.objects.get(uuid=u)
++        self.assertEqual(build.status, 'timed_out')
++        self.assertTrue(list(self.stub.runs.values())[0]['cancelled'])
++
++    def test_oversized_artifact_rejected(self):
++        self.stub.artifacts_for = lambda run: [(f"rdgen-{run['inputs']['build_uuid']}-x-0", {'acme_client.exe': b'M' * 5000})]
++        u = self.generate().json()['uuid']
++        with override_settings(RDGEN_MAX_ARTIFACT_BYTES=1000):
++            build = self.poll_until_terminal(u)
++        self.assertEqual(build.status, 'failure')
++        self.assertIn('rejected', build.last_error)
++        self.assertEqual(build.files, [])
++
++    def test_bad_token_backs_off(self):
++        u = self.generate().json()['uuid']
++        with override_settings(GHBEARER='wrong-token'):
++            with self.assertRaises(Exception):
++                poller.poll_once()
++        self.assertEqual(GithubRun.objects.get(uuid=u).poll_failures, 1)
++        self.assertNotIn('wrong-token', GithubRun.objects.get(uuid=u).last_error)
++
++    def test_prune_local(self):
++        old = GithubRun.objects.create(uuid='00000000-0000-4000-8000-000000000001', status='success',
++                                       created_at=timezone.now() - timedelta(days=31), filename='a')
++        os.makedirs(os.path.join(self.tmp.name, old.uuid))
++        orphan = os.path.join(self.tmp.name, '00000000-0000-4000-8000-000000000002')
++        os.makedirs(orphan)
++        keep = os.path.join(self.tmp.name, 'not-a-uuid')
++        os.makedirs(keep)
++        self.assertEqual(poller.prune_local(), 1)
++        self.assertFalse(GithubRun.objects.filter(uuid=old.uuid).exists())
++        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, old.uuid)))
++        self.assertFalse(os.path.exists(orphan))
++        self.assertTrue(os.path.exists(keep))
+diff --git a/rdgenerator/tests/test_security.py b/rdgenerator/tests/test_security.py
+new file mode 100644
+index 0000000..ba544eb
+--- /dev/null
++++ b/rdgenerator/tests/test_security.py
+@@ -0,0 +1,197 @@
++import os
++import subprocess
++import sys
++import tempfile
++import uuid
++
++from django.conf import settings
++from django.contrib.auth import get_user_model
++from django.test import Client, TestCase, override_settings
++
++from rdgenerator.models import GithubRun
++from rdgenerator.validation import sanitize_filename, validate_build_fields
++
++API_TOKEN = 'tok_' + 'a' * 40
++
++
++def run_settings(env_overrides):
++    """Import settings in a clean interpreter; return (rc, stderr)."""
++    env = {k: v for k, v in os.environ.items() if k not in ('SECRET_KEY', 'ZIP_PASSWORD', 'RDGEN_ENV_FILE')}
++    env.update(env_overrides)
++    env['DJANGO_SETTINGS_MODULE'] = 'rdgen.settings'
++    code = 'import django; django.setup(); from django.conf import settings; print(settings.SECRET_KEY[:4])'
++    r = subprocess.run([sys.executable, '-c', code], cwd=settings.BASE_DIR, env=env, capture_output=True, text=True)
++    return r.returncode, r.stderr
++
++
++class SettingsTests(TestCase):
++    def test_refuses_to_start_without_secret_key(self):
++        rc, err = run_settings({'ZIP_PASSWORD': 'z' * 40})
++        self.assertNotEqual(rc, 0)
++        self.assertIn('SECRET_KEY is not set', err)
++
++    def test_refuses_published_default_secret_key(self):
++        rc, err = run_settings({'SECRET_KEY': 'django-insecure-!(t-!f#6g#sr%yfded9(xha)g+=!6craeez^cp+*&bz_7vdk61',
++                                'ZIP_PASSWORD': 'z' * 40})
++        self.assertNotEqual(rc, 0)
++        self.assertIn('published default', err)
++
++    def test_refuses_short_zip_password(self):
++        rc, err = run_settings({'SECRET_KEY': 's' * 60, 'ZIP_PASSWORD': 'insecure'})
++        self.assertNotEqual(rc, 0)
++
++    def test_env_file_values_stay_out_of_os_environ(self):
++        with tempfile.NamedTemporaryFile('w', suffix='.env', delete=False) as fh:
++            fh.write('SECRET_KEY="%s"\nexport ZIP_PASSWORD=%s\n# comment\n' % ('s' * 60, 'z' * 40))
++        try:
++            env = {'RDGEN_ENV_FILE': fh.name}
++            code = ('import os, django; django.setup(); from django.conf import settings; '
++                    'print(len(settings.ZIP_PASSWORD), "ZIP_PASSWORD" in os.environ)')
++            r = subprocess.run([sys.executable, '-c', code], cwd=settings.BASE_DIR,
++                               env={**{k: v for k, v in os.environ.items() if k not in ('SECRET_KEY', 'ZIP_PASSWORD')},
++                                    **env, 'DJANGO_SETTINGS_MODULE': 'rdgen.settings'},
++                               capture_output=True, text=True)
++            self.assertEqual(r.stdout.split(), ['40', 'False'], r.stderr)
++        finally:
++            os.unlink(fh.name)
++
++    def test_csrf_middleware_and_login_required_enabled(self):
++        self.assertIn('django.middleware.csrf.CsrfViewMiddleware', settings.MIDDLEWARE)
++        self.assertIn('django.contrib.auth.middleware.LoginRequiredMiddleware', settings.MIDDLEWARE)
++        self.assertIsNotNone(settings.DATA_UPLOAD_MAX_MEMORY_SIZE)
++
++
++@override_settings(RDGEN_API_TOKEN=API_TOKEN)
++class AccessTests(TestCase):
++    def setUp(self):
++        self.user = get_user_model().objects.create_superuser('admin', password='A-long-test-password-1')
++        self.anon = Client(enforce_csrf_checks=True)
++
++    def login(self):
++        c = Client(enforce_csrf_checks=True)
++        c.force_login(self.user)
++        return c
++
++    def test_pages_require_login(self):
++        for path in ('/', '/generator', '/check_for_file?uuid=x', '/download?uuid=x&filename=a'):
++            r = self.anon.get(path)
++            self.assertEqual(r.status_code, 302, path)
++            self.assertTrue(r['Location'].startswith('/accounts/login/'), path)
++
++    def test_login_page_is_public_and_has_csrf(self):
++        r = self.anon.get('/accounts/login/')
++        self.assertEqual(r.status_code, 200)
++        self.assertContains(r, 'csrfmiddlewaretoken')
++
++    def test_login_post_without_csrf_rejected(self):
++        r = self.anon.post('/accounts/login/', {'username': 'admin', 'password': 'A-long-test-password-1'})
++        self.assertEqual(r.status_code, 403)
++
++    def test_generator_post_without_csrf_rejected(self):
++        r = self.login().post('/generator', {'exename': 'x'})
++        self.assertEqual(r.status_code, 403)
++
++    def test_generator_form_has_csrf_token(self):
++        r = self.login().get('/')
++        self.assertContains(r, 'csrfmiddlewaretoken')
++
++    def test_logout_is_post_only(self):
++        self.assertEqual(self.login().get('/accounts/logout/').status_code, 405)
++
++    def test_api_requires_auth(self):
++        self.assertEqual(self.anon.post('/api/generate', '{}', content_type='application/json').status_code, 401)
++        self.assertEqual(self.anon.get('/api/status?uuid=x').status_code, 401)
++        self.assertEqual(self.anon.get('/api/download?uuid=x&filename=y').status_code, 401)
++        r = self.anon.get('/api/status?uuid=x', HTTP_AUTHORIZATION='Bearer wrong')
++        self.assertEqual(r.status_code, 401)
++
++    def test_api_token_skips_csrf(self):
++        r = self.anon.post('/api/generate', '{}', content_type='application/json',
++                           HTTP_AUTHORIZATION=f'Bearer {API_TOKEN}')
++        self.assertEqual(r.status_code, 400)  # validation error, i.e. authenticated
++        self.assertIn('exename', r.json()['details'])
++
++    def test_api_session_needs_csrf(self):
++        c = self.login()
++        c.get('/')  # sets the CSRF cookie
++        r = c.post('/api/generate', '{}', content_type='application/json')
++        self.assertEqual(r.status_code, 403)
++        r = c.post('/api/generate', '{}', content_type='application/json',
++                   HTTP_X_CSRFTOKEN=c.cookies[settings.CSRF_COOKIE_NAME].value)
++        self.assertEqual(r.status_code, 400)
++
++    def test_push_model_endpoints_are_gone(self):
++        c = self.login()
++        for path in ('/get_zip?filename=x', '/get_png?uuid=x&filename=/proc/self/environ', '/save_custom_client',
++                     '/cleanzip', '/updategh', '/startgh', '/creategh'):
++            self.assertEqual(c.get(path).status_code, 404, path)
++            self.assertEqual(c.post(path).status_code, 404, path)
++
++
++@override_settings(RDGEN_API_TOKEN=API_TOKEN)
++class DownloadTraversalTests(TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.override = override_settings(ARTIFACT_ROOT=self.tmp.name)
++        self.override.enable()
++        self.user = get_user_model().objects.create_superuser('admin', password='A-long-test-password-1')
++        self.c = Client()
++        self.c.force_login(self.user)
++        self.u = str(uuid.uuid4())
++        os.makedirs(os.path.join(self.tmp.name, self.u))
++        with open(os.path.join(self.tmp.name, self.u, 'acme.exe'), 'wb') as fh:
++            fh.write(b'MZ-test')
++        with open(os.path.join(self.tmp.name, 'secret.txt'), 'w') as fh:
++            fh.write('do not serve')
++        GithubRun.objects.create(uuid=self.u, status='success', platform='windows', filename='acme',
++                                 files=[{'name': 'acme.exe', 'size': 7, 'sha256': 'x'}])
++
++    def tearDown(self):
++        self.override.disable()
++        self.tmp.cleanup()
++
++    def test_listed_file_downloads(self):
++        r = self.c.get(f'/download?uuid={self.u}&filename=acme.exe')
++        self.assertEqual(r.status_code, 200)
++        self.assertEqual(b''.join(r.streaming_content), b'MZ-test')
++        self.assertIn('attachment', r['Content-Disposition'])
++
++    def test_traversal_blocked(self):
++        probes = [
++            f'uuid={self.u}&filename=/proc/self/environ',
++            f'uuid={self.u}&filename=../secret.txt',
++            f'uuid={self.u}&filename=..%2Fsecret.txt',
++            f'uuid={self.u}&filename=/etc/passwd',
++            'uuid=../../etc&filename=passwd',
++            'uuid=x&filename=/proc/self/environ',
++            f'uuid={self.u.upper()}&filename=acme.exe',   # non-canonical uuid
++            f'uuid={self.u}&filename=acme.msi',            # not in the manifest
++        ]
++        for q in probes:
++            self.assertEqual(self.c.get('/download?' + q).status_code, 404, q)
++            r = self.c.get('/api/download?' + q, HTTP_AUTHORIZATION=f'Bearer {API_TOKEN}')
++            self.assertEqual(r.status_code, 404, q)
++
++    def test_manifest_entry_with_bad_name_is_ignored(self):
++        GithubRun.objects.filter(uuid=self.u).update(files=[{'name': '../secret.txt', 'size': 1, 'sha256': 'x'}])
++        self.assertEqual(self.c.get(f'/download?uuid={self.u}&filename=../secret.txt').status_code, 404)
++
++
++class ValidationTests(TestCase):
++    def test_upstream_defaults_pass(self):
++        self.assertEqual(validate_build_fields({
++            'serverIP': 'rs-ny.rustdesk.com', 'apiServer': 'rs-ny.rustdesk.com:21114',
++            'urlLink': 'https://rustdesk.com', 'downloadLink': 'https://rustdesk.com/download',
++            'compname': 'Purslane Ltd', 'appname': 'rustdesk', 'androidappid': 'com.carriez.flutter_hbb',
++            'key': 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw='}), {})
++
++    def test_injection_attempts_rejected(self):
++        bad = {'appname': 'x$(id)', 'compname': 'a|b', 'serverIP': 'a.com";id;"', 'key': 'x',
++               'apiServer': "https://a/'", 'urlLink': 'https://a.com/?q=1&x', 'downloadLink': 'javascript:1',
++               'androidappid': 'com', 'serverPort': '70000', 'defaultManual': 'bad key=1'}
++        self.assertEqual(set(validate_build_fields(bad)), set(bad))
++
++    def test_filename_sanitized(self):
++        self.assertEqual(sanitize_filename('my client\tname\n'), 'my_client_name')
++        self.assertEqual(sanitize_filename('../x'), '___x')
++        self.assertEqual(sanitize_filename('Ärger'), 'rustdesk')
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+new file mode 100644
+index 0000000..17e5763
+--- /dev/null
++++ b/rdgenerator/tests/test_workflows.py
+@@ -0,0 +1,297 @@
++"""Workflow side: pullify invariants, and the runner steps run locally."""
++import base64
++import importlib.util
++import json
++import os
++import re
++import shutil
++import subprocess
++import sys
++import tempfile
++import uuid
++
++from django.conf import settings
++from django.test import SimpleTestCase
++from PIL import Image
++
++from rdgenerator import buildcfg
++from rdgenerator.validation import validate_build_fields
++
++ROOT = str(settings.BASE_DIR)
++ACTION = os.path.join(ROOT, '.github', 'actions', 'decrypt-secrets')
++WORKFLOWS = os.path.join(ROOT, '.github', 'workflows')
++
++
++def load_validate():
++    spec = importlib.util.spec_from_file_location('rdgen_runner_validate', os.path.join(ACTION, 'validate.py'))
++    mod = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(mod)
++    return mod
++
++
++def secrets_json(u, **over):
++    d = {'server': 'rd.example.com', 'serverPort': '21116', 'key': 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=',
++         'apiServer': 'https://rd.example.com', 'custom': base64.b64encode(b'{"password":"pw"}').decode(), 'uuid': u,
++         'iconlink_url': 'embedded', 'logolink_url': 'false', 'privacylink_url': 'false', 'appname': 'Acme Remote',
++         'urlLink': 'https://example.com', 'downloadLink': 'https://example.com/dl', 'delayFix': 'true',
++         'rdgen': 'true', 'xOffline': 'false', 'removeNewVersionNotif': 'false', 'compname': 'Acme Ltd',
++         'androidappid': 'com.acme.remote', 'filename': 'acme'}
++    d.update(over)
++    return d
++
++
++class PullifyTests(SimpleTestCase):
++    def test_tree_is_fully_converted(self):
++        r = subprocess.run([sys.executable, 'tools/pullify.py', '--check'], cwd=ROOT, capture_output=True, text=True)
++        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
++        self.assertIn('nothing to do', r.stdout)
++
++    def test_macos_developer_id_signing_and_notarization(self):
++        with open(os.path.join(ROOT, '.github', 'workflows', 'generator-macos.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++        names = re.findall(r'^\s*- name: (.+?)\s*$', text, re.M)
++        i = names.index('Create DMG')
++        self.assertEqual(names[i - 1], 'Sign the app with the Developer ID')
++        self.assertEqual(names[i + 1], 'Sign and notarize the DMG')
++        self.assertIn('codesign --force --options runtime --timestamp --deep --strict', text)
++        self.assertIn('xattr -cr "$app"', text)
++        # upstream's rcodesign pass signed every file in Contents/MacOS, custom_.txt included, and failed on it
++        self.assertNotIn('Sign macOS app bundle', names)
++        self.assertIn('Ad-hoc Sign macOS app bundle (Fallback)', names)
++        self.assertIn('rcodesign notary-submit --api-key-path', text)
++        # rcodesign's unified key holds the base64 DER, not the PEM text of the .p8 ("invalid unified api key")
++        self.assertIn("sed '/^-----/d'", text)
++        self.assertIn('private_key: env.APPLE_API_KEY_DER', text)
++        self.assertNotIn('--arg p', text)
++        self.assertRegex(text, r'[0-9a-f]{64}  apple-codesign-[0-9.]+-macos-universal\.tar\.gz" \| shasum -a 256 -c -')
++        # secrets reach the scripts as environment variables, never interpolated into the script text
++        for step in ('Sign the app with the Developer ID', 'Sign and notarize the DMG'):
++            body = text.split('- name: ' + step, 1)[1].split('\n      - name:', 1)[0]
++            run = body.split('run: |', 1)[1]
++            self.assertNotIn('secrets.', run, step)
++
++    def test_only_expected_workflows_remain(self):
++        self.assertEqual(sorted(os.listdir(WORKFLOWS)), sorted([
++            'bridge.yml', 'fetch-encrypted-secrets.yml', 'generator-android.yml', 'generator-linux.yml',
++            'generator-macos.yml', 'generator-windows-x86.yml', 'generator-windows.yml',
++            'third-party-RustDeskTempTopMostWindow.yml']))
++
++    def test_every_remote_action_pinned(self):
++        for name in os.listdir(WORKFLOWS):
++            with open(os.path.join(WORKFLOWS, name), encoding='utf-8') as fh:
++                for m in re.finditer(r'^\s*(?:-\s+)?uses:\s*([^\s#]+)', fh.read(), re.M):
++                    spec = m.group(1)
++                    self.assertTrue(spec.startswith('./') or re.search(r'@[0-9a-f]{40}$', spec), f'{name}: {spec}')
++
++    def test_macos_jobs_follow_mac_arch_and_can_run_on_a_mac_of_your_own(self):
++        with open(os.path.join(ROOT, '.github', 'workflows', 'generator-macos.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++        self.assertRegex(text, r"mac_arch:\n\s+description: .*\n\s+required: false\n\s+default: 'both'")
++        m = re.search(r"job: \$\{\{ fromJSON\(inputs\.mac_arch == 'x86_64' && '(\[.*?\])' \|\| "
++                      r"inputs\.mac_arch == 'aarch64' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}\n", text)
++        self.assertIsNotNone(m)
++        x86, arm, both = (json.loads(g) for g in m.groups())
++        self.assertEqual([j['arch'] for j in x86], ['x86_64'])
++        self.assertEqual([j['arch'] for j in arm], ['aarch64'])
++        self.assertEqual(both, x86 + arm)
++        self.assertEqual((x86[0]['os'], x86[0]['target'], x86[0]['vcpkg-triplet'], x86[0]['extra-build-args']),
++                         ('macos-15-intel', 'x86_64-apple-darwin', 'x64-osx', ''))
++        self.assertEqual((arm[0]['os'], arm[0]['extra-build-args']), ('macos-14', '--screencapturekit'))
++        self.assertIn("runs-on: ${{ (matrix.job.arch == 'x86_64' && vars.RDGEN_RUNNER_MACOS_X86_64) || "
++                      "(matrix.job.arch == 'aarch64' && vars.RDGEN_RUNNER_MACOS_AARCH64) || matrix.job.os }}", text)
++        # everything a self-hosted Mac needs runs only there; GitHub's machines take the old path
++        names = re.findall(r'^\s*- name: (.+?)\s*$', text, re.M)
++        self.assertEqual(names[names.index('Checkout Repository') + 1], 'Prepare a self-hosted Mac')
++        prep = text.split('- name: Prepare a self-hosted Mac', 1)[1].split('\n      - name:', 1)[0]
++        self.assertIn("if: runner.environment == 'self-hosted'", prep)
++        self.assertIn('xcodebuild -version', prep)
++        self.assertIn('for tool in python pip magick potrace create-dmg pkg-config cmake ninja wget jq pod rustup; do', prep)
++        self.assertEqual([c for c in prep.splitlines() if 'brew' in c and not c.strip().startswith('#')], [])
++        self.assertNotIn('Python for a self-hosted Mac', names)
++        # Homebrew has no prebuilt packages for Intel Macs any more: its installs run on GitHub's Macs only
++        brew_steps = [s for s in text.split('\n      - ')[1:] if re.search(r'^\s*brew install\b', s, re.M)]
++        self.assertEqual(len(brew_steps), 3)
++        for step in brew_steps:
++            self.assertIn("runner.environment != 'self-hosted'", step)
++        self.assertNotIn('/Users/runner/', text)
++        self.assertIn('else sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm; fi', text)
++        self.assertIn('"${RDGEN_BIN:-/usr/local/bin}"', text)
++        self.assertIn('create-dmg ${RDGEN_DMG_ARGS:-} \\', text)
++        keychain = text.split('- name: Remove the signing keychain', 1)[1].split('\n      - name:', 1)[0]
++        self.assertIn("if: always() && env.RDGEN_KEYCHAIN != ''", keychain)
++
++    def test_linux_options_and_self_hosted_runners(self):
++        def read(name):
++            with open(os.path.join(ROOT, '.github', 'workflows', name), encoding='utf-8') as fh:
++                return fh.read()
++        text = read('generator-linux.yml')
++        self.assertRegex(text, r"linux_arch:\n\s+description: .*\n\s+required: false\n\s+default: 'both'")
++        self.assertRegex(text, r"linux_formats:\n\s+description: .*\n\s+required: false\n\s+default: 'all'")
++        matrices = re.findall(r"job: \$\{\{ fromJSON\(inputs\.linux_arch == 'x86_64' && '(\[.*?\])' \|\| "
++                              r"inputs\.linux_arch == 'aarch64' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}\n", text)
++        self.assertEqual(len(matrices), 3)
++        for x86, arm, both in matrices:
++            x86, arm, both = json.loads(x86), json.loads(arm), json.loads(both)
++            self.assertEqual(([j['arch'] for j in x86], [j['arch'] for j in arm]), (['x86_64'], ['aarch64']))
++            self.assertEqual(both, x86 + arm)
++        for job in ('build-appimage', 'build-flatpak'):
++            head = text.split('\n  %s:\n' % job, 1)[1].split('\n    steps:', 1)[0]
++            self.assertIn("if: ${{ inputs.linux_formats != 'deb' }}", head)
++        # every job of these workflows can go to a self-hosted runner; Android stays on GitHub
++        for name in ('generator-linux.yml', 'generator-windows.yml', 'generator-windows-x86.yml', 'generator-macos.yml',
++                     'bridge.yml', 'fetch-encrypted-secrets.yml', 'third-party-RustDeskTempTopMostWindow.yml'):
++            for value in re.findall(r'^\s*runs-on:\s*(.+?)\s*$', read(name), re.M):
++                self.assertIn('vars.RDGEN_RUNNER', value, name)
++        self.assertNotIn('vars.RDGEN_RUNNER', read('generator-android.yml'))
++        self.assertIn("runs-on: ${{ vars.RDGEN_RUNNER_LINUX || 'ubuntu-latest' }}", text)
++        # GitHub-image cleanup never runs on a machine of yours
++        self.assertNotRegex(text, r'^\s*sudo rm -rf /', )
++        self.assertEqual(text.count('[ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo rm -rf /usr/share/dotnet'), 2)
++        self.assertEqual(text.count('- name: Check this self-hosted Linux runner'), 2)
++        # swapon is not allowed in an LXC: the swap steps run on GitHub's machines only
++        swaps = re.findall(r'- name: Set Swap Space\n\s+if: (.+)\n', text)
++        self.assertEqual(len(swaps), 2)
++        for cond in swaps:
++            self.assertIn("runner.environment != 'self-hosted'", cond)
++        for name in ('generator-windows.yml', 'generator-windows-x86.yml'):
++            win = read(name)
++            names = re.findall(r'^\s*- name: (.+?)\s*$', win, re.M)
++            self.assertEqual(names[names.index('Checkout Repository') - 1], 'Check this self-hosted Windows runner')
++            self.assertIn("'Microsoft Visual Studio\\Installer\\vswhere.exe'", win)
++            self.assertNotIn('C:/hostedtoolcache', win)   # GitHub's tool cache path; RUNNER_TOOL_CACHE on any runner
++        self.assertIn('"$env:RUNNER_TOOL_CACHE/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/',
++                      read('generator-windows.yml'))
++
++    def test_macos_custom_settings_where_the_client_reads_them(self):
++        # RustDesk on macOS reads <app>/Contents/Resources/custom.txt (allowCustom.py renames it to custom_.txt)
++        with open(os.path.join(ROOT, '.github', 'workflows', 'generator-macos.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++        self.assertNotIn('Contents/MacOS/custom_.txt', text)
++        self.assertIn('> "$APP/Contents/Resources/custom_.txt"', text)
++        with open(os.path.join(ROOT, '.github', 'patches', 'allowCustom.py'), encoding='utf-8') as fh:
++            self.assertIn('line.replace("custom.txt", "custom_.txt")', fh.read())
++
++    def test_rust_cache_leaves_cargo_bin_alone_on_self_hosted_runners(self):
++        # after a successful job, rust-cache deletes the files that were in $CARGO_HOME/bin at its start: rustup itself
++        for name in ('generator-macos.yml', 'bridge.yml', 'generator-windows.yml', 'generator-windows-x86.yml'):
++            with open(os.path.join(ROOT, '.github', 'workflows', name), encoding='utf-8') as fh:
++                steps = [s for s in fh.read().split('\n      - ') if s.startswith('uses: Swatinem/rust-cache@')]
++            self.assertTrue(steps, name)
++            for step in steps:
++                self.assertIn("\n          cache-bin: ${{ runner.environment != 'self-hosted' }}\n", step, name)
++
++    def test_flutter_patch_applies_once_on_a_kept_sdk(self):
++        # a self-hosted runner keeps Flutter's SDK between builds: the patch must be skipped when already applied
++        for name in ('generator-windows.yml', 'generator-macos.yml'):
++            with open(os.path.join(ROOT, '.github', 'workflows', name), encoding='utf-8') as fh:
++                lines = [l for l in fh.read().splitlines()
++                         if 'git apply' in l and 'flutter_3.24.4_dropdown_menu_enableFilter.diff' in l]
++            self.assertEqual(len(lines), 1, name)
++            self.assertRegex(lines[0], r'\{ git apply --reverse --check (\S+|\$\{\{ github\.workspace \}\}\S+) '
++                                       r'2>/dev/null \|\| git apply \1; \}$', name)
++
++    def test_linux_drm_job_is_an_optional_extra(self):
++        # the DRM job builds an extra .deb on a RustDesk with --drm (1.5.0 on) and must never fail a built client
++        with open(os.path.join(ROOT, '.github', 'workflows', 'generator-linux.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++        job = text.split('\n  build-rustdesk-linux-drm:\n', 1)[1].split('\n  build-appimage:\n', 1)[0]
++        head = job.split('\n    steps:\n', 1)[0]
++        self.assertIn("\n    if: inputs.linux_arch != 'aarch64' && (vars.RDGEN_RUNNER_LINUX == '' || "
++                      "vars.RDGEN_LINUX_DRM == 'true')", '\n' + head)
++        self.assertIn('\n    continue-on-error: true', '\n' + head)
++        names = re.findall(r'^      - (?:name: (.+?)|uses: \S+.*)$', job, re.M)
++        detect = names.index('Detect DRM support')
++        self.assertEqual(names[detect - 1], 'Checkout source code')   # it reads the checked-out build.py
++        self.assertIn('''if grep -q "'--drm'" build.py; then''', job)
++        for step in job.split('\n      - ')[1:]:
++            if "'--drm'" not in step and ('--drm' in step or 'build_libdrmtap_so' in step):
++                self.assertIn("env.DRM_SUPPORTED == 'true'", step)
++
++
++class RunnerValidatorParityTests(SimpleTestCase):
++    """The server and the runner must agree on what is allowed."""
++    FIELD_MAP = {'serverIP': 'server'}
++
++    def test_server_output_passes_runner_rules(self):
++        v = load_validate()
++        self.assertEqual(v.validate_secrets(secrets_json(str(uuid.uuid4()))), [])
++
++    def test_both_layers_reject_the_same_injections(self):
++        v = load_validate()
++        u = str(uuid.uuid4())
++        for field, value in [('serverIP', 'a.com";id;"'), ('appname', "x'$(id)"), ('compname', 'a|b'),
++                             ('apiServer', "https://a/'x"), ('urlLink', 'https://a/?a=1&b'),
++                             ('downloadLink', 'ftp://a'), ('androidappid', 'com'), ('key', 'short')]:
++            self.assertIn(field, validate_build_fields({field: value}), field)
++            runner_key = self.FIELD_MAP.get(field, field)
++            self.assertTrue(v.validate_secrets(secrets_json(u, **{runner_key: value})), field)
++
++    def test_runner_rejects_unknown_and_missing_keys(self):
++        v = load_validate()
++        u = str(uuid.uuid4())
++        self.assertTrue(v.validate_secrets(dict(secrets_json(u), LD_PRELOAD='/x.so')))
++        d = secrets_json(u)
++        del d['server']
++        self.assertTrue(v.validate_secrets(d))
++
++
++class RunnerStepsTests(SimpleTestCase):
++    """Run the setup job's decode script and decrypt.py as a runner would."""
++
++    def run_steps(self, sec, event_uuid=None, proto='1', with_icon=True):
++        tmp = tempfile.mkdtemp(prefix='rdgen-runner-')
++        self.addCleanup(shutil.rmtree, tmp, True)
++        images = {'icon.png': Image.new('RGBA', (300, 300), (0, 128, 255, 255)) if with_icon else None,
++                  'logo.png': None, 'privacy.png': None}
++        inputs, _ = buildcfg.pack(sec, images, settings.ZIP_PASSWORD, lambda cfg: {
++            'version': '1.4.9', 'cfg': cfg, 'build_uuid': event_uuid or sec['uuid'], 'proto': proto})
++        event = os.path.join(tmp, 'event.json')
++        with open(event, 'w') as fh:
++            json.dump({'inputs': inputs}, fh)
++        os.makedirs(os.path.join(tmp, 'rt'))
++        open(os.path.join(tmp, 'genv'), 'w').close()
++        env = dict(os.environ, GITHUB_EVENT_PATH=event, BUILD_UUID=event_uuid or sec['uuid'],
++                   RUNNER_TEMP=os.path.join(tmp, 'rt'), GITHUB_ENV=os.path.join(tmp, 'genv'),
++                   GITHUB_ACTION_PATH=ACTION, RDGEN_ZIP_PASSWORD=settings.ZIP_PASSWORD, RDGEN_ZIP_PATH='secrets.zip')
++        with open(os.path.join(WORKFLOWS, 'fetch-encrypted-secrets.yml'), encoding='utf-8') as fh:
++            block = re.search(r"python3 - <<'PY'\n(.*?)\n\s+PY\n", fh.read(), re.S).group(1)
++        decode = '\n'.join(line[10:] if line.startswith(' ' * 10) else line for line in block.splitlines())
++        r1 = subprocess.run([sys.executable, '-c', decode], cwd=tmp, env=env, capture_output=True, text=True)
++        if r1.returncode:
++            return r1, None, tmp
++        r2 = subprocess.run([sys.executable, os.path.join(ACTION, 'decrypt.py')], cwd=tmp, env=env,
++                            capture_output=True, text=True)
++        return r1, r2, tmp
++
++    def test_good_config(self):
++        u = str(uuid.uuid4())
++        r1, r2, tmp = self.run_steps(secrets_json(u))
++        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
++        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
++        genv = open(os.path.join(tmp, 'genv')).read()
++        pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
++        self.assertEqual(pairs['appname'], 'Acme Remote')
++        self.assertEqual(pairs['uuid'], u)
++        self.assertEqual(len(pairs), 19)
++        self.assertIn('::add-mask::rd.example.com', r2.stdout)
++        self.assertNotIn(f'::add-mask::{u}', r2.stdout)
++        self.assertEqual(os.listdir(os.path.join(tmp, 'rt', 'rdgen-assets')), ['icon.png'])
++        self.assertIn('allowCustom.py', os.listdir(os.path.join(tmp, 'rt', 'rdgen-patches')))
++
++    def test_replayed_cfg_rejected(self):
++        r1, r2, _ = self.run_steps(secrets_json(str(uuid.uuid4())), event_uuid=str(uuid.uuid4()))
++        self.assertNotEqual(r2.returncode, 0)
++        self.assertIn('build_uuid mismatch', r2.stdout)
++
++    def test_protocol_mismatch_rejected(self):
++        r1, _, _ = self.run_steps(secrets_json(str(uuid.uuid4())), proto='2')
++        self.assertNotEqual(r1.returncode, 0)
++
++    def test_injection_rejected_on_runner(self):
++        r1, r2, tmp = self.run_steps(secrets_json(str(uuid.uuid4()), server='a.com";curl x|sh;"'))
++        self.assertNotEqual(r2.returncode, 0)
++        self.assertEqual(open(os.path.join(tmp, 'genv')).read(), '')
++
++    def test_embedded_flag_must_match(self):
++        r1, r2, _ = self.run_steps(secrets_json(str(uuid.uuid4())), with_icon=False)
++        self.assertNotEqual(r2.returncode, 0)

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# rustdesk-notify: notifications for rustdesk-update, via a Discord webhook, Apprise, or an Apprise API server.
+# CortenDesk's own alerts (pending approvals, failed console logins, security alarms, devices offline/online) go to
+# the same place: with apprise-api CortenDesk is pointed at that key directly; with discord or apprise through the
+# local relay (cortendesk-alerts), unless CortenDesk's Settings > Notifications already points somewhere else.
+#   rustdesk-notify setup            choose a method, enter the URL(s), send a test message
+#   rustdesk-notify setup --stdin    same, non-interactive: line 1 = method, following lines = URL(s)
+#   rustdesk-notify test             send a test message with the current settings
+#   rustdesk-notify send <info|success|warning|failure> <title> <markdown body>
+# Methods: none | discord (webhook URL) | apprise (any Apprise URLs, e.g. discord://, tgram://, ntfy://,
+#          mailto://; installs the apprise package) | apprise-api (http(s)://<apprise-api>/notify/<key>)
+# Config (root-only): /etc/rustdesk-update.env (NOTIFY_METHOD, DISCORD_WEBHOOK, APPRISE_API_URL),
+#                     /etc/rustdesk-apprise.conf (Apprise URLs, one per line)
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077   # the settings hold webhook / Apprise URLs
+if [ -r /etc/profile.d/90-http-proxy.sh ]; then set -a; . /etc/profile.d/90-http-proxy.sh; set +a; fi
+ENV=/etc/rustdesk-update.env
+APPRISE_CONF=/etc/rustdesk-apprise.conf
+NOTIFY_METHOD="" DISCORD_WEBHOOK="" APPRISE_API_URL=""
+[ -f "$ENV" ] && . "$ENV"
+# older installs only have DISCORD_WEBHOOK
+[ -n "$NOTIFY_METHOD" ] || { [ -n "$DISCORD_WEBHOOK" ] && NOTIFY_METHOD=discord || NOTIFY_METHOD=none; }
+if [ -f /etc/alpine-release ]; then PHP=/usr/bin/php84; else PHP=/usr/bin/php8.4; fi
+HOST="$(hostname) ($(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1))"
+
+# send <level> <title> <body>; URLs never go on a command line (curl -K / apprise --config)
+send() {
+  local level=$1 title=$2 body=$3 color
+  case "$NOTIFY_METHOD" in
+    none) return 0 ;;
+    discord)
+      case "$level" in success) color=3066993 ;; failure) color=15158332 ;; warning) color=15105570 ;; *) color=3447003 ;; esac
+      T=$title D=$body H=$HOST jq -n --argjson c "$color" \
+        '{username:"RustDesk", embeds:[{title:env.T, description:env.D, color:$c, footer:{text:env.H}, timestamp:(now|todate)}]}' |
+        curl -fsS -m 15 -H 'Content-Type: application/json' --data-binary @- \
+          -K <(printf 'url = "%s"\n' "$DISCORD_WEBHOOK") >/dev/null ;;
+    apprise)
+      apprise --config="$APPRISE_CONF" --notification-type="$level" --input-format=markdown \
+        --title="$title" --body="$(printf '%s\n\n_%s_' "$body" "$HOST")" ;;
+    apprise-api)
+      T=$title B=$(printf '%s\n\n_%s_' "$body" "$HOST") L=$level jq -n '{title:env.T, body:env.B, type:env.L, format:"markdown"}' |
+        curl -fsS -m 30 -H 'Content-Type: application/json' --data-binary @- \
+          -K <(printf 'url = "%s"\n' "$APPRISE_API_URL") >/dev/null ;;
+    *) echo "rustdesk-notify: unknown NOTIFY_METHOD '$NOTIFY_METHOD'" >&2; return 1 ;;
+  esac
+}
+
+# save <method> [url...]: rewrite the notification keys in $ENV, keep everything else
+save() {
+  local m=$1; shift
+  touch "$ENV"; chmod 600 "$ENV"
+  local rest; rest=$(grep -vE '^#? *(NOTIFY_METHOD|DISCORD_WEBHOOK|APPRISE_API_URL)=' "$ENV" || true)
+  {
+    [ -n "$rest" ] && printf '%s\n' "$rest"
+    printf 'NOTIFY_METHOD=%q\n' "$m"
+    case "$m" in
+      discord) printf 'DISCORD_WEBHOOK=%q\n' "$1" ;;
+      apprise-api) printf 'APPRISE_API_URL=%q\n' "$1" ;;
+    esac
+  } >"$ENV.new"
+  mv "$ENV.new" "$ENV"; chmod 600 "$ENV"
+  if [ "$m" = apprise ]; then
+    (umask 077; printf '%s\n' "$@" >"$APPRISE_CONF")
+  fi
+  NOTIFY_METHOD=$m DISCORD_WEBHOOK="" APPRISE_API_URL=""
+  [ "$m" = discord ] && DISCORD_WEBHOOK=$1
+  [ "$m" = apprise-api ] && APPRISE_API_URL=$1
+  return 0
+}
+
+valid() {  # valid <method> <url>
+  case "$1" in
+    discord) [[ "$2" =~ ^https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$ ]] ;;
+    apprise) [[ "$2" =~ ^[a-z][a-z0-9+.-]*://[^[:space:]]+$ ]] ;;
+    apprise-api) [[ "$2" =~ ^https?://[^[:space:]]+/notify/[^[:space:]]*$ ]] ;;
+  esac
+}
+
+install_apprise() {
+  command -v apprise >/dev/null && return 0
+  echo "Installing apprise..."
+  if [ -f /etc/alpine-release ]; then apk add --no-cache -q apprise; else apt-get update -qq && apt-get install -y -qq apprise >/dev/null; fi
+}
+
+seed_cortendesk() {  # CortenDesk can only notify through an Apprise API (config-key mode)
+  local ep key
+  [[ "$1" =~ ^(https?://[^/]+)(/.*)?/notify/([A-Za-z0-9_-]+)/?$ ]] || { echo "(CortenDesk alerts not configured: no key in the URL)"; return 0; }
+  ep="${BASH_REMATCH[1]}${BASH_REMATCH[2]}" key=${BASH_REMATCH[3]}
+  [ -f /opt/cortendesk/artisan ] || return 0
+  local run=(runuser -u cortendesk --); command -v su-exec >/dev/null && run=(su-exec cortendesk:cortendesk)
+  if E=$ep K=$key jq -n '{endpoint:env.E, key:env.K}' |
+    (cd /opt/cortendesk && umask 027 && "${run[@]}" "$PHP" /usr/local/lib/cortendesk/apprise-seed.php) >/dev/null 2>&1; then
+    echo "CortenDesk's own alerts also go to this Apprise API key; choose them under Settings > Notifications."
+  else
+    echo "(could not configure CortenDesk's own Apprise alerts; set them under Settings > Notifications)"
+  fi
+}
+
+setup() {
+  local m urls=() u old=$NOTIFY_METHOD
+  if [ "${1:-}" = --stdin ]; then
+    IFS= read -r m || true
+    while IFS= read -r u; do [ -n "$u" ] && urls+=("$u"); done
+  else
+    echo "Notifications: rustdesk-update (start / success / failure, with versions), rdgen, and CortenDesk's own alerts:"
+    echo "  1) none   2) Discord webhook   3) Apprise (Discord, Telegram, ntfy, email, 100+ services)   4) Apprise API server"
+    read -r -p "Choose [1-4]: " u
+    case "$u" in 2) m=discord ;; 3) m=apprise ;; 4) m=apprise-api ;; *) m=none ;; esac
+    case "$m" in
+      discord) read -r -p "Discord webhook URL: " u; urls=("$u") ;;
+      apprise)
+        echo "Apprise URLs, one per line (e.g. discord://id/token, tgram://bottoken/chatid, ntfys://topic); empty line ends:"
+        while IFS= read -r -p "> " u && [ -n "$u" ]; do urls+=("$u"); done ;;
+      apprise-api) read -r -p "Apprise API notify URL (http(s)://host:8000/notify/<key>): " u; urls=("$u") ;;
+    esac
+  fi
+  case "$m" in
+    none) save none; echo "Notifications disabled."; return 0 ;;
+    discord | apprise-api) urls=("${urls[0]:-}") ;;
+    apprise) ;;
+    *) echo "rustdesk-notify: method must be none, discord, apprise or apprise-api" >&2; return 1 ;;
+  esac
+  [ ${#urls[@]} -gt 0 ] && [ -n "${urls[0]}" ] || { echo "rustdesk-notify: no URL given" >&2; return 1; }
+  for u in "${urls[@]}"; do valid "$m" "$u" || { echo "rustdesk-notify: not a valid $m URL: ${u%%://*}://..." >&2; return 1; }; done
+  [ "$m" = apprise ] && install_apprise
+  save "$m" "${urls[@]}"
+  [ "$m" = apprise-api ] && seed_cortendesk "${urls[0]}"
+  local rc=0
+  if send info "🔔 RustDesk notifications enabled" "Update notifications for this server will arrive here."; then
+    echo "Notifications set to $m; test message sent."
+  else
+    echo "rustdesk-notify: saved ($m), but the test message failed; check the URL and run 'rustdesk-notify test'" >&2
+    rc=3
+  fi
+  if [[ "$m" =~ ^(discord|apprise)$ ]] && [ -x /usr/local/bin/cortendesk-alerts ] && [ -f /opt/cortendesk/artisan ]; then
+    # CortenDesk can only reach an Apprise API server: the local relay hands its alerts to this script (queued alerts
+    # wait up to an hour if sending fails). Coming from apprise-api, CortenDesk still points at that server, so it is
+    # switched over; any other endpoint was set by hand under Settings > Notifications and stays.
+    local only=--if-unset
+    [ "$old" = apprise-api ] && only=
+    /usr/local/bin/cortendesk-alerts connect $only || echo "(CortenDesk's own alerts: run 'cortendesk-alerts connect' to retry)"
+  fi
+  return $rc
+}
+
+case "${1:-}" in
+  send) shift; send "$@" ;;
+  setup) shift; setup "$@" ;;
+  test)
+    [ "$NOTIFY_METHOD" != none ] || { echo "Notifications are off; run 'rustdesk-notify setup'."; exit 0; }
+    send info "🔔 RustDesk test notification" "rustdesk-notify test (method: $NOTIFY_METHOD)" && echo "sent ($NOTIFY_METHOD)" ;;
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

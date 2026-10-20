@@ -1,0 +1,399 @@
+From c774622b9497f86a6628f644bafe2a5850fe3ec6 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Thu, 1 Oct 2026 19:11:10 -0400
+Subject: [PATCH 18/26] builds: delete a finished build from Recent builds
+
+rdgen keeps its own copy of every build for RDGEN_RETENTION_DAYS, apart
+from any copy a console imported, so deleting a client in the console
+left rdgen's files (and the build in Recent builds) in place.
+
+Delete on /builds (finished or failed builds, after a confirm) calls
+poller.discard_build(): a conditional UPDATE sets deleted_at and
+clears the manifest first, then the share links and the build directory
+go. Terminal builds are never touched by the poller again, so nothing
+writes the files back. Every lookup now skips deleted builds: the list,
+check_for_file, /download, /share/*, /api/status, /api/download and
+`rdgen_publish pending`. A hand-off that has not run is marked skipped;
+one that is already running cannot undo the delete: `rdgen_publish
+mark` leaves a deleted build alone and prints "deleted", so the job
+can tell an expected failure from a real one. The row stays until
+prune_local, so prune_remote still deletes a failed run on GitHub.
+Copies already in the console stay there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ SETUP-PULL.md                                 |   2 +-
+ .../management/commands/rdgen_publish.py      |   9 +-
+ .../migrations/0006_githubrun_deleted_at.py   |  16 ++
+ rdgenerator/models.py                         |   3 +
+ rdgenerator/poller.py                         |  19 +++
+ rdgenerator/templates/builds.html             |  14 +-
+ rdgenerator/tests/test_delete.py              | 145 ++++++++++++++++++
+ rdgenerator/views.py                          |  18 ++-
+ 8 files changed, 217 insertions(+), 9 deletions(-)
+ create mode 100644 rdgenerator/migrations/0006_githubrun_deleted_at.py
+ create mode 100644 rdgenerator/tests/test_delete.py
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index f58bd7b..2c4068a 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -135,7 +135,7 @@ CortenDesk's `/downloads` page needs no login, and a client with a preset perman
+ 
+ ### Recent builds and share links
+ 
+-`/builds` (linked from the form) lists the builds of the last `RDGEN_RETENTION_DAYS` with their files and status. For a finished build it makes a **share link**: `/share/<token>` shows the build's files and needs no login, so you can send a client to someone without putting it on a public page. The token is 32 random bytes. A link expires after 1, 7 or 30 days, and never later than the build itself; you can delete it sooner. Each link counts its downloads.
++`/builds` (linked from the form) lists the builds of the last `RDGEN_RETENTION_DAYS` with their files and status. **Delete** removes a finished or failed build at once: its files and share links go, and it disappears from the list, the status pages and the API. A hand-off to the console that hasn't run yet is skipped, and `rdgen_publish mark` prints `deleted` for such a build instead of recording anything. The row stays until the usual pruning, so a failed run on GitHub is still deleted on schedule. Copies already in the console stay there. For a finished build it makes a **share link**: `/share/<token>` shows the build's files and needs no login, so you can send a client to someone without putting it on a public page. The token is 32 random bytes. A link expires after 1, 7 or 30 days, and never later than the build itself; you can delete it sooner. Each link counts its downloads.
+ 
+ Links point at `RDGEN_SHARE_BASE` when it is set (e.g. `https://console.example.com/share`). Otherwise they point at rdgen itself, which is normally reachable on the LAN only. A reverse proxy on that public host has to pass exactly `/share/<43 characters>` and `/share/<43 characters>/<file>` to rdgen, GET only, and nothing else. The RustDesk LXC's console does that.
+ 
+diff --git a/rdgenerator/management/commands/rdgen_publish.py b/rdgenerator/management/commands/rdgen_publish.py
+index 3d30766..f8ee86a 100644
+--- a/rdgenerator/management/commands/rdgen_publish.py
++++ b/rdgenerator/management/commands/rdgen_publish.py
+@@ -24,7 +24,8 @@ def pending_builds():
+     builds = []
+     if not settings.RDGEN_PUBLISH_DEFAULT:
+         return builds
+-    query = (GithubRun.objects.filter(status='success', publish__in=('hidden', 'published'), publish_state='')
++    query = (GithubRun.objects.filter(status='success', publish__in=('hidden', 'published'), publish_state='',
++                                      deleted_at__isnull=True)
+              .order_by('completed_at', 'id'))
+     for run in query:
+         files = [{'name': f.get('name', ''), 'size': int(f.get('size', 0)), 'sha256': f.get('sha256', '')}
+@@ -63,9 +64,13 @@ class Command(BaseCommand):
+             raise CommandError('not a build uuid')
+         state = '' if opts['state'] == 'pending' else opts['state']
+         assert state in PUBLISH_STATES
+-        updated = GithubRun.objects.filter(uuid=opts['uuid']).update(
++        updated = GithubRun.objects.filter(uuid=opts['uuid'], deleted_at__isnull=True).update(
+             publish_state=state, publish_note=opts['note'][:2000])
+         if not updated:
++            if GithubRun.objects.filter(uuid=opts['uuid']).exists():
++                # deleted on Recent builds while the job was adding it: nothing to record, nothing to retry
++                self.stdout.write('deleted')
++                return
+             raise CommandError('no such build')
+         if not state:
+             flag_publish()   # the job only runs while the flag exists
+diff --git a/rdgenerator/migrations/0006_githubrun_deleted_at.py b/rdgenerator/migrations/0006_githubrun_deleted_at.py
+new file mode 100644
+index 0000000..59e5d0a
+--- /dev/null
++++ b/rdgenerator/migrations/0006_githubrun_deleted_at.py
+@@ -0,0 +1,16 @@
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('rdgenerator', '0005_sharelink'),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='githubrun',
++            name='deleted_at',
++            field=models.DateTimeField(blank=True, null=True),
++        ),
++    ]
+diff --git a/rdgenerator/models.py b/rdgenerator/models.py
+index 4937a01..04dbea3 100644
+--- a/rdgenerator/models.py
++++ b/rdgenerator/models.py
+@@ -43,6 +43,9 @@ class GithubRun(models.Model):
+     # '' (waiting), done, failed or skipped; set by `manage.py rdgen_publish mark`
+     publish_state = models.CharField(max_length=16, blank=True, default='')
+     publish_note = models.TextField(blank=True, default='')
++    # deleted from Recent builds: files and share links are gone, and the build is hidden everywhere; the row
++    # stays until RDGEN_RETENTION_DAYS so prune_remote can still delete a failed run on GitHub
++    deleted_at = models.DateTimeField(null=True, blank=True)
+ 
+     @property
+     def is_terminal(self):
+diff --git a/rdgenerator/poller.py b/rdgenerator/poller.py
+index ccdb97b..1e2e1b4 100644
+--- a/rdgenerator/poller.py
++++ b/rdgenerator/poller.py
+@@ -293,6 +293,25 @@ def sync_build(gh, build, now=None):
+             log.warning('build %s: could not delete run yet: %s', build.uuid, exc)
+ 
+ 
++def discard_build(build, now=None):
++    """Delete a finished build from rdgen (Recent builds): hide it, then remove its share links and files.
++
++    Only for terminal builds: the poller never touches those again, so nothing can write the files back. A hand-off
++    that has not run yet is skipped; copies already in the console stay there. The row is kept (deleted_at) until
++    prune_local, so prune_remote still deletes a failed run on GitHub.
++    """
++    if not build.is_terminal:
++        raise ValueError('only finished builds can be deleted')
++    update = {'deleted_at': now or timezone.now(), 'files': []}
++    if build.publish in ('hidden', 'published') and build.publish_state == '':
++        update.update(publish_state='skipped', publish_note='Deleted in rdgen before it was added.')
++    if not GithubRun.objects.filter(pk=build.pk, deleted_at__isnull=True).update(**update):
++        return False   # already deleted
++    ShareLink.objects.filter(build_id=build.pk).delete()
++    shutil.rmtree(build_dir(build), ignore_errors=True)
++    return True
++
++
+ def flag_publish():
+     """Tell the hand-off job (rdgen_publish) that a finished build is waiting.
+ 
+diff --git a/rdgenerator/templates/builds.html b/rdgenerator/templates/builds.html
+index 53073c9..1100313 100644
+--- a/rdgenerator/templates/builds.html
++++ b/rdgenerator/templates/builds.html
+@@ -39,6 +39,8 @@
+         .warn { color: #ffb74d; font-size: .82em; margin: 6px 0 0; line-height: 1.4; }
+         .note { color: #999; font-size: .82em; margin: 6px 0 0; line-height: 1.4; }
+         .empty { color: #999; background: #111; border-radius: 8px; padding: 20px; }
++        .head form.del { margin: 0 0 0 auto; }
++        .head form.del button { padding: 3px 10px; font-size: .8em; }
+     </style>
+ </head>
+ <body>
+@@ -48,7 +50,8 @@
+         <a href="{% url 'generator' %}">&larr; Back to the builder</a>
+     </div>
+     <p class="lead">
+-        Builds from the last {{ retention_days }} days, newest first. After that, rdgen deletes a build and its files.
++        Builds from the last {{ retention_days }} days, newest first. After that, rdgen deletes a build and its files;
++        <b>Delete</b> removes a finished build sooner.
+         A <b>share link</b> lets someone without a login download a build's files until the link expires, for example
+         a client with a password inside that shouldn't go on a public download page.
+         {% if not share_base %}Share links point at this page's address, so they only work where this page does (usually your LAN).{% endif %}
+@@ -61,6 +64,15 @@
+             <span class="badge {{ row.state }}">{% if row.state == 'ready' %}ready{% elif row.state == 'failed' %}failed{% else %}building{% endif %}</span>
+             {% if row.run.has_password %}<span class="badge pw" title="A password is built into this client">password inside</span>{% endif %}
+             <span class="meta">{{ row.platform }}{% if row.run.version %} &middot; {{ row.run.version }}{% endif %} &middot; <time datetime="{{ row.run.created_at|date:'c' }}">{{ row.run.created_at|date:'Y-m-d H:i' }} UTC</time></span>
++            {% if row.state != 'building' %}
++            <form method="post" action="{% url 'builds' %}" class="del" onsubmit="return confirm(this.dataset.msg)"
++                  data-msg="Delete {{ row.name }}? Its files{% if row.links %} and share links{% endif %} are removed from rdgen now.{% if row.run.publish_state == 'done' %} The copy in {{ publish_target }}'s Client Downloads stays; delete it there.{% endif %}">
++                {% csrf_token %}
++                <input type="hidden" name="action" value="delete_build">
++                <input type="hidden" name="uuid" value="{{ row.run.uuid }}">
++                <button type="submit" class="quiet">Delete</button>
++            </form>
++            {% endif %}
+         </div>
+ 
+         {% if row.state == 'ready' %}
+diff --git a/rdgenerator/tests/test_delete.py b/rdgenerator/tests/test_delete.py
+new file mode 100644
+index 0000000..26eda3f
+--- /dev/null
++++ b/rdgenerator/tests/test_delete.py
+@@ -0,0 +1,145 @@
++"""Deleting a build from Recent builds (/builds, action delete_build)."""
++import hashlib
++import json
++import tempfile
++import uuid
++from datetime import timedelta
++from pathlib import Path
++
++from django.contrib.auth import get_user_model
++from django.test import Client, TestCase, override_settings
++from django.utils import timezone
++
++from rdgenerator.management.commands.rdgen_publish import pending_builds
++from rdgenerator.models import GithubRun, ShareLink
++from rdgenerator.poller import discard_build, prune_local
++
++EXE = b'MZ' + b'\0' * 200
++API_TOKEN = 'd' * 40
++
++
++class DeleteBuildTests(TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.override = override_settings(ARTIFACT_ROOT=self.tmp.name, DATA_DIR=Path(self.tmp.name),
++                                          RDGEN_RETENTION_DAYS=30, RDGEN_SHARE_BASE='', RDGEN_API_TOKEN=API_TOKEN,
++                                          RDGEN_PUBLISH_DEFAULT='hidden', RDGEN_PUBLISH_TARGET='CortenDesk')
++        self.override.enable()
++        self.c = Client()
++        self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++        self.anon = Client()
++
++    def tearDown(self):
++        self.override.disable()
++        self.tmp.cleanup()
++
++    def run_with_file(self, status='success', **kw):
++        u = str(uuid.uuid4())
++        d = Path(self.tmp.name) / u
++        d.mkdir()
++        (d / 'acme_client.exe').write_bytes(EXE)
++        kw.setdefault('label', 'Acme Support')
++        return GithubRun.objects.create(
++            uuid=u, status=status, platform='windows', filename='acme_client', version='1.4.9', github_run_id=42,
++            files=[{'name': 'acme_client.exe', 'size': len(EXE), 'sha256': hashlib.sha256(EXE).hexdigest()}], **kw)
++
++    def delete(self, run):
++        return self.c.post('/builds', {'action': 'delete_build', 'uuid': run.uuid})
++
++    def test_delete_removes_files_links_and_every_way_in(self):
++        run = self.run_with_file(publish='hidden', publish_state='done')
++        self.c.post('/builds', {'action': 'share', 'uuid': run.uuid, 'days': '7'})
++        token = ShareLink.objects.get().token
++        page = self.c.get('/builds').content.decode()
++        self.assertIn('name="action" value="delete_build"', page)
++        self.assertIn("The copy in CortenDesk's Client Downloads stays", page)
++        r = self.delete(run)
++        self.assertEqual(r.status_code, 302)
++        self.assertFalse((Path(self.tmp.name) / run.uuid).exists())
++        self.assertFalse(ShareLink.objects.exists())
++        run.refresh_from_db()
++        self.assertIsNotNone(run.deleted_at)   # the row stays for prune_remote
++        self.assertEqual(run.files, [])
++        self.assertNotIn('Acme Support', self.c.get('/builds').content.decode())
++        for path in (f'/check_for_file?uuid={run.uuid}', f'/download?uuid={run.uuid}&filename=acme_client.exe'):
++            self.assertEqual(self.c.get(path).status_code, 404, path)
++        self.assertEqual(self.anon.get(f'/share/{token}').status_code, 404)
++        h = {'HTTP_AUTHORIZATION': f'Bearer {API_TOKEN}'}
++        self.assertEqual(self.c.get(f'/api/status?uuid={run.uuid}', **h).status_code, 404)
++        self.assertEqual(self.c.get(f'/api/download?uuid={run.uuid}&filename=acme_client.exe', **h).status_code, 404)
++        self.assertEqual(self.delete(run).status_code, 404)   # twice: already gone
++
++    def test_failed_builds_can_be_deleted_running_ones_cannot(self):
++        failed = self.run_with_file(status='failure', label='Broken')
++        busy = self.run_with_file(status='in_progress', label='Busy')
++        page = self.c.get('/builds').content.decode()
++        self.assertEqual(page.count('name="action" value="delete_build"'), 1)
++        self.assertEqual(self.delete(busy).status_code, 404)
++        self.assertTrue((Path(self.tmp.name) / busy.uuid).exists())
++        self.assertEqual(self.delete(failed).status_code, 302)
++        self.assertFalse((Path(self.tmp.name) / failed.uuid).exists())
++        with self.assertRaises(ValueError):
++            discard_build(GithubRun.objects.get(pk=busy.pk))
++        self.assertEqual(self.c.post('/builds', {'action': 'delete_build', 'uuid': 'nope'}).status_code, 404)
++
++    def test_a_waiting_hand_off_is_skipped(self):
++        run = self.run_with_file(publish='hidden', publish_state='')
++        self.assertEqual([b['uuid'] for b in pending_builds()], [run.uuid])
++        self.delete(run)
++        self.assertEqual(pending_builds(), [])
++        run.refresh_from_db()
++        self.assertEqual(run.publish_state, 'skipped')
++        # a build whose hand-off already ran keeps its record
++        done = self.run_with_file(publish='published', publish_state='done', publish_note='Added.')
++        self.delete(done)
++        done.refresh_from_db()
++        self.assertEqual((done.publish_state, done.publish_note), ('done', 'Added.'))
++
++    def test_a_hand_off_that_was_already_running_cannot_undo_the_delete(self):
++        # the job listed the build, then the user deleted it before the import finished
++        import io
++        from django.core.management import call_command
++        run = self.run_with_file(publish='hidden', publish_state='')
++        self.assertEqual(len(pending_builds()), 1)
++        self.delete(run)
++        for state in ('failed', 'done', 'pending'):
++            out = io.StringIO()
++            call_command('rdgen_publish', 'mark', run.uuid, state, '--note', 'x', stdout=out)
++            self.assertEqual(out.getvalue().strip(), 'deleted', state)
++        run.refresh_from_db()
++        self.assertEqual(run.publish_state, 'skipped')
++        self.assertEqual(pending_builds(), [])
++
++    def test_deleted_rows_go_at_the_usual_retention(self):
++        run = self.run_with_file(status='failure')
++        self.delete(run)
++        prune_local()
++        self.assertTrue(GithubRun.objects.filter(pk=run.pk).exists())   # prune_remote still needs github_run_id
++        GithubRun.objects.filter(pk=run.pk).update(created_at=timezone.now() - timedelta(days=31))
++        prune_local()
++        self.assertFalse(GithubRun.objects.filter(pk=run.pk).exists())
++
++    def test_prune_remote_still_deletes_a_deleted_failed_run(self):
++        from rdgenerator import poller
++        run = self.run_with_file(status='failure')
++        GithubRun.objects.filter(pk=run.pk).update(completed_at=timezone.now() - timedelta(days=3))
++        self.delete(run)
++        calls = []
++        orig = (poller.list_artifacts, poller.delete_run)
++        poller.list_artifacts = lambda gh, rid: []
++        poller.delete_run = lambda gh, rid: calls.append(rid)
++        try:
++            self.assertEqual(poller.prune_remote(gh=object()), 1)
++        finally:
++            poller.list_artifacts, poller.delete_run = orig
++        self.assertEqual(calls, [42])
++        self.assertTrue(GithubRun.objects.get(pk=run.pk).run_deleted)
++
++    def test_status_json_api_hides_deleted_builds(self):
++        run = self.run_with_file()
++        h = {'HTTP_AUTHORIZATION': f'Bearer {API_TOKEN}'}
++        r = self.c.get(f'/api/status?uuid={run.uuid}', **h)
++        self.assertEqual(r.status_code, 200, r.content)
++        self.assertEqual(json.loads(r.content)['status'], 'success')
++        discard_build(run)
++        self.assertEqual(self.c.get(f'/api/status?uuid={run.uuid}', **h).status_code, 404)
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 80a7aed..956248c 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -21,7 +21,7 @@ from django.views.decorators.http import require_http_methods, require_safe
+ from . import buildcfg, github
+ from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
+ from .models import GithubRun, ShareLink
+-from .poller import allowed_output_name, valid_uuid
++from .poller import allowed_output_name, discard_build, valid_uuid
+ from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
+ 
+ log = logging.getLogger(__name__)
+@@ -363,7 +363,7 @@ def _get_run_status(uuid_val):
+     """
+     if not valid_uuid(uuid_val):
+         return {"found": False}
+-    gh_run = GithubRun.objects.filter(uuid=uuid_val).first()
++    gh_run = GithubRun.objects.filter(uuid=uuid_val, deleted_at__isnull=True).first()
+     if gh_run is None:
+         return {"found": False}
+     return {
+@@ -447,7 +447,7 @@ def stored_file(gh_run, filename):
+     filename must be a plain name listed in the build's manifest, and the
+     resolved path must stay inside the build directory.
+     """
+-    if gh_run is None or not valid_uuid(gh_run.uuid) or filename != os.path.basename(filename):
++    if gh_run is None or gh_run.deleted_at or not valid_uuid(gh_run.uuid) or filename != os.path.basename(filename):
+         return None
+     if filename not in {f['name'] for f in build_files(gh_run)}:
+         return None
+@@ -532,6 +532,14 @@ def builds_view(request):
+             link = ShareLink.objects.create(build=gh_run, token=secrets.token_urlsafe(32), expires_at=expires,
+                                             created_by=request.user.get_username())
+             return _builds_redirect(gh_run, link.id)
++        if action == 'delete_build':
++            uuid_val = request.POST.get('uuid', '')
++            gh_run = (GithubRun.objects.filter(uuid=uuid_val, deleted_at__isnull=True).first()
++                      if valid_uuid(uuid_val) else None)
++            if gh_run is None or not gh_run.is_terminal:
++                raise Http404("Not found")
++            discard_build(gh_run, now)
++            return redirect(reverse('builds'))
+         if action == 'delete_link':
+             link_id = request.POST.get('link', '')
+             link = ShareLink.objects.select_related('build').filter(pk=int(link_id)).first() if link_id.isdigit() else None
+@@ -548,7 +556,7 @@ def builds_view(request):
+         new = None
+     since = now - timedelta(days=_settings.RDGEN_RETENTION_DAYS)
+     rows = []
+-    for gh_run in GithubRun.objects.filter(created_at__gte=since).order_by('-created_at')[:200]:
++    for gh_run in GithubRun.objects.filter(created_at__gte=since, deleted_at__isnull=True).order_by('-created_at')[:200]:
+         state = 'ready' if gh_run.status == 'success' else ('failed' if gh_run.is_terminal else 'building')
+         links = [{'id': link.id, 'url': share_url(request, link), 'expires_at': link.expires_at,
+                   'downloads': link.downloads, 'last_download_at': link.last_download_at,
+@@ -579,7 +587,7 @@ def _active_link(token):
+     if not TOKEN_RE.fullmatch(token or ''):
+         return None
+     link = ShareLink.objects.select_related('build').filter(token=token).first()
+-    if link is None or not link.is_active:
++    if link is None or not link.is_active or link.build.deleted_at:
+         return None
+     return link
+ 

@@ -1,0 +1,404 @@
+From 3ecc6da4a453d5b44f10f43b10a9064b3c87265e Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 01:01:25 -0400
+Subject: [PATCH 10/26] deploy: native runtime for Alpine 3.24 (OpenRC) and
+ Debian 13 (systemd), no Docker
+
+- deploy/gunicorn.conf.py: 1 worker, 2 gthreads, on 127.0.0.1:8000
+  (RDGEN_BIND can be set in the env file). Upstream's file (5x6 on
+  0.0.0.0) is for the Docker image. gunicorn 25's $HOME control socket is
+  turned off.
+- deploy/openrc/{rdgen,rdgen-poller}: supervise-daemon (respawn),
+  command_user rdgen, directory /var/lib/rdgen, rc_ulimit -n 65535,
+  umask 027, logs in /var/log/rdgen. The venv is --system-site-packages
+  (the distro provides Django/Pillow/gunicorn/requests/pycryptodomex/
+  PyNaCl), so it has no bin/gunicorn: the service runs
+  `.venv/bin/python3 -m gunicorn`.
+- deploy/systemd/{rdgen,rdgen-poller}.service: same, plus
+  ProtectSystem=strict, ReadWritePaths=/var/lib/rdgen, NoNewPrivileges,
+  PrivateTmp, MemoryMax.
+- Only RDGEN_ENV_FILE is set in the unit. Secrets stay in
+  /etc/rdgen/rdgen.env (root:rdgen 0640), are read by Django, and do not
+  appear in the process environment.
+- deploy/nginx/rdgen-lan.conf: own LAN-only port 8190 (RFC1918/ULA
+  allow-list, 10 MB bodies, login rate limit). This is the recommended
+  target for CortenDesk's "Build Installers" link.
+- deploy/nginx/rdgen-subpath.conf: alternative /rdgen/ location for an
+  existing server block, with RDGEN_URL_PREFIX=/rdgen.
+- deploy/rdgen.env.example: every setting with its default.
+- deploy/requirements-venv.txt: pyzipper 0.4.0 with hashes (the only
+  package not in Alpine 3.24 or Debian 13), installed with --no-deps
+  --require-hashes.
+
+Tested in an Alpine 3.24.2 minirootfs (rootless namespace, so the rdgen
+uid switch itself was not exercised): apk python3 3.14.7, py3-django
+5.2.17, py3-pillow 12.2.0, py3-gunicorn 25.2.0, py3-requests 2.33.1,
+py3-pycryptodomex 3.23.0, py3-pynacl 1.6.2, nginx 1.30.4. Both nginx
+layouts serve login, CSRF, redirects and cookies correctly. The web
+worker and poller run against a GitHub stub. RSS: gunicorn master 18 MB,
+worker 57 MB, poller 57 MB.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ deploy/gunicorn.conf.py             | 41 +++++++++++++++++++++++++
+ deploy/nginx/rdgen-lan.conf         | 33 +++++++++++++++++++++
+ deploy/nginx/rdgen-proxy.conf       |  6 ++++
+ deploy/nginx/rdgen-subpath.conf     | 24 +++++++++++++++
+ deploy/openrc/rdgen                 | 29 ++++++++++++++++++
+ deploy/openrc/rdgen-poller          | 27 +++++++++++++++++
+ deploy/rdgen.env.example            | 46 +++++++++++++++++++++++++++++
+ deploy/requirements-venv.txt        | 12 ++++++++
+ deploy/systemd/rdgen-poller.service | 29 ++++++++++++++++++
+ deploy/systemd/rdgen.service        | 32 ++++++++++++++++++++
+ 10 files changed, 279 insertions(+)
+ create mode 100644 deploy/gunicorn.conf.py
+ create mode 100644 deploy/nginx/rdgen-lan.conf
+ create mode 100644 deploy/nginx/rdgen-proxy.conf
+ create mode 100644 deploy/nginx/rdgen-subpath.conf
+ create mode 100644 deploy/openrc/rdgen
+ create mode 100644 deploy/openrc/rdgen-poller
+ create mode 100644 deploy/rdgen.env.example
+ create mode 100644 deploy/requirements-venv.txt
+ create mode 100644 deploy/systemd/rdgen-poller.service
+ create mode 100644 deploy/systemd/rdgen.service
+
+diff --git a/deploy/gunicorn.conf.py b/deploy/gunicorn.conf.py
+new file mode 100644
+index 0000000..0f7c1bf
+--- /dev/null
++++ b/deploy/gunicorn.conf.py
+@@ -0,0 +1,41 @@
++# gunicorn settings for the native install (see deploy/README.md).
++# Upstream's gunicorn.conf.py (5 workers x 6 threads on 0.0.0.0) is for
++# the Docker image; this one keeps rdgen on loopback behind nginx.
++import os
++
++
++def _env_file_value(key, default):
++    """RDGEN_BIND may live in the env file too (KEY=VALUE, no expansion)."""
++    if key in os.environ:
++        return os.environ[key]
++    path = os.environ.get('RDGEN_ENV_FILE', '')
++    try:
++        with open(path, encoding='utf-8') as fh:
++            for line in fh:
++                k, sep, v = line.strip().partition('=')
++                if sep and k.strip() == key and v.strip():
++                    return v.strip().strip('"\'')
++    except OSError:
++        pass
++    return default
++
++
++bind = _env_file_value('RDGEN_BIND', '127.0.0.1:8000')
++workers = 1
++threads = 2
++worker_class = 'gthread'
++timeout = 120            # a dispatch with image shrinking can take a few seconds
++graceful_timeout = 30
++max_requests = 500       # recycle the worker now and then
++max_requests_jitter = 50
++limit_request_line = 8190
++forwarded_allow_ips = '127.0.0.1'
++accesslog = '-'
++errorlog = '-'
++# Access log without query strings (they carry build ids and file names only,
++# but keep the log boring anyway).
++access_log_format = '%(h)s "%(m)s %(U)s" %(s)s %(B)s %(M)sms'
++wsgi_app = 'rdgen.wsgi:application'
++# gunicorn >= 25 opens a control socket under $HOME/.gunicorn by default;
++# not needed here (older versions ignore this unknown name).
++control_socket_disable = True
+diff --git a/deploy/nginx/rdgen-lan.conf b/deploy/nginx/rdgen-lan.conf
+new file mode 100644
+index 0000000..0245c3b
+--- /dev/null
++++ b/deploy/nginx/rdgen-lan.conf
+@@ -0,0 +1,33 @@
++# rdgen on its own LAN-only port (recommended: the RustDesk ports and the
++# console may be reachable from the internet; this port must not be).
++# Install as /etc/nginx/http.d/rdgen.conf (Alpine) or
++# /etc/nginx/sites-enabled/rdgen.conf (Debian). Point CortenDesk's
++# "Build Installers" link (CORTENDESK_RDGEN_URL / Settings) at
++# http://<lxc-ip>:8190/
++limit_req_zone $binary_remote_addr zone=rdgen_login:1m rate=10r/m;
++
++server {
++    listen 8190;
++    listen [::]:8190;
++    server_name _;
++
++    # LAN / VPN only
++    allow 127.0.0.1;
++    allow ::1;
++    allow 10.0.0.0/8;
++    allow 172.16.0.0/12;
++    allow 192.168.0.0/16;
++    allow fc00::/7;
++    deny all;
++
++    client_max_body_size 10m;
++    proxy_read_timeout 180s;
++
++    location = /accounts/login/ {
++        limit_req zone=rdgen_login burst=5 nodelay;
++        include /etc/nginx/rdgen-proxy.conf;
++    }
++    location / {
++        include /etc/nginx/rdgen-proxy.conf;
++    }
++}
+diff --git a/deploy/nginx/rdgen-proxy.conf b/deploy/nginx/rdgen-proxy.conf
+new file mode 100644
+index 0000000..a137106
+--- /dev/null
++++ b/deploy/nginx/rdgen-proxy.conf
+@@ -0,0 +1,6 @@
++# shared proxy settings for rdgen-lan.conf (install as /etc/nginx/rdgen-proxy.conf)
++proxy_pass http://127.0.0.1:8000;
++proxy_redirect off;
++proxy_set_header Host $http_host;
++proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++proxy_set_header X-Forwarded-Proto $scheme;
+diff --git a/deploy/nginx/rdgen-subpath.conf b/deploy/nginx/rdgen-subpath.conf
+new file mode 100644
+index 0000000..7f310ce
+--- /dev/null
++++ b/deploy/nginx/rdgen-subpath.conf
+@@ -0,0 +1,24 @@
++# Alternative: serve rdgen under /rdgen/ inside an existing server block
++# (e.g. CortenDesk's). Needs RDGEN_URL_PREFIX=/rdgen in /etc/rdgen/rdgen.env.
++# `include /etc/nginx/rdgen-subpath.conf;` inside that server { } block.
++# Only do this if that server block is itself LAN-only, or keep the
++# allow/deny list below.
++location = /rdgen { return 301 $scheme://$http_host/rdgen/; }
++location /rdgen/ {
++    allow 127.0.0.1;
++    allow ::1;
++    allow 10.0.0.0/8;
++    allow 172.16.0.0/12;
++    allow 192.168.0.0/16;
++    allow fc00::/7;
++    deny all;
++    client_max_body_size 10m;
++    proxy_read_timeout 180s;
++    # trailing slash: nginx strips /rdgen before passing the request on;
++    # Django adds it back to generated URLs via FORCE_SCRIPT_NAME.
++    proxy_pass http://127.0.0.1:8000/;
++    proxy_redirect off;
++    proxy_set_header Host $http_host;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++}
+diff --git a/deploy/openrc/rdgen b/deploy/openrc/rdgen
+new file mode 100644
+index 0000000..f34ab32
+--- /dev/null
++++ b/deploy/openrc/rdgen
+@@ -0,0 +1,29 @@
++#!/sbin/openrc-run
++# rdgen web UI (gunicorn on 127.0.0.1:8000, behind nginx)
++description="RustDesk client generator (rdgen) web UI"
++supervisor="supervise-daemon"
++# The venv uses --system-site-packages (distro Django/Pillow/gunicorn), so it
++# has no bin/gunicorn of its own: run the module with the venv python.
++command="/opt/rdgen/.venv/bin/python3"
++command_args="-m gunicorn --config /opt/rdgen/deploy/gunicorn.conf.py --pythonpath /opt/rdgen"
++command_user="rdgen:rdgen"
++# Relative paths and the SQLite DB live here, never in the code tree.
++directory="/var/lib/rdgen"
++output_log="/var/log/rdgen/web.log"
++error_log="/var/log/rdgen/web.log"
++respawn_delay=5
++respawn_max=0
++rc_ulimit="-n 65535"
++umask=027
++export RDGEN_ENV_FILE="/etc/rdgen/rdgen.env"
++export PYTHONDONTWRITEBYTECODE=1
++
++depend() {
++	need net
++	before nginx
++}
++
++start_pre() {
++	checkpath -d -m 0750 -o rdgen:rdgen /var/lib/rdgen /var/lib/rdgen/builds /var/log/rdgen
++	checkpath -f -m 0640 -o rdgen:rdgen /var/log/rdgen/web.log
++}
+diff --git a/deploy/openrc/rdgen-poller b/deploy/openrc/rdgen-poller
+new file mode 100644
+index 0000000..c9ac2ef
+--- /dev/null
++++ b/deploy/openrc/rdgen-poller
+@@ -0,0 +1,27 @@
++#!/sbin/openrc-run
++# rdgen pull-model poller: downloads build artifacts from GitHub, deletes
++# them and the finished runs, prunes old builds.
++description="RustDesk client generator (rdgen) GitHub poller"
++supervisor="supervise-daemon"
++command="/opt/rdgen/.venv/bin/python3"
++command_args="/opt/rdgen/manage.py rdgen_poll"
++command_user="rdgen:rdgen"
++directory="/var/lib/rdgen"
++output_log="/var/log/rdgen/poller.log"
++error_log="/var/log/rdgen/poller.log"
++respawn_delay=30
++respawn_max=0
++rc_ulimit="-n 65535"
++umask=027
++export RDGEN_ENV_FILE="/etc/rdgen/rdgen.env"
++export PYTHONDONTWRITEBYTECODE=1
++
++depend() {
++	need net
++	after rdgen
++}
++
++start_pre() {
++	checkpath -d -m 0750 -o rdgen:rdgen /var/lib/rdgen /var/lib/rdgen/builds /var/log/rdgen
++	checkpath -f -m 0640 -o rdgen:rdgen /var/log/rdgen/poller.log
++}
+diff --git a/deploy/rdgen.env.example b/deploy/rdgen.env.example
+new file mode 100644
+index 0000000..3de346a
+--- /dev/null
++++ b/deploy/rdgen.env.example
+@@ -0,0 +1,46 @@
++# /etc/rdgen/rdgen.env  (owner root:rdgen, mode 0640)
++# KEY=VALUE lines, no shell expansion. Parsed by rdgen/settings.py only;
++# never sourced by a shell, never passed on a command line.
++
++# --- required: generate once at install ---------------------------------
++# python3 -c 'import secrets; print(secrets.token_urlsafe(64))'
++SECRET_KEY=
++# python3 -c 'import secrets; print(secrets.token_hex(48))'
++# Also stored as the ZIP_PASSWORD Actions secret of the build repository
++# (rdgen-github-bootstrap sets it).
++ZIP_PASSWORD=
++
++# --- web ------------------------------------------------------------------
++# Host names/IPs the UI is reached by (comma separated).
++ALLOWED_HOSTS=127.0.0.1,localhost
++# Only needed behind a TLS proxy with another origin, e.g. https://rdgen.lan
++CSRF_TRUSTED_ORIGINS=
++# Set to /rdgen when served under a sub-path (deploy/nginx/rdgen-subpath.conf)
++RDGEN_URL_PREFIX=
++RDGEN_SECURE_COOKIES=0
++RDGEN_BEHIND_TLS_PROXY=0
++# Bearer token for /api/* (e.g. a console integration); empty = session only
++RDGEN_API_TOKEN=
++
++# --- GitHub build repository (private mirror of the patched tree) --------
++GHUSER=
++REPONAME=rdgen-build
++# the branch rdgen-github-bootstrap init pushed to (the repository's default branch)
++GHBRANCH=main
++# Runtime fine-grained PAT: only this repository; Actions: Read and write,
++# Metadata: Read. (The install-time token is separate and not stored.)
++GHBEARER=
++
++# --- pull model -------------------------------------------------------------
++RDGEN_DATA_DIR=/var/lib/rdgen
++# gunicorn listen address (loopback; nginx proxies to it)
++RDGEN_BIND=127.0.0.1:8000
++RDGEN_POLL_INTERVAL=30
++RDGEN_BUILD_TIMEOUT_HOURS=6
++RDGEN_RETENTION_DAYS=30
++RDGEN_FAILED_RUN_KEEP_HOURS=48
++
++# --- form defaults for this site (optional) ------------------------------
++RDGEN_DEFAULT_SERVER=
++RDGEN_DEFAULT_API_SERVER=
++RDGEN_DEFAULT_KEY_FILE=/var/lib/rustdesk-server/id_ed25519.pub
+diff --git a/deploy/requirements-venv.txt b/deploy/requirements-venv.txt
+new file mode 100644
+index 0000000..1b9eccd
+--- /dev/null
++++ b/deploy/requirements-venv.txt
+@@ -0,0 +1,12 @@
++# Installed into /opt/rdgen/.venv (created with --system-site-packages) on
++# top of the distro packages:
++#   Alpine 3.24: python3 py3-django(5.2.17) py3-pillow py3-gunicorn
++#                py3-requests py3-pycryptodomex py3-pynacl
++#   Debian 13:   python3-django from trixie-backports (5.2.x; trixie main has
++#                4.2 without LoginRequiredMiddleware) python3-pil
++#                python3-gunicorn python3-requests python3-pycryptodome
++#                (ships the Cryptodome namespace) python3-nacl
++# pip install --no-deps --require-hashes -r deploy/requirements-venv.txt
++pyzipper==0.4.0 \
++    --hash=sha256:aa7b8a0fe741d67aac36ead85f6e735af107b72f84e0775f2ed565fc0d3a2f02 \
++    --hash=sha256:a4b96afcac04c5589d5abdc6158dd362166374e3cc6810aa441e65f8a17cb9e3
+diff --git a/deploy/systemd/rdgen-poller.service b/deploy/systemd/rdgen-poller.service
+new file mode 100644
+index 0000000..568995d
+--- /dev/null
++++ b/deploy/systemd/rdgen-poller.service
+@@ -0,0 +1,29 @@
++[Unit]
++Description=RustDesk client generator (rdgen) GitHub poller
++Wants=network-online.target
++After=network-online.target rdgen.service
++
++[Service]
++User=rdgen
++Group=rdgen
++WorkingDirectory=/var/lib/rdgen
++Environment=RDGEN_ENV_FILE=/etc/rdgen/rdgen.env
++Environment=PYTHONDONTWRITEBYTECODE=1
++ExecStart=/opt/rdgen/.venv/bin/python3 /opt/rdgen/manage.py rdgen_poll
++Restart=always
++RestartSec=30
++LimitNOFILE=65535
++UMask=0027
++NoNewPrivileges=true
++ProtectSystem=strict
++ReadWritePaths=/var/lib/rdgen
++ProtectHome=true
++PrivateTmp=true
++PrivateDevices=true
++ProtectKernelTunables=true
++ProtectControlGroups=true
++RestrictSUIDSGID=true
++MemoryMax=256M
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/deploy/systemd/rdgen.service b/deploy/systemd/rdgen.service
+new file mode 100644
+index 0000000..cfa9029
+--- /dev/null
++++ b/deploy/systemd/rdgen.service
+@@ -0,0 +1,32 @@
++[Unit]
++Description=RustDesk client generator (rdgen) web UI
++Wants=network-online.target
++After=network-online.target
++Before=nginx.service
++
++[Service]
++User=rdgen
++Group=rdgen
++WorkingDirectory=/var/lib/rdgen
++# Secrets are read by Django from this root:rdgen 0640 file; they are not
++# put into the unit's environment (so not into /proc/<pid>/environ either).
++Environment=RDGEN_ENV_FILE=/etc/rdgen/rdgen.env
++Environment=PYTHONDONTWRITEBYTECODE=1
++ExecStart=/opt/rdgen/.venv/bin/python3 -m gunicorn --config /opt/rdgen/deploy/gunicorn.conf.py --pythonpath /opt/rdgen
++Restart=on-failure
++RestartSec=5
++LimitNOFILE=65535
++UMask=0027
++NoNewPrivileges=true
++ProtectSystem=strict
++ReadWritePaths=/var/lib/rdgen
++ProtectHome=true
++PrivateTmp=true
++PrivateDevices=true
++ProtectKernelTunables=true
++ProtectControlGroups=true
++RestrictSUIDSGID=true
++MemoryMax=384M
++
++[Install]
++WantedBy=multi-user.target

@@ -1,0 +1,250 @@
+From 0613b4c392d72a94e262089cd5322ff2f9bf68fa Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Thu, 1 Oct 2026 23:35:10 -0400
+Subject: [PATCH 20/26] macOS: choose the Mac builds; run them on a Mac of your
+ own
+
+A Mac build ran two GitHub Mac machines (Intel and Apple Silicon) at
+about ten times the Linux rate, roughly 600-700 of the Free plan's
+2,000 minutes, even for a user whose Macs are all Intel.
+
+- The form has "Mac builds" for macOS: Intel and Apple Silicon (the
+  default), Intel only, or Apple Silicon only. It goes to the workflow
+  as the optional input mac_arch, and only when it is not "both", so a
+  build repository whose workflow predates the input keeps accepting
+  default builds. The JSON API takes macArch with the same choices.
+- The workflow side (pullify, patches 0008/0009) builds the Mac matrix
+  from mac_arch, and sends each Mac job to the runner label in the
+  repository variable RDGEN_RUNNER_MACOS_X86_64 or _AARCH64, so the
+  Mac jobs can run on a self-hosted Mac, where they cost no minutes.
+- The cost note next to the platform follows the choice.
+- SETUP-PULL.md: costs per platform, a budget, and how to set up a Mac
+  of your own as the runner.
+
+The GitHub API stub accepts the macOS workflow's optional input and
+still rejects anything undeclared, as GitHub does.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ SETUP-PULL.md                          | 19 +++++++++++++---
+ rdgenerator/api_views.py               |  2 ++
+ rdgenerator/forms.py                   |  3 +++
+ rdgenerator/templates/_build_cost.html | 31 +++++++++++++++++++-------
+ rdgenerator/tests/ghstub.py            |  7 ++++--
+ rdgenerator/tests/test_pull.py         | 15 +++++++++++++
+ rdgenerator/tests/test_ui.py           |  4 +++-
+ rdgenerator/views.py                   |  6 +++++
+ 8 files changed, 73 insertions(+), 14 deletions(-)
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index 2c4068a..e6c7e5d 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -55,12 +55,25 @@ Private repositories use your Actions minutes. The Free plan includes 2,000 minu
+ 
+ | Build | Rough cost | Notes |
+ |---|---|---|
+-| Windows | about 65 billed minutes | Linux bridge plus the Windows job |
+-| macOS | more | The per-minute rate is about 10x Linux |
+-| Linux | depends on how much you keep | The full matrix (aarch64, AppImage, flatpak) is the most expensive; trim it if you only need x86_64 .deb |
++| Windows | about 100 billed minutes | Linux bridge plus the Windows job |
++| macOS | roughly 300-350 per kind of Mac, 600-700 for both | Mac minutes cost about 10x Linux ones; the form's "Mac builds" choice (input `mac_arch`) builds Intel only, Apple Silicon only, or both |
++| Linux | about 100 billed minutes | an x86_64 and an aarch64 job |
+ 
+ Artifacts are kept for 1 day at most and are usually deleted within a minute of upload, so artifact storage stays close to zero.
+ 
++Set an Actions budget (Settings → Billing and licensing → Budgets and alerts) so GitHub stops builds instead of charging you.
++
++### Mac builds on a Mac of your own
++
++Jobs on a self-hosted runner cost no Actions minutes. The Mac jobs can run on your own Mac:
++
++1. Install Xcode on the Mac and open it once. 16.4 is the version GitHub's Mac machines build with. Plan for about 40 GB of free disk. An Intel Mac builds Intel clients only; Apple Silicon clients need an Apple Silicon Mac.
++2. Give the Mac a runner and the build tools. In the RustDesk LXC setup, `tools/runner-mac.sh --repo <owner>/<build repo>` does both under your account, without Homebrew or `sudo`, and registers the runner with the label `rdgen-mac`; it asks for a token from **Settings → Actions → Runners → New self-hosted runner** in the build repository. Otherwise follow that GitHub page, add `--labels rdgen-mac` to `./config.sh`, run `./svc.sh install` and `./svc.sh start`, and put these commands on the runner's PATH: `python` (3) and its `pip`, `magick` (ImageMagick 7), `potrace`, `create-dmg`, `pkg-config`, `cmake`, `ninja`, `wget`, `jq`, `pod` (CocoaPods) and `rustup`. The runner keeps going while that account is logged in.
++3. In the build repository: **Settings → Secrets and variables → Actions → Variables**: set `RDGEN_RUNNER_MACOS_X86_64` (Intel Mac) or `RDGEN_RUNNER_MACOS_AARCH64` (Apple Silicon Mac) to that label.
++4. On the form, set **Mac builds** to the kind of Mac the runner is.
++
++On a self-hosted runner the workflow first checks for Xcode and those commands and says what is missing. It skips its `brew install` steps there, because Homebrew no longer has prebuilt packages for Intel Macs and they would compile LLVM, GCC and Ruby for hours. It puts the tools it downloads in a per-job directory instead of `sudo` into /usr/local, lays out the DMG without Finder (`create-dmg --skip-jenkins`), and always deletes its temporary signing keychain. On GitHub's machines it behaves as before. The small Linux jobs of each build (setup, bridge, cleanup, about 10 minutes) still run on GitHub, so keep the Actions budget above $0. The first build compiles every dependency and is slow; later ones reuse the caches. Only you can start builds in a private repository, but the runner runs them with that account's rights, so don't use it for public repositories.
++
+ ## 2. Native install (Alpine 3.24, or Debian 13)
+ 
+ ```sh
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index f0832ea..2510fca 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -22,6 +22,7 @@ THEME_DORO_CHOICES = ['default', 'override']
+ PASS_APPROVE_MODE_CHOICES = ['password', 'click', 'password-click']
+ PERMISSIONS_DORO_CHOICES = ['default', 'override']
+ PERMISSIONS_TYPE_CHOICES = ['custom', 'full', 'view']
++MAC_ARCH_CHOICES = ['both', 'x86_64', 'aarch64']
+ 
+ # Boolean fields
+ BOOL_FIELDS = [
+@@ -77,6 +78,7 @@ def validate_generate_params(data):
+         'passApproveMode': (PASS_APPROVE_MODE_CHOICES, 'password-click'),
+         'permissionsDorO': (PERMISSIONS_DORO_CHOICES, 'default'),
+         'permissionsType': (PERMISSIONS_TYPE_CHOICES, 'custom'),
++        'macArch': (MAC_ARCH_CHOICES, 'both'),
+     }
+     for field, (choices, default) in choice_validations.items():
+         value = data.get(field, default)
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index 6433816..068606b 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -8,6 +8,9 @@ MAX_PNG_BYTES = 4 * 1024 * 1024
+ 
+ class GenerateForm(forms.Form):
+     #Platform
++    # which Mac jobs run (workflow input mac_arch); sent only for macOS builds, and only when it is not 'both'
++    macArch = forms.ChoiceField(choices=[('both', 'Intel and Apple Silicon'), ('x86_64', 'Intel only'),
++                                         ('aarch64', 'Apple Silicon only')], initial='both', required=False)
+     platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0'),('1.4.9','1.4.9'),('1.4.8','1.4.8'),('1.4.7','1.4.7'),('1.4.6','1.4.6'),('1.4.5','1.4.5'),('1.4.4','1.4.4'),('1.4.3','1.4.3'),('1.4.2','1.4.2'),('1.4.1','1.4.1'),('1.4.0','1.4.0')], initial='1.5.0')
+     help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
+diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
+index 9265a84..2cc7ece 100644
+--- a/rdgenerator/templates/_build_cost.html
++++ b/rdgenerator/templates/_build_cost.html
+@@ -1,26 +1,41 @@
++<div id="rd-mac-arch" hidden>
++    <label for="{{ form.macArch.id_for_label }}">Mac builds:</label>
++    {{ form.macArch }}
++    <div class="rd-hint">Intel and Apple Silicon Macs each need their own build. Build only the kind your Macs are.</div>
++</div>
+ <div id="rd-cost-note" class="rd-hint" aria-live="polite"></div>
+ <script>
+ (function () {
+-    // what a build costs in GitHub Actions minutes in a private repo (measured on real builds; the Free plan
+-    // includes 2,000 minutes a month, and GitHub counts Windows minutes 2x and Mac minutes 10x)
++    // what a build costs in GitHub Actions minutes in a private repo (measured on real builds). The Free plan
++    // includes 2,000 minutes a month; GitHub's Mac minutes cost about ten times as much as Linux ones, Windows
++    // minutes almost twice, and they use up the included minutes at that pace. Self-hosted runners cost nothing.
+     var notes = {
+-        'macos': 'GitHub Actions cost: a Mac build runs two Mac machines (Intel and Apple Silicon) for 30-40 minutes, '
+-               + 'and GitHub counts Mac minutes ten times. One build uses roughly 600-700 of the 2,000 minutes a month '
+-               + 'the Free plan includes, so build Macs only when you need to, and set an Actions budget on GitHub.',
+-        'windows': 'GitHub Actions cost: about 100 minutes per build (Windows minutes count double).',
+-        'windows-x86': 'GitHub Actions cost: about 100 minutes per build (Windows minutes count double).',
++        'windows': 'GitHub Actions cost: about 100 minutes per build.',
++        'windows-x86': 'GitHub Actions cost: about 100 minutes per build.',
+         'linux': 'GitHub Actions cost: about 100 minutes per build (an x86_64 and an ARM Linux machine).'
+     };
+     var select = document.getElementById('id_platform');
++    var arch = document.getElementById('{{ form.macArch.id_for_label }}');
++    var archBox = document.getElementById('rd-mac-arch');
+     var note = document.getElementById('rd-cost-note');
+     if (!select || !note) return;
+     function show() {
++        var mac = select.value === 'macos';
+         var text = notes[select.value] || '';
++        if (mac) {
++            var both = !arch || arch.value === 'both';
++            text = 'GitHub Actions cost: each kind of Mac runs on a GitHub Mac machine for 30-40 minutes, and Mac '
++                 + 'minutes cost about ten times Linux ones. This build uses roughly '
++                 + (both ? '600-700' : '300-350') + ' of the 2,000 minutes a month the Free plan includes, '
++                 + 'unless it runs on a Mac of your own (self-hosted runner), where it costs nothing.';
++        }
++        if (archBox) archBox.hidden = !mac;
+         note.textContent = text;
+-        note.style.color = select.value === 'macos' ? '#ffd58a' : '';
++        note.style.color = mac ? '#ffd58a' : '';
+         note.hidden = !text;
+     }
+     select.addEventListener('change', show);
++    if (arch) arch.addEventListener('change', show);
+     document.querySelectorAll('.platform-icon').forEach(function (i) {
+         i.addEventListener('click', function () { setTimeout(show, 0); });
+     });
+diff --git a/rdgenerator/tests/ghstub.py b/rdgenerator/tests/ghstub.py
+index 501026e..b545004 100644
+--- a/rdgenerator/tests/ghstub.py
++++ b/rdgenerator/tests/ghstub.py
+@@ -18,6 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from urllib.parse import parse_qs, urlparse
+ 
+ WORKFLOW_INPUTS = {'version', 'cfg', 'build_uuid', 'proto'}
++# optional inputs a workflow declares on top (GitHub rejects anything undeclared)
++OPTIONAL_INPUTS = {'generator-macos.yml': {'mac_arch'}}
+ INPUTS_MAX = 65535
+ 
+ 
+@@ -199,8 +201,9 @@ class GitHubStub:
+                 inputs = (body or {}).get('inputs') or {}
+                 if (body or {}).get('ref') != self.branch:
+                     return 422, {'message': 'No ref found'}, None
+-                if set(inputs) - WORKFLOW_INPUTS:
+-                    return 422, {'message': 'Unexpected inputs provided: ' + ','.join(sorted(set(inputs) - WORKFLOW_INPUTS))}, None
++                extra = set(inputs) - WORKFLOW_INPUTS - OPTIONAL_INPUTS.get(m.group(1), set())
++                if extra:
++                    return 422, {'message': 'Unexpected inputs provided: ' + ','.join(sorted(extra))}, None
+                 if WORKFLOW_INPUTS - set(inputs):
+                     return 422, {'message': 'Required input missing'}, None
+                 if len(json.dumps(inputs, separators=(',', ':'))) > INPUTS_MAX:
+diff --git a/rdgenerator/tests/test_pull.py b/rdgenerator/tests/test_pull.py
+index 376523c..b9320f3 100644
+--- a/rdgenerator/tests/test_pull.py
++++ b/rdgenerator/tests/test_pull.py
+@@ -57,6 +57,21 @@ class StubTestCase(TestCase):
+ 
+ 
+ class DispatchTests(StubTestCase):
++    def dispatched_inputs(self):
++        return [x for x in self.stub.requests if x['path'].endswith('/dispatches')][-1]['body']['inputs']
++
++    def test_mac_arch_goes_out_only_when_it_matters(self):
++        r = self.generate(platform='macos', macArch='x86_64')
++        self.assertEqual(r.status_code, 200, r.content)
++        self.assertEqual(self.dispatched_inputs()['mac_arch'], 'x86_64')
++        for body in ({'platform': 'macos', 'macArch': 'both'}, {'platform': 'macos'},
++                     {'platform': 'windows', 'macArch': 'aarch64'}):
++            r = self.generate(**body)
++            self.assertEqual(r.status_code, 200, r.content)
++            self.assertNotIn('mac_arch', self.dispatched_inputs(), body)
++        r = self.generate(platform='macos', macArch='intel')
++        self.assertEqual(r.status_code, 400)
++
+     def test_dispatch_payload(self):
+         r = self.generate(serverIP='rd.example.com', key='OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=',
+                           permanentPassword='hunter2-long', iconbase64=png_uri((512, 512)),
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index bd34d35..ecb02b1 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -48,7 +48,9 @@ class FormPageTests(TestCase):
+         self.assertIn('input[name="direction"]', page)
+         # what a Mac build costs in GitHub Actions minutes, next to the platform picker
+         self.assertIn('<div id="rd-cost-note"', page)
+-        self.assertIn('roughly 600-700 of the 2,000 minutes', page)
++        self.assertIn('of the 2,000 minutes a month', page)
++        self.assertIn('<div id="rd-mac-arch" hidden>', page)
++        self.assertIn('name="macArch"', page)
+ 
+     def test_invalid_site_default_is_dropped(self):
+         with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 956248c..2a88f63 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -73,6 +73,9 @@ def generate_custom_client(params, full_url=None):
+     # app_version overrides the version string embedded in the built client
+     # without changing the git tag that version selects. If left empty, the
+     # RustDesk build's own version (from the checked-out tag) is used.
++    mac_arch = params.get('macArch') or 'both'
++    if mac_arch not in ('both', 'x86_64', 'aarch64'):
++        return {"success": False, "error": "macArch must be both, x86_64 or aarch64", "status_code": 400}
+     delayFix = params.get('delayFix', True)
+     xOffline = params.get('xOffline', False)
+     hidecm = params.get('hidecm', False)
+@@ -312,6 +315,9 @@ def generate_custom_client(params, full_url=None):
+             # validated by validation.py (digits and dots only): the
+             # workflows paste this input into a sed command
+             result["app_version"] = app_version
++        # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
++        if platform == 'macos' and mac_arch != 'both':
++            result["mac_arch"] = mac_arch
+         return result
+ 
+     try:

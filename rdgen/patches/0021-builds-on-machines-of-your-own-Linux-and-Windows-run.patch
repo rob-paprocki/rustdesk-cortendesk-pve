@@ -1,0 +1,242 @@
+From 8dab3bf79fa35d1c6a63d24a5b25e350d888ba2b Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Fri, 2 Oct 2026 00:16:06 -0400
+Subject: [PATCH 21/26] builds on machines of your own: Linux and Windows
+ runners, Linux choices
+
+Self-hosted runners cost no Actions minutes. The workflow side
+(pullify, patches 0008/0009) lets every job of the Linux, Windows and
+macOS workflows and of their helper workflows go to the runner label in
+a repository variable (RDGEN_RUNNER_LINUX, RDGEN_RUNNER_LINUX_ARM,
+RDGEN_RUNNER_WINDOWS; the Mac jobs have their own), skips the cleanup
+that frees disk on GitHub's images when on a self-hosted runner, and
+checks a self-hosted Linux or Windows runner's prerequisites first.
+
+Inside an LXC, ARM builds and AppImage/Flatpak are not expected to
+work, so the form gets two Linux choices, sent to the workflow only
+when they are not the default: "Linux builds" (x86_64 and ARM, x86_64
+only, ARM only -> input linux_arch) and "Linux packages" (everything,
+or .deb and .rpm only -> input linux_formats). The JSON API takes
+linuxArch and linuxFormats.
+
+SETUP-PULL.md: the runner variables, what a Linux and a Windows runner
+need, and the costs per platform.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ SETUP-PULL.md                          | 23 +++++++++++++++++++++--
+ rdgenerator/api_views.py               |  3 +++
+ rdgenerator/forms.py                   |  5 +++++
+ rdgenerator/templates/_build_cost.html | 12 +++++++++++-
+ rdgenerator/tests/ghstub.py            |  2 +-
+ rdgenerator/tests/test_pull.py         | 13 +++++++++++++
+ rdgenerator/tests/test_ui.py           |  3 +++
+ rdgenerator/views.py                   | 12 ++++++++++--
+ 8 files changed, 67 insertions(+), 6 deletions(-)
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index e6c7e5d..bc25a2b 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -57,12 +57,31 @@ Private repositories use your Actions minutes. The Free plan includes 2,000 minu
+ |---|---|---|
+ | Windows | about 100 billed minutes | Linux bridge plus the Windows job |
+ | macOS | roughly 300-350 per kind of Mac, 600-700 for both | Mac minutes cost about 10x Linux ones; the form's "Mac builds" choice (input `mac_arch`) builds Intel only, Apple Silicon only, or both |
+-| Linux | about 100 billed minutes | an x86_64 and an aarch64 job |
++| Linux | about 100 billed minutes | x86_64 and aarch64, each with .deb/.rpm, AppImage and Flatpak; the form's "Linux builds" and "Linux packages" choices (inputs `linux_arch`, `linux_formats`) cut that down |
+ 
+ Artifacts are kept for 1 day at most and are usually deleted within a minute of upload, so artifact storage stays close to zero.
+ 
+ Set an Actions budget (Settings → Billing and licensing → Budgets and alerts) so GitHub stops builds instead of charging you.
+ 
++### Builds on machines of your own (self-hosted runners)
++
++Jobs on a self-hosted runner cost no Actions minutes. Every job of the Linux, Windows and macOS workflows, and of the helper workflows they call (setup, bridge, cleanup, the Windows top-most-window helper), picks its machine from a repository variable (**Settings → Secrets and variables → Actions → Variables**) and falls back to GitHub's when it is not set:
++
++| Variable | Jobs | Set it to |
++|---|---|---|
++| `RDGEN_RUNNER_LINUX` | Linux x86_64 builds and all helper jobs | the label of a Linux x86_64 runner, e.g. `rdgen-linux` |
++| `RDGEN_RUNNER_LINUX_ARM` | Linux aarch64 builds | an ARM Linux runner (rarely needed) |
++| `RDGEN_RUNNER_WINDOWS` | Windows builds | the label of a Windows runner, e.g. `rdgen-windows` |
++| `RDGEN_RUNNER_MACOS_X86_64`, `RDGEN_RUNNER_MACOS_AARCH64` | Mac builds | the label of an Intel or an Apple Silicon Mac runner |
++
++With all of the ones you build for set, a build uses no GitHub-hosted minutes at all, so it keeps working under a $0 budget. Android always runs on GitHub (its jobs need the Android SDK of GitHub's image).
++
++On a self-hosted runner the workflows skip the cleanup that frees disk on GitHub's throwaway images (`sudo rm -rf /opt/ghc ...`), and the Linux and Windows build jobs first check their prerequisites and say what is missing.
++
++**Linux:** an Ubuntu 22.04 machine with Docker (the build runs in containers; `/dev/fuse` must exist) and passwordless `sudo` for the runner user, used for nothing else: the build action prunes all Docker images before and after each build. In the RustDesk LXC setup, `tools/runner-lxc.sh` creates such an LXC on the Proxmox host. An x86_64 machine cannot run the ARM jobs (they need ARM hardware, or QEMU registered on the host), so choose **Linux builds: x86_64 only**, or set `RDGEN_RUNNER_LINUX_ARM` to an ARM runner. **Linux packages: .deb and .rpm only** is the safest choice in an LXC. The swap step of the build only runs on GitHub's machines (an LXC may not enable swap; give the container enough RAM and swap instead). RustDesk 1.5.0's extra DRM build (an unattended Wayland .deb) runs on a Linux runner of yours only when the repository variable `RDGEN_LINUX_DRM` is `true`: it takes that runner for most of an hour.
++
++**Windows:** Windows with Visual Studio 2022 Build Tools (C++), Git for Windows (`bash`), PowerShell 7, Python 3, Chocolatey, NuGet and the .NET SDK, and the runner service running as an administrator. In the RustDesk LXC setup, `tools/runner-windows.ps1` installs all of it on a Windows Server VM.
++
+ ### Mac builds on a Mac of your own
+ 
+ Jobs on a self-hosted runner cost no Actions minutes. The Mac jobs can run on your own Mac:
+@@ -72,7 +91,7 @@ Jobs on a self-hosted runner cost no Actions minutes. The Mac jobs can run on yo
+ 3. In the build repository: **Settings → Secrets and variables → Actions → Variables**: set `RDGEN_RUNNER_MACOS_X86_64` (Intel Mac) or `RDGEN_RUNNER_MACOS_AARCH64` (Apple Silicon Mac) to that label.
+ 4. On the form, set **Mac builds** to the kind of Mac the runner is.
+ 
+-On a self-hosted runner the workflow first checks for Xcode and those commands and says what is missing. It skips its `brew install` steps there, because Homebrew no longer has prebuilt packages for Intel Macs and they would compile LLVM, GCC and Ruby for hours. It puts the tools it downloads in a per-job directory instead of `sudo` into /usr/local, lays out the DMG without Finder (`create-dmg --skip-jenkins`), and always deletes its temporary signing keychain. On GitHub's machines it behaves as before. The small Linux jobs of each build (setup, bridge, cleanup, about 10 minutes) still run on GitHub, so keep the Actions budget above $0. The first build compiles every dependency and is slow; later ones reuse the caches. Only you can start builds in a private repository, but the runner runs them with that account's rights, so don't use it for public repositories.
++On a self-hosted runner the workflow first checks for Xcode and those commands and says what is missing. It skips its `brew install` steps there, because Homebrew no longer has prebuilt packages for Intel Macs and they would compile LLVM, GCC and Ruby for hours. It puts the tools it downloads in a per-job directory instead of `sudo` into /usr/local, lays out the DMG without Finder (`create-dmg --skip-jenkins`), and always deletes its temporary signing keychain. On GitHub's machines it behaves as before. Without a Linux runner, the small Linux jobs of each build (setup, bridge, cleanup, about 10 minutes) still run on GitHub, so keep the Actions budget above $0 or set `RDGEN_RUNNER_LINUX` too. An Intel Mac cannot build Apple Silicon clients with this workflow; Intel clients do run on Apple Silicon Macs through Rosetta 2, which Apple supports fully through macOS 27. The first build compiles every dependency and is slow; later ones reuse the caches. Only you can start builds in a private repository, but the runner runs them with that account's rights, so don't use it for public repositories.
+ 
+ ## 2. Native install (Alpine 3.24, or Debian 13)
+ 
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index 2510fca..695d729 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -23,6 +23,7 @@ PASS_APPROVE_MODE_CHOICES = ['password', 'click', 'password-click']
+ PERMISSIONS_DORO_CHOICES = ['default', 'override']
+ PERMISSIONS_TYPE_CHOICES = ['custom', 'full', 'view']
+ MAC_ARCH_CHOICES = ['both', 'x86_64', 'aarch64']
++LINUX_FORMATS_CHOICES = ['all', 'deb']
+ 
+ # Boolean fields
+ BOOL_FIELDS = [
+@@ -79,6 +80,8 @@ def validate_generate_params(data):
+         'permissionsDorO': (PERMISSIONS_DORO_CHOICES, 'default'),
+         'permissionsType': (PERMISSIONS_TYPE_CHOICES, 'custom'),
+         'macArch': (MAC_ARCH_CHOICES, 'both'),
++        'linuxArch': (MAC_ARCH_CHOICES, 'both'),
++        'linuxFormats': (LINUX_FORMATS_CHOICES, 'all'),
+     }
+     for field, (choices, default) in choice_validations.items():
+         value = data.get(field, default)
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index 068606b..efcb5ba 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -11,6 +11,11 @@ class GenerateForm(forms.Form):
+     # which Mac jobs run (workflow input mac_arch); sent only for macOS builds, and only when it is not 'both'
+     macArch = forms.ChoiceField(choices=[('both', 'Intel and Apple Silicon'), ('x86_64', 'Intel only'),
+                                          ('aarch64', 'Apple Silicon only')], initial='both', required=False)
++    # which Linux jobs run (workflow inputs linux_arch / linux_formats); sent only for Linux builds, when not the default
++    linuxArch = forms.ChoiceField(choices=[('both', 'x86_64 and ARM (aarch64)'), ('x86_64', 'x86_64 only'),
++                                           ('aarch64', 'ARM (aarch64) only')], initial='both', required=False)
++    linuxFormats = forms.ChoiceField(choices=[('all', '.deb, .rpm, AppImage and Flatpak'), ('deb', '.deb and .rpm only')],
++                                     initial='all', required=False)
+     platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0'),('1.4.9','1.4.9'),('1.4.8','1.4.8'),('1.4.7','1.4.7'),('1.4.6','1.4.6'),('1.4.5','1.4.5'),('1.4.4','1.4.4'),('1.4.3','1.4.3'),('1.4.2','1.4.2'),('1.4.1','1.4.1'),('1.4.0','1.4.0')], initial='1.5.0')
+     help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
+diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
+index 2cc7ece..1e7d6cd 100644
+--- a/rdgenerator/templates/_build_cost.html
++++ b/rdgenerator/templates/_build_cost.html
+@@ -3,6 +3,13 @@
+     {{ form.macArch }}
+     <div class="rd-hint">Intel and Apple Silicon Macs each need their own build. Build only the kind your Macs are.</div>
+ </div>
++<div id="rd-linux-opts" hidden>
++    <label for="{{ form.linuxArch.id_for_label }}">Linux builds:</label>
++    {{ form.linuxArch }}
++    <label for="{{ form.linuxFormats.id_for_label }}">Linux packages:</label>
++    {{ form.linuxFormats }}
++    <div class="rd-hint">Most PCs are x86_64; ARM is for boards like the Raspberry Pi. A self-hosted Linux runner in an LXC builds x86_64 .deb and .rpm only.</div>
++</div>
+ <div id="rd-cost-note" class="rd-hint" aria-live="polite"></div>
+ <script>
+ (function () {
+@@ -12,11 +19,13 @@
+     var notes = {
+         'windows': 'GitHub Actions cost: about 100 minutes per build.',
+         'windows-x86': 'GitHub Actions cost: about 100 minutes per build.',
+-        'linux': 'GitHub Actions cost: about 100 minutes per build (an x86_64 and an ARM Linux machine).'
++        'linux': 'GitHub Actions cost: about 100 minutes per build with everything, roughly half for x86_64 .deb '
++               + 'and .rpm only, and nothing on a self-hosted runner.'
+     };
+     var select = document.getElementById('id_platform');
+     var arch = document.getElementById('{{ form.macArch.id_for_label }}');
+     var archBox = document.getElementById('rd-mac-arch');
++    var linuxBox = document.getElementById('rd-linux-opts');
+     var note = document.getElementById('rd-cost-note');
+     if (!select || !note) return;
+     function show() {
+@@ -30,6 +39,7 @@
+                  + 'unless it runs on a Mac of your own (self-hosted runner), where it costs nothing.';
+         }
+         if (archBox) archBox.hidden = !mac;
++        if (linuxBox) linuxBox.hidden = select.value !== 'linux';
+         note.textContent = text;
+         note.style.color = mac ? '#ffd58a' : '';
+         note.hidden = !text;
+diff --git a/rdgenerator/tests/ghstub.py b/rdgenerator/tests/ghstub.py
+index b545004..ff1a0b1 100644
+--- a/rdgenerator/tests/ghstub.py
++++ b/rdgenerator/tests/ghstub.py
+@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
+ 
+ WORKFLOW_INPUTS = {'version', 'cfg', 'build_uuid', 'proto'}
+ # optional inputs a workflow declares on top (GitHub rejects anything undeclared)
+-OPTIONAL_INPUTS = {'generator-macos.yml': {'mac_arch'}}
++OPTIONAL_INPUTS = {'generator-macos.yml': {'mac_arch'}, 'generator-linux.yml': {'linux_arch', 'linux_formats'}}
+ INPUTS_MAX = 65535
+ 
+ 
+diff --git a/rdgenerator/tests/test_pull.py b/rdgenerator/tests/test_pull.py
+index b9320f3..1066c50 100644
+--- a/rdgenerator/tests/test_pull.py
++++ b/rdgenerator/tests/test_pull.py
+@@ -72,6 +72,19 @@ class DispatchTests(StubTestCase):
+         r = self.generate(platform='macos', macArch='intel')
+         self.assertEqual(r.status_code, 400)
+ 
++    def test_linux_options_go_out_only_when_they_matter(self):
++        r = self.generate(platform='linux', linuxArch='x86_64', linuxFormats='deb')
++        self.assertEqual(r.status_code, 200, r.content)
++        inputs = self.dispatched_inputs()
++        self.assertEqual((inputs['linux_arch'], inputs['linux_formats']), ('x86_64', 'deb'))
++        r = self.generate(platform='linux')
++        self.assertEqual(r.status_code, 200, r.content)
++        self.assertFalse({'linux_arch', 'linux_formats'} & set(self.dispatched_inputs()))
++        r = self.generate(platform='windows', linuxArch='x86_64', linuxFormats='deb')
++        self.assertEqual(r.status_code, 200, r.content)
++        self.assertFalse({'linux_arch', 'linux_formats'} & set(self.dispatched_inputs()))
++        self.assertEqual(self.generate(platform='linux', linuxFormats='appimage').status_code, 400)
++
+     def test_dispatch_payload(self):
+         r = self.generate(serverIP='rd.example.com', key='OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=',
+                           permanentPassword='hunter2-long', iconbase64=png_uri((512, 512)),
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index ecb02b1..7beb1e9 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -51,6 +51,9 @@ class FormPageTests(TestCase):
+         self.assertIn('of the 2,000 minutes a month', page)
+         self.assertIn('<div id="rd-mac-arch" hidden>', page)
+         self.assertIn('name="macArch"', page)
++        self.assertIn('<div id="rd-linux-opts" hidden>', page)
++        self.assertIn('name="linuxArch"', page)
++        self.assertIn('name="linuxFormats"', page)
+ 
+     def test_invalid_site_default_is_dropped(self):
+         with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 2a88f63..4b64264 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -74,8 +74,12 @@ def generate_custom_client(params, full_url=None):
+     # without changing the git tag that version selects. If left empty, the
+     # RustDesk build's own version (from the checked-out tag) is used.
+     mac_arch = params.get('macArch') or 'both'
+-    if mac_arch not in ('both', 'x86_64', 'aarch64'):
+-        return {"success": False, "error": "macArch must be both, x86_64 or aarch64", "status_code": 400}
++    linux_arch = params.get('linuxArch') or 'both'
++    linux_formats = params.get('linuxFormats') or 'all'
++    if mac_arch not in ('both', 'x86_64', 'aarch64') or linux_arch not in ('both', 'x86_64', 'aarch64'):
++        return {"success": False, "error": "macArch and linuxArch must be both, x86_64 or aarch64", "status_code": 400}
++    if linux_formats not in ('all', 'deb'):
++        return {"success": False, "error": "linuxFormats must be all or deb", "status_code": 400}
+     delayFix = params.get('delayFix', True)
+     xOffline = params.get('xOffline', False)
+     hidecm = params.get('hidecm', False)
+@@ -318,6 +322,10 @@ def generate_custom_client(params, full_url=None):
+         # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
+         if platform == 'macos' and mac_arch != 'both':
+             result["mac_arch"] = mac_arch
++        if platform == 'linux' and linux_arch != 'both':
++            result["linux_arch"] = linux_arch
++        if platform == 'linux' and linux_formats != 'all':
++            result["linux_formats"] = linux_formats
+         return result
+ 
+     try:

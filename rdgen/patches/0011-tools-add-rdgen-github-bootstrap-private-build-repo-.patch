@@ -1,0 +1,660 @@
+From e5a9a85e774fc612c7cff44f001285fa17b98f87 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 01:05:56 -0400
+Subject: [PATCH 11/26] tools: add rdgen-github-bootstrap (private build repo
+ setup and upstream updates)
+
+Python (stdlib + requests + PyNaCl; py3-pynacl 1.6.2 on Alpine 3.24,
+python3-nacl 1.5.0 on Debian 13).
+
+  check-token  what the token can see (repo, private/fork, Actions,
+               Secrets, Administration read)
+  init         build the tree (upstream master + patch series + pullify)
+               or take a prepared one; create the PRIVATE repo if the token
+               may (else explain the one manual click); refuse forks and
+               public repos; push; check that the branch is the default
+               branch (workflow_dispatch needs that); set the ZIP_PASSWORD
+               Actions secret with a libsodium sealed box against the
+               repo's public key; enable Actions if needed and allowed;
+               wait until the five generator workflows are registered
+  set-secret   re-set ZIP_PASSWORD (rotation)
+  update       ls-remote upstream; if it moved, rebuild: git am -3 every
+               patch except the ones with the "Rdgen-Mechanical: pullify"
+               trailer, then run tools/pullify.py instead of those. Verify
+               with compileall, pullify --check, manage.py check and
+               makemigrations --check. Push only with --apply. If any step
+               fails, nothing is pushed, the current version stays, and the
+               error is reported (exit 4; optionally through
+               rustdesk-notify with --notify).
+
+Secrets never go on argv. Tokens are read from --token-file (a warning if
+it is group/other readable) or --token-stdin. git gets the token as an
+http extraheader through GIT_CONFIG_{COUNT,KEY_n,VALUE_n} environment
+variables of the child process, scoped to the push URL's origin and
+with the credential helper disabled, so it is not in the URL, argv,
+.git/config or a credential store. The state (upstream and pushed shas,
+branch) is kept in /etc/rdgen/bootstrap.json (0600).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ tools/rdgen-github-bootstrap | 610 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 610 insertions(+)
+ create mode 100755 tools/rdgen-github-bootstrap
+
+diff --git a/tools/rdgen-github-bootstrap b/tools/rdgen-github-bootstrap
+new file mode 100755
+index 0000000..4c5ee98
+--- /dev/null
++++ b/tools/rdgen-github-bootstrap
+@@ -0,0 +1,610 @@
++#!/usr/bin/env python3
++"""rdgen-github-bootstrap: set up and update the private GitHub build repository.
++
++The rdgen server (pull model) dispatches builds in a PRIVATE repository that
++holds this patched rdgen tree. This tool:
++
++  check-token   validate a token against the repository
++  init          create (or verify) the private repo, push the patched tree
++                to its default branch (recorded in --state as "branch"),
++                set the ZIP_PASSWORD Actions secret (PyNaCl sealed box),
++                make sure Actions are enabled, wait for the workflows
++  set-secret    re-set ZIP_PASSWORD from the env file (rotation)
++  update        rebuild the tree from upstream master + the patch series
++                (+ tools/pullify.py for the generated workflows), verify it,
++                and with --apply push it. If a patch no longer applies or a
++                check fails, nothing is pushed and the current version stays.
++
++Tokens are never taken from argv: --token-file (root-only file) or
++--token-stdin. For git, the token goes into GIT_CONFIG_* environment
++variables of the git child process (an http extraheader), not into the
++URL, argv or a config file.
++
++Two tokens (see SETUP-PULL.md):
++  install/update token  fine-grained, this repository only: Contents RW,
++                        Workflows RW, Secrets RW (+ Administration RW only
++                        if this tool should create the repo / enable Actions;
++                        creating needs "All repositories").
++                        Used here only; not stored by default.
++  runtime token         fine-grained, this repository only: Actions RW,
++                        Metadata R. Stored as GHBEARER in /etc/rdgen/rdgen.env.
++
++Exit codes: 0 ok / up to date, 2 usage, 3 token/repo problem,
++            4 update kept current (patch or check failed), 5 push failed.
++"""
++import argparse
++import base64
++import datetime
++import glob
++import json
++import os
++import re
++import secrets
++import shutil
++import subprocess
++import sys
++import tempfile
++import time
++
++import requests
++
++UPSTREAM = 'https://github.com/bryangerlach/rdgen'
++API = 'https://api.github.com'
++API_VERSION = '2026-03-10'
++MECHANICAL = 'Rdgen-Mechanical: pullify'
++# what GitHub's "create repository" page can put in the first commit
++INIT_FILES = {'README.md', 'LICENSE', '.gitignore'}
++GENERATORS = ['generator-windows.yml', 'generator-windows-x86.yml', 'generator-linux.yml',
++              'generator-android.yml', 'generator-macos.yml']
++
++
++class Fail(Exception):
++    def __init__(self, msg, code=3, status=None):
++        super().__init__(msg)
++        self.code = code
++        self.status = status
++
++
++def log(msg):
++    print(msg, file=sys.stderr, flush=True)
++
++
++# ------------------------------------------------------------------ config
++def read_env_file(path):
++    values = {}
++    if not path or not os.path.exists(path):
++        return values
++    with open(path, encoding='utf-8') as fh:
++        for raw in fh:
++            line = raw.strip()
++            if not line or line.startswith('#'):
++                continue
++            key, sep, value = line.partition('=')
++            if sep and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key.strip()):
++                value = value.strip()
++                if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
++                    value = value[1:-1]
++                values[key.strip()] = value
++    return values
++
++
++def read_token(args, which='token'):
++    path = getattr(args, f'{which}_file', None)
++    use_stdin = getattr(args, f'{which}_stdin', False)
++    if path:
++        st = os.stat(path)
++        if st.st_mode & 0o077:
++            log(f'warning: {path} is readable by group/others; chmod 600 it')
++        with open(path, encoding='utf-8') as fh:
++            token = fh.readline().strip()
++    elif use_stdin:
++        token = sys.stdin.readline().strip()
++    else:
++        raise Fail(f'no {which}: use --{which.replace("_", "-")}-file or --{which.replace("_", "-")}-stdin', 2)
++    if not re.fullmatch(r'[A-Za-z0-9_]{20,255}', token or ''):
++        raise Fail('the token does not look like a GitHub token')
++    return token
++
++
++def load_state(path):
++    try:
++        with open(path, encoding='utf-8') as fh:
++            return json.load(fh)
++    except (OSError, ValueError):
++        return {}
++
++
++def save_state(path, state):
++    tmp = path + '.tmp'
++    old = os.umask(0o077)
++    try:
++        with open(tmp, 'w', encoding='utf-8') as fh:
++            json.dump(state, fh, indent=2, sort_keys=True)
++        os.replace(tmp, path)
++    finally:
++        os.umask(old)
++
++
++# ------------------------------------------------------------------ GitHub
++class GH:
++    def __init__(self, token, owner, repo, api):
++        self.owner, self.repo, self.api = owner, repo, api.rstrip('/')
++        self.s = requests.Session()
++        self.s.headers.update({'Accept': 'application/vnd.github+json',
++                               'Authorization': f'Bearer {token}',
++                               'X-GitHub-Api-Version': API_VERSION,
++                               'User-Agent': 'rdgen-github-bootstrap'})
++
++    def call(self, method, path, ok=(200, 201, 204), **kw):
++        try:
++            r = self.s.request(method, self.api + path, timeout=30, **kw)
++        except requests.RequestException as exc:
++            raise Fail(f'{method} {path}: {type(exc).__name__}') from None
++        if r.status_code not in ok:
++            try:
++                msg = str(r.json().get('message', ''))[:200]
++            except ValueError:
++                msg = ''
++            raise Fail(f'{method} {path}: HTTP {r.status_code} {msg}'.strip(), status=r.status_code)
++        return r
++
++    @property
++    def rp(self):
++        return f'/repos/{self.owner}/{self.repo}'
++
++
++def git_env(token, url='https://github.com/'):
++    """Auth for git without argv/URL/config-file exposure.
++
++    The header is scoped to the origin of `url`, so it is only sent there.
++    """
++    env = dict(os.environ)
++    env.update({
++        'GIT_TERMINAL_PROMPT': '0',
++        'GIT_CONFIG_NOSYSTEM': '1',
++        # explicit identities: service users have no GECOS name and hosts often no domain, and git refuses
++        # to commit (the pullify step) with an empty or auto-detected ident
++        'GIT_COMMITTER_NAME': env.get('GIT_COMMITTER_NAME', 'rdgen-bootstrap'),
++        'GIT_COMMITTER_EMAIL': env.get('GIT_COMMITTER_EMAIL', 'rdgen-bootstrap@localhost'),
++        'GIT_AUTHOR_NAME': env.get('GIT_AUTHOR_NAME', 'rdgen-bootstrap'),
++        'GIT_AUTHOR_EMAIL': env.get('GIT_AUTHOR_EMAIL', 'rdgen-bootstrap@localhost'),
++    })
++    if token:
++        basic = base64.b64encode(f'x-access-token:{token}'.encode()).decode()
++        m = re.match(r'(https?://[^/]+)/', url)
++        origin = m.group(1) if m else 'https://github.com'
++        env.update({'GIT_CONFIG_COUNT': '2',
++                    'GIT_CONFIG_KEY_0': f'http.{origin}/.extraheader',
++                    'GIT_CONFIG_VALUE_0': f'AUTHORIZATION: basic {basic}',
++                    'GIT_CONFIG_KEY_1': 'credential.helper',
++                    'GIT_CONFIG_VALUE_1': ''})
++    return env
++
++
++def git(*args, cwd=None, env=None, check=True, capture=True):
++    r = subprocess.run(['git', *args], cwd=cwd, env=env or git_env(None), text=True,
++                       stdout=subprocess.PIPE if capture else None,
++                       stderr=subprocess.PIPE if capture else None)
++    if check and r.returncode != 0:
++        raise Fail(f'git {args[0]} failed: {(r.stderr or "").strip()[-400:]}', 4)
++    return r
++
++
++# ------------------------------------------------------------------ steps
++def check_repo(gh, allow_public=False):
++    r = gh.call('GET', gh.rp, ok=(200, 404))
++    if r.status_code == 404:
++        return None
++    repo = r.json()
++    if repo.get('fork'):
++        raise Fail(f'{gh.owner}/{gh.repo} is a fork. Forks of a public repo are public; '
++                   'create a new PRIVATE repository instead (the tool pushes the tree into it).')
++    if not repo.get('private') and not allow_public:
++        raise Fail(f'{gh.owner}/{gh.repo} is public. Builds would be downloadable by anyone '
++                   'while they wait for the poller (and logs are public). Make it private or pass --allow-public.')
++    return repo
++
++
++def cmd_check_token(args):
++    gh = GH(read_token(args), args.owner, args.repo, args.api)
++    report = {}
++    r = gh.call('GET', gh.rp, ok=(200, 403, 404))
++    report['repo'] = {200: 'accessible', 403: 'forbidden', 404: 'not found / no access'}[r.status_code]
++    if r.status_code == 200:
++        repo = r.json()
++        report['private'] = repo.get('private')
++        report['fork'] = repo.get('fork')
++        report['default_branch'] = repo.get('default_branch')
++    scopes = r.headers.get('X-OAuth-Scopes')
++    report['token_type'] = 'classic PAT (scopes: %s)' % scopes if scopes is not None else 'fine-grained PAT or app token'
++    for name, path in (('actions_read', '/actions/workflows'), ('secrets_read', '/actions/secrets/public-key'),
++                       ('admin_read', '/actions/permissions')):
++        report[name] = gh.call('GET', gh.rp + path, ok=(200, 403, 404)).status_code == 200
++    print(json.dumps(report, indent=2))
++    return 0
++
++
++def ensure_repo(gh, args):
++    repo = check_repo(gh, args.allow_public)
++    if repo is not None:
++        return repo
++    log(f'{gh.owner}/{gh.repo} not found; trying to create it (private)')
++    body = {'name': gh.repo, 'private': True, 'has_issues': False, 'has_wiki': False,
++            'has_projects': False, 'auto_init': False,
++            'description': 'Private build repository for a self-hosted rdgen (pull model)'}
++    try:
++        gh.call('POST', '/user/repos', json=body)
++    except Fail as exc:
++        raise Fail(f'could not create the repository ({exc}). Create an EMPTY PRIVATE repository '
++                   f'named {gh.repo} in the GitHub web UI (no README), scope the token to it, and run init again.')
++    return check_repo(gh, args.allow_public)
++
++
++def set_zip_secret(gh, zip_password):
++    from nacl import encoding, public
++    key = gh.call('GET', gh.rp + '/actions/secrets/public-key').json()
++    box = public.SealedBox(public.PublicKey(key['key'].encode(), encoding.Base64Encoder()))
++    sealed = base64.b64encode(box.encrypt(zip_password.encode('utf-8'))).decode()
++    gh.call('PUT', gh.rp + '/actions/secrets/ZIP_PASSWORD',
++            json={'encrypted_value': sealed, 'key_id': key['key_id']}, ok=(201, 204))
++
++
++def ensure_actions(gh):
++    r = gh.call('GET', gh.rp + '/actions/permissions', ok=(200, 403, 404))
++    if r.status_code != 200:
++        log('note: the install token cannot read the Actions settings (that needs Administration: read, which is '
++            'optional). New repositories have Actions enabled unless you disabled Actions for your account.')
++        return None
++    if r.json().get('enabled'):
++        return True
++    try:
++        gh.call('PUT', gh.rp + '/actions/permissions', json={'enabled': True, 'allowed_actions': 'all'})
++        return True
++    except Fail as exc:
++        raise Fail(f'Actions are disabled for the repository and could not be enabled ({exc}); '
++                   'enable them under Settings > Actions.')
++
++
++def list_workflows(lister, runtime, tries):
++    """Poll until GitHub lists the generator workflows. Returns the listed names, or None if the check is skipped."""
++    names = set()
++    for attempt in range(tries):
++        r = lister.call('GET', lister.rp + '/actions/workflows', ok=(200, 403, 404))
++        if r.status_code != 200:
++            if not runtime:
++                log(f'note: the install token cannot list workflows (HTTP {r.status_code}; that needs Actions: read), '
++                    'so the workflow check is skipped')
++                return None
++            raise Fail(f'the runtime token cannot list the workflows of {lister.owner}/{lister.repo} '
++                       f'(HTTP {r.status_code}). Give it "Actions: Read and write" for this repository, then run init again.')
++        names = {os.path.basename(w.get('path', '')) for w in r.json().get('workflows', [])}
++        if set(GENERATORS) <= names:
++            return names
++        if attempt < tries - 1:
++            time.sleep(10)
++    return names
++
++
++def nudge_branch(tree, url, branch, token, head):
++    """Push an empty commit on top of head, which makes GitHub read the workflow files again."""
++    env = git_env(token, url)
++    sha = git('commit-tree', f'{head}^{{tree}}', '-p', head, '-m', 'rdgen: ask GitHub to register the workflows again',
++              cwd=tree, env=env).stdout.strip()
++    r = git('push', '--quiet', f'--force-with-lease=refs/heads/{branch}:{head}', url, f'{sha}:refs/heads/{branch}',
++            cwd=tree, env=env, check=False)
++    if r.returncode != 0:
++        raise Fail(f'git push failed: {r.stderr.strip()[-300:]}', 5)
++
++
++def wait_for_workflows(lister, gh, runtime, tree, url, token, branch, head):
++    """Make sure GitHub lists the generator workflows, which rdgen dispatches by file name.
++
++    Listing needs Actions: read: rdgen's runtime token has it and is used when given (the install token normally has
++    no Actions access, and then the check is skipped). GitHub usually registers pushed workflows within seconds, but
++    workflows first pushed to a branch that only later became the default can stay unregistered until GitHub reads
++    them again, so after 90 seconds an empty commit is pushed and the wait starts over.
++    """
++    log('checking that GitHub lists the generator workflows')
++    names = list_workflows(lister, runtime, 9)
++    if names is None or set(GENERATORS) <= names:
++        return sorted(names) if names else None
++    r = gh.call('GET', gh.rp + '/contents/.github/workflows', params={'ref': branch}, ok=(200, 404))
++    present = {f.get('name') for f in r.json()} if r.status_code == 200 and isinstance(r.json(), list) else set()
++    if not set(GENERATORS) <= present:
++        raise Fail(f'{branch} in {gh.owner}/{gh.repo} lacks {", ".join(sorted(set(GENERATORS) - present))}; '
++                   'the pushed tree is incomplete', 4)
++    log('GitHub has not registered the workflows yet; pushing an empty commit so that it reads them again')
++    nudge_branch(tree, url, branch, token, head)
++    names = list_workflows(lister, runtime, 12)
++    if names is None or set(GENERATORS) <= names:
++        return sorted(names) if names else None
++    raise Fail(f'GitHub still does not list {", ".join(sorted(set(GENERATORS) - names))} for {gh.owner}/{gh.repo}, '
++               f'although {branch} has them. This is a GitHub indexing problem: wait a few minutes, or in the '
++               'repository settings switch the default branch to another branch and back, then run init again.')
++
++
++def github_init_commit(tree, sha):
++    """True for a lone root commit holding only files GitHub's "Add a README/license/.gitignore" creates."""
++    parents = git('rev-list', '--parents', '-n', '1', sha, cwd=tree, check=False).stdout.split()
++    if len(parents) != 1:
++        return False
++    entries = git('ls-tree', sha, cwd=tree, check=False).stdout.splitlines()
++    names = []
++    for entry in entries:
++        meta, _, name = entry.partition('\t')
++        if meta.split()[1:2] != ['blob']:
++            return False
++        names.append(name)
++    return bool(names) and set(names) <= INIT_FILES
++
++
++def wait_default_branch(gh, branch, tries=6):
++    """GitHub makes the first branch pushed to an empty repo the default, but the API can lag behind."""
++    default = None
++    for attempt in range(tries):
++        default = gh.call('GET', gh.rp).json().get('default_branch')
++        if default == branch:
++            return
++        if attempt < tries - 1:
++            time.sleep(min(10, 2 + attempt * 2))
++    raise Fail(f'the default branch of {gh.owner}/{gh.repo} is {default!r}, but the tree was pushed to {branch!r}; '
++               'workflow_dispatch only sees the workflows on the default branch. Set the default branch to '
++               f'{branch!r} in the repository settings (Settings > General) and run init again.')
++
++
++def push_tree(tree, url, branch, token, force):
++    env = git_env(token, url)
++    head = git('rev-parse', 'HEAD', cwd=tree).stdout.strip()
++    remote = git('ls-remote', url, f'refs/heads/{branch}', cwd=tree, env=env, check=False)
++    if remote.returncode != 0:
++        raise Fail(f'cannot reach {url}: {remote.stderr.strip()[-300:]}', 5)
++    current = remote.stdout.split()[0] if remote.stdout.strip() else ''
++    if current == head:
++        return head, False
++    args = ['push', '--quiet']
++    if current and not force:
++        # only replace a branch that already holds an rdgen build tree (ours, from an earlier push); anything
++        # else means the repository is not the empty one this tool expects, so refuse instead of overwriting it
++        fetched = git('fetch', '--quiet', url, f'refs/heads/{branch}', cwd=tree, env=env, check=False)
++        if fetched.returncode != 0:
++            raise Fail(f'cannot fetch {branch} from {url}: {fetched.stderr.strip()[-300:]}', 5)
++        ours = git('cat-file', '-e', f'{current}:tools/rdgen-github-bootstrap', cwd=tree, check=False).returncode == 0
++        if not ours and github_init_commit(tree, current):
++            log(f'replacing the first commit GitHub created on {branch} (README/LICENSE/.gitignore only)')
++            ours = True
++        if not ours:
++            raise Fail(f'{branch} in {url} holds content that is not an rdgen build tree; use an EMPTY private '
++                       'repository (or pass --force to overwrite that branch)', 3)
++        args.append(f'--force-with-lease=refs/heads/{branch}:{current}')
++    elif current:
++        args.append('--force')
++    args += [url, f'HEAD:refs/heads/{branch}']
++    r = git(*args, cwd=tree, env=env, check=False)
++    if r.returncode != 0:
++        err = r.stderr.strip()
++        if ('workflow' in err and 'scope' in err) or 'without `workflows` permission' in err:
++            err += '\n(the token needs "Workflows: Read and write" to push .github/workflows)'
++        raise Fail(f'git push failed: {err[-500:]}', 5)
++    return head, True
++
++
++def cmd_init(args):
++    env = read_env_file(args.env_file)
++    zip_password = env.get('ZIP_PASSWORD', '')
++    if len(zip_password) < 32:
++        raise Fail(f'ZIP_PASSWORD missing or too short in {args.env_file}')
++    tree = os.path.abspath(args.tree)
++    upstream_sha = ''
++    if args.patches:
++        upstream_sha, _ = build_tree(tree, args.upstream, args.patches, args.python)
++        verify_tree(tree, args.python)
++    elif not os.path.isdir(os.path.join(tree, '.git')):
++        raise Fail(f'{tree} is not a git checkout of the patched tree', 2)
++    token = read_token(args)
++    gh = GH(token, args.owner, args.repo, args.api)
++    repo = ensure_repo(gh, args)
++    # builds are dispatched on the default branch (workflow_dispatch only sees workflows there), so push to it,
++    # whatever the account names new branches; an empty repository already reports the name it will use
++    branch = args.branch or repo.get('default_branch') or 'main'
++    url = args.git_url or f'https://github.com/{args.owner}/{args.repo}.git'
++    head, pushed = push_tree(tree, url, branch, token, args.force)
++    log(f'{"pushed" if pushed else "already at"} {head[:12]} -> {args.owner}/{args.repo}:{branch}')
++    wait_default_branch(gh, branch)
++    if env.get('GHBRANCH', 'master') != branch:   # rdgen's own default is master
++        log(f'note: set GHBRANCH={branch} in {args.env_file}; rdgen dispatches builds on that branch')
++    set_zip_secret(gh, zip_password)
++    log('ZIP_PASSWORD secret set')
++    actions = ensure_actions(gh)
++    runtime = read_token(args, 'runtime_token') if args.runtime_token_stdin else ''
++    checker = GH(runtime, args.owner, args.repo, args.api) if runtime else gh
++    workflows = wait_for_workflows(checker, gh, bool(runtime), tree, url, token, branch, head)
++    state = load_state(args.state)
++    state.update({'owner': args.owner, 'repo': args.repo, 'branch': branch, 'pushed': head,
++                  'upstream': upstream_sha or state.get('upstream', ''),
++                  'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')})
++    save_state(args.state, state)
++    print(json.dumps({'ok': True, 'repo': f'{args.owner}/{args.repo}', 'branch': branch, 'pushed': head,
++                      'actions_enabled': actions, 'workflows': workflows}, indent=2))
++    return 0
++
++
++def cmd_set_secret(args):
++    env = read_env_file(args.env_file)
++    zip_password = env.get('ZIP_PASSWORD', '')
++    if len(zip_password) < 32:
++        raise Fail(f'ZIP_PASSWORD missing or too short in {args.env_file}')
++    gh = GH(read_token(args), args.owner, args.repo, args.api)
++    check_repo(gh, args.allow_public)
++    set_zip_secret(gh, zip_password)
++    print('ZIP_PASSWORD secret set')
++    return 0
++
++
++def build_tree(src, upstream_url, patches_dir, python):
++    """Upstream master + patches (+ pullify). Returns (upstream_sha, head_sha)."""
++    patches = sorted(glob.glob(os.path.join(patches_dir, '*.patch')))
++    if not patches:
++        raise Fail(f'no *.patch files in {patches_dir}', 2)
++    if not os.path.isdir(os.path.join(src, '.git')):
++        git('clone', '--quiet', '--no-checkout', upstream_url, src)
++    git('fetch', '--quiet', upstream_url, 'master', cwd=src)
++    upstream = git('rev-parse', 'FETCH_HEAD', cwd=src).stdout.strip()
++    git('am', '--abort', cwd=src, check=False)
++    git('checkout', '--quiet', '--force', '-B', 'rdgen-build', upstream, cwd=src)
++    git('clean', '-fdxq', cwd=src)
++    mechanical = []
++    for patch in patches:
++        with open(patch, encoding='utf-8', errors='replace') as fh:
++            message = fh.read().split('\n---\n', 1)[0]
++        # a trailer line of its own in the commit message, not a mention
++        if re.search(r'^' + re.escape(MECHANICAL) + r'\s*$', message, re.M):
++            mechanical.append(os.path.basename(patch))
++            continue
++        r = git('-c', 'advice.mergeConflict=false', '-c', 'advice.amWorkDir=false',
++                'am', '-3', '--keep-cr', '--quiet', patch, cwd=src, check=False)
++        if r.returncode != 0:
++            git('am', '--abort', cwd=src, check=False)
++            lines = [ln for ln in (r.stdout + r.stderr).splitlines()
++                     if ln.startswith(('error:', 'CONFLICT', 'Patch failed'))]
++            raise Fail(f'{os.path.basename(patch)} no longer applies on upstream {upstream[:12]}: '
++                       f'{"; ".join(lines[:3]) or "conflict"}', 4)
++    if mechanical:
++        r = subprocess.run([python, 'tools/pullify.py'], cwd=src, text=True, capture_output=True)
++        if r.returncode != 0:
++            raise Fail('tools/pullify.py failed on upstream %s:\n%s' % (upstream[:12], r.stderr.strip()[-800:]), 4)
++        git('add', '-A', '.github', cwd=src)
++        if git('diff', '--cached', '--quiet', cwd=src, check=False).returncode != 0:
++            git('commit', '--quiet', '-m', f'workflows: apply tools/pullify.py (regenerated on upstream {upstream[:12]})',
++                '-m', MECHANICAL, cwd=src)
++    return upstream, git('rev-parse', 'HEAD', cwd=src).stdout.strip()
++
++
++def verify_tree(src, python):
++    checks = [[python, '-m', 'compileall', '-q', 'rdgen', 'rdgenerator', 'tools/pullify.py'],
++              [python, 'tools/pullify.py', '--check']]
++    for cmd in checks:
++        r = subprocess.run(cmd, cwd=src, text=True, capture_output=True)
++        if r.returncode != 0:
++            raise Fail(f'check failed ({" ".join(cmd[1:3])}): {(r.stdout + r.stderr).strip()[-500:]}', 4)
++    probe = subprocess.run([python, '-c', 'import django'], capture_output=True)
++    if probe.returncode == 0:
++        tmp = tempfile.mkdtemp(prefix='rdgen-verify-')
++        env = dict(os.environ, SECRET_KEY=secrets.token_urlsafe(64), ZIP_PASSWORD=secrets.token_hex(40),
++                   RDGEN_DATA_DIR=tmp, RDGEN_ENV_FILE='', PYTHONDONTWRITEBYTECODE='1')
++        try:
++            for cmd in ([python, 'manage.py', 'check'],
++                        [python, 'manage.py', 'makemigrations', '--check', '--dry-run']):
++                r = subprocess.run(cmd, cwd=src, env=env, text=True, capture_output=True)
++                if r.returncode != 0:
++                    raise Fail(f'check failed ({" ".join(cmd[2:])}): {(r.stdout + r.stderr).strip()[-500:]}', 4)
++        finally:
++            shutil.rmtree(tmp, ignore_errors=True)
++
++
++def notify(args, level, title, body):
++    if not args.notify:
++        return
++    tool = shutil.which('rustdesk-notify') or '/usr/local/bin/rustdesk-notify'
++    if os.path.exists(tool):
++        subprocess.run([tool, 'send', level, title, body], check=False,
++                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++
++
++def cmd_update(args):
++    state = load_state(args.state)
++    src = os.path.abspath(args.src)
++    remote = git('ls-remote', args.upstream, 'refs/heads/master', check=False)
++    latest = remote.stdout.split()[0] if remote.returncode == 0 and remote.stdout.strip() else ''
++    if latest and latest == state.get('upstream') and state.get('pushed') and not args.force:
++        print(json.dumps({'updated': False, 'reason': 'up to date', 'upstream': latest}))
++        return 0
++    try:
++        upstream, head = build_tree(src, args.upstream, args.patches, args.python)
++        verify_tree(src, args.python)
++    except Fail as exc:
++        msg = f'rdgen update NOT applied, keeping the current version: {exc}'
++        log(msg)
++        notify(args, 'warning', 'rdgen update skipped', msg)
++        print(json.dumps({'updated': False, 'error': str(exc)}))
++        return exc.code
++    if not args.apply:
++        print(json.dumps({'updated': False, 'reason': 'dry run (use --apply)', 'upstream': upstream,
++                          'previous_upstream': state.get('upstream'), 'tree': src, 'head': head}))
++        return 0
++    token = read_token(args)
++    gh = GH(token, args.owner, args.repo, args.api)
++    repo = check_repo(gh, args.allow_public) or {}
++    # the branch init pushed to; without a state file, the one rdgen dispatches on, else the repo default
++    branch = (args.branch or state.get('branch') or read_env_file(args.env_file).get('GHBRANCH')
++              or repo.get('default_branch'))
++    if not branch:
++        raise Fail('no branch recorded: run init first', 3)
++    url = args.git_url or f'https://github.com/{args.owner}/{args.repo}.git'
++    try:
++        pushed_sha, _ = push_tree(src, url, branch, token, force=True)
++    except Fail as exc:
++        notify(args, 'failure', 'rdgen update push failed', str(exc))
++        raise
++    state.update({'owner': args.owner, 'repo': args.repo, 'branch': branch, 'pushed': pushed_sha,
++                  'previous_upstream': state.get('upstream', ''), 'upstream': upstream,
++                  'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')})
++    save_state(args.state, state)
++    notify(args, 'success', 'rdgen build repo updated',
++           f'upstream {upstream[:12]} + patches pushed to {args.owner}/{args.repo}:{branch} ({pushed_sha[:12]})')
++    print(json.dumps({'updated': True, 'upstream': upstream, 'pushed': pushed_sha, 'tree': src}))
++    return 0
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(prog='rdgen-github-bootstrap', description=__doc__.split('\n')[1],
++                                 formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument('--env-file', default='/etc/rdgen/rdgen.env')
++    ap.add_argument('--owner')
++    ap.add_argument('--repo')
++    ap.add_argument('--branch', help='init: default is the repository\'s default branch; '
++                    'update: default is the branch init recorded in --state')
++    ap.add_argument('--api', default=API)
++    ap.add_argument('--git-url', help='override the push URL (tests)')
++    ap.add_argument('--state', default='/etc/rdgen/bootstrap.json')
++    ap.add_argument('--token-file')
++    ap.add_argument('--token-stdin', action='store_true')
++    ap.add_argument('--runtime-token-stdin', action='store_true',
++                    help='init: read rdgen\'s runtime token (Actions RW) as the next stdin line, to check the workflows')
++    ap.add_argument('--allow-public', action='store_true')
++    ap.add_argument('--notify', action='store_true', help='report through rustdesk-notify when present')
++    sub = ap.add_subparsers(dest='cmd', required=True)
++    sub.add_parser('check-token')
++    p = sub.add_parser('init')
++    p.add_argument('--tree', required=True, help='work directory: the patched tree to push (built there '
++                   'from upstream master + --patches when --patches is given)')
++    p.add_argument('--patches', help='directory with the *.patch series')
++    p.add_argument('--upstream', default=UPSTREAM)
++    p.add_argument('--python', default=sys.executable, help='interpreter with Django for the checks')
++    p.add_argument('--force', action='store_true', help='overwrite an unrelated existing branch')
++    sub.add_parser('set-secret')
++    p = sub.add_parser('update')
++    p.add_argument('--src', required=True, help='work directory for the rebuilt tree')
++    p.add_argument('--patches', required=True, help='directory with the *.patch series')
++    p.add_argument('--upstream', default=UPSTREAM)
++    p.add_argument('--python', default=sys.executable, help='interpreter with Django for the checks')
++    p.add_argument('--apply', action='store_true', help='push the verified tree')
++    p.add_argument('--force', action='store_true', help='rebuild and push even if upstream did not move')
++    args = ap.parse_args(argv)
++
++    env = read_env_file(args.env_file)
++    args.owner = args.owner or env.get('GHUSER', '')
++    args.repo = args.repo or env.get('REPONAME', '')
++    if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})', args.owner or '') or \
++            not re.fullmatch(r'[A-Za-z0-9._-]{1,100}', args.repo or ''):
++        log('owner/repo missing or invalid (--owner/--repo or GHUSER/REPONAME in the env file)')
++        return 2
++    try:
++        return {'check-token': cmd_check_token, 'init': cmd_init, 'set-secret': cmd_set_secret,
++                'update': cmd_update}[args.cmd](args)
++    except Fail as exc:
++        log(f'error: {exc}')
++        return exc.code
++
++
++if __name__ == '__main__':
++    sys.exit(main())

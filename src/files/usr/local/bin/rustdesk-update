@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# rustdesk-update: update (or health-check) the whole stack, then notify once with before -> after versions.
+#   rustdesk-update [--force]     runs daily (crond on Alpine, a systemd timer on Debian)
+# Components (each has its own tool with backup, health check and rollback):
+#   rustdesk-server  hbbs/hbbr from marcpope/cortendesk-server      rustdesk-server-update
+#   cortendesk       the console, marcpope/cortendesk               cortendesk-update
+#   rdgen            client builder (only if installed)             rdgen-update
+# /etc/rustdesk-update.env: UPDATE_SERVER / UPDATE_CORTENDESK / UPDATE_RDGEN=0 skip a component;
+#   NOTIFY_UPTODATE=0 silences the daily "no updates" message. Notifications: rustdesk-notify setup.
+set -euo pipefail
+. /usr/local/lib/rustdesk-cortendesk/common.sh
+mkdir -p /var/lib/rustdesk-update "$BK"; chmod 700 "$BK"
+if command -v flock >/dev/null; then
+  # waits for a running update or rdgen-publish import (which take seconds to minutes)
+  if ! update_lock_wait 1800; then
+    echo "rustdesk-update: another run has held the lock for 30 minutes; skipped" >&2
+    /usr/local/bin/rustdesk-notify send warning "⚠️ RustDesk update skipped" \
+      "Another run held /run/rustdesk-update.lock for 30 minutes." 9>&- >/dev/null 2>&1 || true
+    exit 0
+  fi
+fi
+export RUSTDESK_UPDATE_LOCKED=1   # the component updaters run under this lock
+FORCE=""; [ "${1:-}" = --force ] && FORCE=--force
+NOTIFY_UPTODATE=1 UPDATE_SERVER=1 UPDATE_CORTENDESK=1 UPDATE_RDGEN=1
+[ -f "$UPDATE_ENV" ] && . "$UPDATE_ENV"
+LOG=$(mktemp); exec > >(tee -a "$LOG") 2>&1
+
+notify() { /usr/local/bin/rustdesk-notify send "$@" 9>&- || echo "(notification failed)" >&2; }
+PHASE=check
+trap 'rc=$?; if [ $rc -ne 0 ] && [ "$PHASE" != "done" ]; then notify failure "❌ RustDesk update FAILED ($PHASE)" "$(printf "exit %s\n\`\`\`\n%s\n\`\`\`" $rc "$(tail -n 15 "$LOG" | cut -c1-180)")"; fi; rm -f "$LOG"' EXIT
+
+NAMES=(rustdesk-server cortendesk rdgen)
+TOOLS=(rustdesk-server-update cortendesk-update rdgen-update)
+ENABLED=("$UPDATE_SERVER" "$UPDATE_CORTENDESK" "$UPDATE_RDGEN")
+[ -x "$RDGEN_APP/.venv/bin/python3" ] || ENABLED[2]=0
+RDGEN_SEEN=/var/lib/rustdesk-update/rdgen.seen   # "<notoken|patches> <upstream commit>" already reported
+declare -a CUR LAT AFTER PEND
+pending=0 warnings=()
+for i in 0 1 2; do
+  PEND[$i]=0
+  [ "${ENABLED[$i]}" = 1 ] || { CUR[$i]=-; LAT[$i]=-; continue; }
+  read -r CUR[$i] LAT[$i] < <("/usr/local/bin/${TOOLS[$i]}" --check 9>&- 2>/dev/null || echo "? ?")
+  if [ "${LAT[$i]}" != "?" ] && { [ "${CUR[$i]}" != "${LAT[$i]}" ] || { [ -n "$FORCE" ] && [ $i -lt 2 ]; }; }; then PEND[$i]=1; fi
+  # rdgen: a pending local re-deploy always runs; an upstream update needs a stored token and is not retried past
+  # a known patch failure for the same commit
+  if [ $i = 2 ] && [ "${PEND[2]}" = 1 ] && [ "${LAT[2]}" != retry ]; then
+    seen=$(cat "$RDGEN_SEEN" 2>/dev/null || true)
+    if [ "$seen" = "patches ${LAT[2]}" ]; then PEND[2]=0
+    elif [ ! -s "$RDGEN_TOKEN" ]; then
+      PEND[2]=0
+      if [ "$seen" != "notoken ${LAT[2]}" ]; then
+        warnings+=("rdgen: upstream moved to ${LAT[2]}; no install token is stored, run: rdgen-update --token-stdin")
+        echo "notoken ${LAT[2]}" >"$RDGEN_SEEN"
+      fi
+    fi
+  fi
+  [ "${PEND[$i]}" = 1 ] && pending=1
+  printf '%-16s %-14s -> %s\n' "${NAMES[$i]}" "${CUR[$i]}" "${LAT[$i]}"
+done
+table() {  # table <array-name-of-final-versions>
+  local -n fin=$1; local i
+  printf '```\n'
+  for i in 0 1 2; do [ "${ENABLED[$i]}" = 1 ] && printf '%-16s %-14s -> %s\n' "${NAMES[$i]}" "${CUR[$i]}" "${fin[$i]}"; done
+  printf '```'
+}
+[ $pending = 1 ] && notify info "🔄 RustDesk update starting" "$(table LAT)"
+
+PHASE=update
+failed=()
+for i in 0 1 2; do
+  [ "${ENABLED[$i]}" = 1 ] || continue
+  # rdgen has no health check of its own when current; only run it when it can actually do something
+  [ $i = 2 ] && [ "${PEND[2]}" = 0 ] && { AFTER[2]=${CUR[2]}; continue; }
+  echo "==> ${NAMES[$i]}"
+  args=(); [ $i -lt 2 ] && [ -n "$FORCE" ] && args=(--force)
+  rc=0; "/usr/local/bin/${TOOLS[$i]}" "${args[@]}" 9>&- || rc=$?
+  case "${NAMES[$i]}:$rc" in
+    *:0) ;;
+    rdgen:10) warnings+=("rdgen: an update exists but no install token is stored (run rdgen-update --token-stdin)") ;;
+    rdgen:4) warnings+=("rdgen: the patches no longer apply to upstream ${LAT[2]}; staying on ${CUR[2]}$(sed 's/^/; /' /var/lib/rustdesk-update/rdgen-repair 2>/dev/null)")
+             echo "patches ${LAT[2]}" >"$RDGEN_SEEN" ;;
+    rdgen:6) warnings+=("rdgen: the patch source is unreadable (rdgen-setup --patch-source status)") ;;
+    *) failed+=("${NAMES[$i]} (exit $rc)") ;;
+  esac
+  AFTER[$i]=$("/usr/local/bin/${TOOLS[$i]}" --check 9>&- 2>/dev/null | cut -d' ' -f1 || echo "?")
+done
+extra=""; [ ${#warnings[@]} -gt 0 ] && extra=$(printf '\n⚠️ %s' "${warnings[@]}")
+PHASE="done"
+if [ ${#failed[@]} -gt 0 ]; then
+  notify failure "❌ RustDesk update FAILED: ${failed[*]}" "$(table AFTER)$extra$(printf '\n```\n%s\n```' "$(grep '!!' "$LOG" | tail -n 8 | cut -c1-180)")"
+  exit 1
+fi
+changed=0
+for i in 0 1 2; do [ "${ENABLED[$i]}" = 1 ] && [ "${AFTER[$i]:-}" != "${CUR[$i]}" ] && changed=1; done
+if [ $pending = 1 ] && { [ $changed = 1 ] || [ -n "$FORCE" ]; }; then
+  notify success "✅ RustDesk update succeeded" "$(table AFTER)$extra"
+elif [ -n "$extra" ]; then
+  notify warning "⚠️ RustDesk: healthy, but an update needs you" "$(table AFTER)$extra"
+elif [ "$NOTIFY_UPTODATE" = 1 ]; then
+  notify info "✔️ RustDesk: up to date, healthy" "$(table AFTER)"
+fi
+exit 0

@@ -1,0 +1,953 @@
+From 42dd7c1c731f9acf9ca7f4170dacbcc41e8a30d7 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 00:47:49 -0400
+Subject: [PATCH 05/26] pull model: poller downloads and deletes artifacts;
+ status and downloads from the DB
+
+New `manage.py rdgen_poll` (run as a supervised service) and
+`manage.py rdgen_prune`. Based on AllenMGu/rdgen's github_artifacts.py
+(GPL-3.0), extended to all platforms and several artifacts per run.
+
+Per active build the poller:
+- GETs the run. If the dispatch returned no run id, it finds the run by
+  run-name, which carries the build uuid.
+- Downloads every rdgen-<uuid>-* artifact as soon as it appears, even
+  while other jobs are still running. The API's 302 goes to a blob URL
+  that expires after about a minute; requests drops the Authorization
+  header on that cross-host redirect. Each zip is streamed to disk with a
+  size cap (RDGEN_MAX_ARTIFACT_BYTES, 3 GiB).
+- Extracts only regular files whose flattened name starts with the
+  build's filename and ends in .exe/.msi/.deb/.rpm/.pkg.tar.zst/
+  .AppImage/.flatpak/.apk/.dmg. Symlinks, path components, duplicates,
+  lying sizes and other names are dropped. Files are mode 0640, and the
+  manifest records name, size and sha256.
+- Deletes each artifact right after download (DELETE
+  /actions/artifacts/{id}).
+- On completion, deletes every artifact left on the run
+  (encrypted-secrets-zip, bridge, ...). A successful run is deleted too,
+  which removes its logs and event payload. A failed run is kept for
+  RDGEN_FAILED_RUN_KEEP_HOURS (48) so its logs can be read.
+- Cancels runs older than RDGEN_BUILD_TIMEOUT_HOURS (6).
+- Backs off 5 minutes on 401/403/429. The token is never logged.
+- Hourly prune: local builds older than RDGEN_RETENTION_DAYS (30),
+  orphaned build directories, stale temp files, and runs still to be
+  deleted.
+
+"success" now means the files are stored here, not just that GitHub
+finished. The page views and /api/status read the database only and
+never call GitHub.
+
+/download: upstream did open(os.path.join('exe', uuid, filename)) with
+both values straight from the query string, so
+filename=/proc/self/environ returned GHBEARER, ZIP_PASSWORD and
+SECRET_KEY. Now uuid must be a canonical UUID, filename must be a plain
+name in that build's manifest, and the realpath must stay inside
+ARTIFACT_ROOT/<uuid>. The file is streamed with FileResponse instead of
+read into RAM.
+
+The result pages list the manifest (size and sha256) instead of
+hard-coded per-platform guesses. The failure page shows the files that
+were built before the failure, plus the poller's error.
+
+/api/status adds ready, finished, error and files[{name,size,sha256,url}].
+New /api/download (token or session) lets a console integration fetch
+builds.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgen/urls.py                                 |   1 +
+ rdgenerator/api_views.py                      |  48 +--
+ rdgenerator/management/commands/rdgen_poll.py |  52 +++
+ .../management/commands/rdgen_prune.py        |  21 +
+ rdgenerator/poller.py                         | 367 ++++++++++++++++++
+ rdgenerator/templates/_files.html             |   8 +
+ rdgenerator/templates/failure.html            |  34 +-
+ rdgenerator/templates/generated.html          |  30 +-
+ rdgenerator/templates/waiting.html            |   6 +-
+ rdgenerator/views.py                          | 146 ++++---
+ 10 files changed, 547 insertions(+), 166 deletions(-)
+ create mode 100644 rdgenerator/management/commands/rdgen_poll.py
+ create mode 100644 rdgenerator/management/commands/rdgen_prune.py
+ create mode 100644 rdgenerator/poller.py
+ create mode 100644 rdgenerator/templates/_files.html
+
+diff --git a/rdgen/urls.py b/rdgen/urls.py
+index 5aa8265..274bbfd 100644
+--- a/rdgen/urls.py
++++ b/rdgen/urls.py
+@@ -25,6 +25,7 @@ urlpatterns = [
+     # JSON API endpoints
+     path('api/generate', api_views.api_generate, name='api_generate'),
+     path('api/status', api_views.api_status, name='api_status'),
++    path('api/download', api_views.api_download, name='api_download'),
+     # Login / logout (logout is POST-only in Django 5)
+     path('accounts/login/', auth_views.LoginView.as_view(redirect_authenticated_user=True), name='login'),
+     path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index 7276f75..f5d0254 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -1,5 +1,4 @@
+ import json
+-import os
+ import re
+ from functools import wraps
+ 
+@@ -11,7 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
+ from django.conf import settings as _settings
+ from .forms import GenerateForm
+ from .validation import validate_build_fields
+-from .views import generate_custom_client, _get_run_status, _UUID_RE
++from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
+ 
+ 
+ # Field validation constraints (mirrored from GenerateForm)
+@@ -301,8 +300,8 @@ def api_status(request):
+ 
+     Checks the generation status for a given UUID.
+     Returns JSON with status, uuid, and optional log_url/filename/platform.
+-    On a success status, also returns "files": a list of filenames that were
+-    created/saved for this run.
++    "files" lists the files stored here (name, size, sha256 and an
++    /api/download url); it stays empty until the poller has fetched them.
+     """
+     if request.method != 'GET':
+         return JsonResponse({"success": False, "error": "Method not allowed. Use GET."}, status=405)
+@@ -311,36 +310,31 @@ def api_status(request):
+     if not uuid_val:
+         return JsonResponse({"error": "Missing required parameter: uuid"}, status=400)
+ 
+-    filename = request.GET.get('filename', '')
+-    platform = request.GET.get('platform', '')
+-
+     result = _get_run_status(uuid_val)
+ 
+     if not result['found']:
+         return JsonResponse({"error": "Run not found"}, status=404)
+ 
++    gh_run = result['gh_run']
+     response_data = {
+         "status": result['status'],
+-        "uuid": uuid_val,
++        "uuid": gh_run.uuid,
+         "log_url": result['github_log_url'],
++        "filename": gh_run.filename,
++        "platform": gh_run.platform,
++        # true once the files are stored here (GitHub's own "success" is not
++        # enough in the pull model: the poller still has to download them)
++        "ready": gh_run.status == 'success',
++        "finished": gh_run.is_terminal,
++        "error": gh_run.last_error if gh_run.is_terminal and gh_run.status != 'success' else '',
++        "files": build_files(gh_run, url_name='api_download'),
+     }
+-    if filename:
+-        response_data['filename'] = filename
+-    if platform:
+-        response_data['platform'] = platform
+-
+-    # Expose the filenames that were actually uploaded/saved for this run so
+-    # API consumers can download them. The directory is scanned regardless of
+-    # the run status so that any (possibly partial) files are still reported,
+-    # including on failure.
+-    created_files = []
+-    if _UUID_RE.match(uuid_val or ''):
+-        run_dir = os.path.join('exe', uuid_val)
+-        if os.path.isdir(run_dir):
+-            for name in sorted(os.listdir(run_dir)):
+-                full_path = os.path.join(run_dir, name)
+-                if os.path.isfile(full_path):
+-                    created_files.append(name)
+-    response_data['files'] = created_files
+-
+     return JsonResponse(response_data)
++
++
++@api_auth_required
++def api_download(request):
++    """GET /api/download?uuid=&filename= (token or session)."""
++    if request.method != 'GET':
++        return JsonResponse({"success": False, "error": "Method not allowed. Use GET."}, status=405)
++    return serve_build_file(request)
+diff --git a/rdgenerator/management/commands/rdgen_poll.py b/rdgenerator/management/commands/rdgen_poll.py
+new file mode 100644
+index 0000000..562e1c8
+--- /dev/null
++++ b/rdgenerator/management/commands/rdgen_poll.py
+@@ -0,0 +1,52 @@
++import logging
++import signal
++import threading
++import time
++
++from django.conf import settings
++from django.core.management.base import BaseCommand
++
++from rdgenerator import github, poller
++
++log = logging.getLogger('rdgenerator.poller')
++
++
++class Command(BaseCommand):
++    help = ("Poll GitHub for pull-model builds: download rdgen-<uuid>-* artifacts, "
++            "delete artifacts and finished runs, and prune old builds.")
++
++    def add_arguments(self, parser):
++        parser.add_argument('--once', action='store_true', help='one polling pass, then exit')
++
++    def handle(self, *args, **opts):
++        stop = threading.Event()
++        for sig in (signal.SIGTERM, signal.SIGINT):
++            signal.signal(sig, lambda *_: stop.set())
++        interval = settings.RDGEN_POLL_INTERVAL
++        last_prune = 0.0
++        warned_unconfigured = 0.0
++        while not stop.is_set():
++            if not github.configured():
++                if time.monotonic() - warned_unconfigured > 600 or opts['once']:
++                    log.error('GitHub is not configured (GHUSER/REPONAME/GHBEARER); idling')
++                    warned_unconfigured = time.monotonic()
++                if opts['once']:
++                    return
++                stop.wait(60)
++                continue
++            delay = interval
++            try:
++                poller.poll_once()
++                if opts['once'] or time.monotonic() - last_prune > 3600:
++                    poller.prune()
++                    last_prune = time.monotonic()
++            except github.GitHubError as exc:
++                # 401/403/429: token revoked, missing permission or rate
++                # limit. Back off instead of hammering the API.
++                log.error('GitHub API error, backing off 5 minutes: %s', exc)
++                delay = 300
++            except Exception:
++                log.exception('poll pass failed')
++            if opts['once']:
++                return
++            stop.wait(delay)
+diff --git a/rdgenerator/management/commands/rdgen_prune.py b/rdgenerator/management/commands/rdgen_prune.py
+new file mode 100644
+index 0000000..37c85ef
+--- /dev/null
++++ b/rdgenerator/management/commands/rdgen_prune.py
+@@ -0,0 +1,21 @@
++from django.core.management.base import BaseCommand
++
++from rdgenerator import github, poller
++
++
++class Command(BaseCommand):
++    help = ("Delete local builds older than RDGEN_RETENTION_DAYS and finished runs on "
++            "GitHub (failed runs after RDGEN_FAILED_RUN_KEEP_HOURS).")
++
++    def handle(self, *args, **opts):
++        removed = poller.prune_local()
++        self.stdout.write(f'pruned {removed} local build(s)')
++        if not github.configured():
++            self.stderr.write('GitHub is not configured: skipped deleting runs on GitHub')
++            return
++        try:
++            deleted = poller.prune_remote(github.GitHub())
++        except github.GitHubError as exc:
++            self.stderr.write(f'GitHub API error: {exc}')
++            return
++        self.stdout.write(f'deleted {deleted} finished run(s) on GitHub')
+diff --git a/rdgenerator/poller.py b/rdgenerator/poller.py
+new file mode 100644
+index 0000000..48ca33f
+--- /dev/null
++++ b/rdgenerator/poller.py
+@@ -0,0 +1,367 @@
++"""Pull-model poller: fetch build artifacts from GitHub, then delete them.
++
++Run by `manage.py rdgen_poll` (a supervised service). Per active build:
++
++1. GET /actions/runs/{id} (the run id comes from the dispatch response; if
++   GitHub did not return one, the run is found by its run-name, which
++   carries the build uuid).
++2. List the run's artifacts. Every artifact named rdgen-<uuid>-* is
++   downloaded as soon as it appears, even while the run is still going:
++   the API answers with a 302 to a blob URL that is valid for about a
++   minute, and requests drops the Authorization header on that cross-host
++   redirect. The zip is streamed to disk with a size cap. Only plain
++   files whose names match the build's allowlist are extracted (flattened,
++   no symlinks, no path components). Then the artifact is deleted.
++3. When the run has completed, every artifact left on it is deleted
++   (encrypted-secrets-zip, bridge files, ...). A successful run is deleted
++   too, which also removes its logs and event payload. A failed run is kept
++   for RDGEN_FAILED_RUN_KEEP_HOURS so its logs can be read, then deleted
++   by prune().
++"""
++import hashlib
++import logging
++import os
++import re
++import shutil
++import stat
++import uuid as uuid_mod
++import zipfile
++from datetime import timedelta
++from pathlib import Path, PurePosixPath
++
++from django.conf import settings
++from django.utils import timezone
++
++from .github import GitHub, GitHubError, WORKFLOWS
++from .models import GithubRun, TERMINAL_STATUSES
++
++log = logging.getLogger(__name__)
++
++OUTPUT_EXTENSIONS = ('.exe', '.msi', '.deb', '.rpm', '.pkg.tar.zst', '.AppImage',
++                     '.flatpak', '.apk', '.dmg')
++SAFE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,200}')
++ACTIVE_GITHUB_STATES = {'queued', 'in_progress', 'waiting', 'requested', 'pending'}
++
++
++class ArtifactRejected(Exception):
++    pass
++
++
++def artifact_root():
++    root = Path(settings.ARTIFACT_ROOT)
++    root.mkdir(parents=True, exist_ok=True)
++    return root
++
++
++def valid_uuid(value):
++    try:
++        return str(uuid_mod.UUID(str(value))) == str(value)
++    except (ValueError, TypeError, AttributeError):
++        return False
++
++
++def allowed_output_name(name, filename):
++    """True for a flat file name this build is allowed to produce."""
++    if not name or not SAFE_NAME.fullmatch(name) or '..' in name:
++        return False
++    if not filename or not (name == filename or name.startswith(filename + '.') or name.startswith(filename + '-')):
++        return False
++    return any(name.endswith(ext) for ext in OUTPUT_EXTENSIONS)
++
++
++def build_dir(build):
++    if not valid_uuid(build.uuid):
++        raise ArtifactRejected('build has an invalid uuid')
++    return artifact_root() / build.uuid
++
++
++def _download_zip(gh, artifact_id, dest):
++    limit = settings.RDGEN_MAX_ARTIFACT_BYTES
++    resp = gh.request('GET', gh.repo_path(f'/actions/artifacts/{artifact_id}/zip'),
++                      ok=(200,), stream=True, timeout=(30, 900), allow_redirects=True)
++    total = 0
++    try:
++        with open(dest, 'wb') as fh:
++            for chunk in resp.iter_content(chunk_size=1024 * 1024):
++                total += len(chunk)
++                if total > limit:
++                    raise ArtifactRejected(f'artifact {artifact_id} is larger than {limit} bytes')
++                fh.write(chunk)
++    finally:
++        resp.close()
++    return total
++
++
++def _extract(zip_path, build, staging):
++    """Extract allowlisted members to `staging`; return manifest entries."""
++    limit = settings.RDGEN_MAX_ARTIFACT_BYTES
++    entries, seen, total = [], set(), 0
++    try:
++        with zipfile.ZipFile(zip_path) as zf:
++            for info in zf.infolist():
++                if info.is_dir():
++                    continue
++                mode = (info.external_attr >> 16) & 0o170000
++                if mode and mode != stat.S_IFREG:
++                    log.warning('build %s: skipping non-regular zip member', build.uuid)
++                    continue
++                name = PurePosixPath(info.filename.replace('\\', '/')).name
++                if not allowed_output_name(name, build.filename):
++                    log.info('build %s: ignoring unexpected file %r', build.uuid, name[:80])
++                    continue
++                if name in seen:
++                    raise ArtifactRejected(f'duplicate output {name}')
++                total += info.file_size
++                if total > limit:
++                    raise ArtifactRejected('artifact expands beyond the size limit')
++                digest = hashlib.sha256()
++                size = 0
++                target = staging / name
++                with zf.open(info) as src, open(target, 'wb') as dst:
++                    while True:
++                        chunk = src.read(1024 * 1024)
++                        if not chunk:
++                            break
++                        size += len(chunk)
++                        if size > info.file_size:
++                            raise ArtifactRejected('zip member larger than declared')
++                        digest.update(chunk)
++                        dst.write(chunk)
++                os.chmod(target, 0o640)
++                seen.add(name)
++                entries.append({'name': name, 'size': size, 'sha256': digest.hexdigest()})
++    except (zipfile.BadZipFile, EOFError):
++        raise ArtifactRejected('artifact is not a valid zip archive') from None
++    return entries
++
++
++def fetch_artifact(gh, build, artifact):
++    aid = artifact['id']
++    root = artifact_root()
++    token = uuid_mod.uuid4().hex[:8]
++    zip_path = root / f'.dl-{build.uuid}-{aid}-{token}.zip'
++    staging = root / f'.stage-{build.uuid}-{aid}-{token}'
++    staging.mkdir(mode=0o750)
++    try:
++        _download_zip(gh, aid, zip_path)
++        entries = _extract(zip_path, build, staging)
++        dest = build_dir(build)
++        dest.mkdir(mode=0o750, exist_ok=True)
++        for entry in entries:
++            os.replace(staging / entry['name'], dest / entry['name'])
++        return entries
++    finally:
++        zip_path.unlink(missing_ok=True)
++        shutil.rmtree(staging, ignore_errors=True)
++
++
++def delete_artifact(gh, artifact_id):
++    gh.request('DELETE', gh.repo_path(f'/actions/artifacts/{int(artifact_id)}'), ok=(204, 404))
++
++
++def delete_run(gh, run_id):
++    gh.request('DELETE', gh.repo_path(f'/actions/runs/{int(run_id)}'), ok=(204, 404))
++
++
++def list_artifacts(gh, run_id):
++    data = gh.json('GET', gh.repo_path(f'/actions/runs/{int(run_id)}/artifacts'), params={'per_page': 100})
++    items = data.get('artifacts', [])
++    if not isinstance(items, list):
++        raise GitHubError('artifact list is malformed')
++    return [a for a in items if isinstance(a, dict) and isinstance(a.get('id'), int)]
++
++
++def find_run(gh, build):
++    """Find the run for a dispatch that did not return a run id."""
++    workflow = WORKFLOWS.get(build.platform)
++    if not workflow:
++        return None
++    data = gh.json('GET', gh.repo_path(f'/actions/workflows/{workflow}/runs'),
++                   params={'event': 'workflow_dispatch', 'per_page': 30})
++    for run in data.get('workflow_runs', []) or []:
++        if isinstance(run, dict) and build.uuid in str(run.get('display_title', '')):
++            return run
++    return None
++
++
++def _merge_files(existing, new):
++    by_name = {f['name']: f for f in existing if isinstance(f, dict) and 'name' in f}
++    for f in new:
++        by_name[f['name']] = f
++    return sorted(by_name.values(), key=lambda f: f['name'])
++
++
++def sync_build(gh, build, now=None):
++    now = now or timezone.now()
++    if not build.github_run_id:
++        run = find_run(gh, build)
++        if run is None:
++            if now - build.created_at > timedelta(minutes=15):
++                build.status = 'failure'
++                build.last_error = 'The workflow run for this build was never found on GitHub.'
++                build.completed_at = now
++                build.save()
++            return
++        build.github_run_id = run['id']
++        build.html_url = str(run.get('html_url', ''))[:300]
++        build.save(update_fields=['github_run_id', 'html_url', 'updated_at'])
++
++    try:
++        run = gh.json('GET', gh.repo_path(f'/actions/runs/{int(build.github_run_id)}'))
++    except GitHubError as exc:
++        if exc.status == 404:
++            build.status = 'failure'
++            build.last_error = 'The workflow run disappeared from GitHub.'
++            build.completed_at = now
++            build.save()
++            return
++        raise
++    gh_status = run.get('status')
++    conclusion = run.get('conclusion')
++
++    # Eager download: artifacts can be fetched while other jobs still run.
++    prefix = f'rdgen-{build.uuid}-'
++    artifacts = list_artifacts(gh, build.github_run_id)
++    for art in artifacts:
++        name = art.get('name')
++        if not isinstance(name, str) or not name.startswith(prefix):
++            continue
++        if art['id'] in build.fetched_artifacts:
++            delete_artifact(gh, art['id'])  # earlier delete failed; retry
++            continue
++        if art.get('expired'):
++            continue
++        previous = build.status
++        build.status = 'downloading'
++        build.save(update_fields=['status', 'updated_at'])
++        try:
++            entries = fetch_artifact(gh, build, art)
++        except ArtifactRejected as exc:
++            build.status = previous
++            build.last_error = f'Artifact {name} rejected: {exc}'
++            build.fetched_artifacts = build.fetched_artifacts + [art['id']]
++            build.save()
++            delete_artifact(gh, art['id'])
++            continue
++        build.files = _merge_files(build.files, entries)
++        build.fetched_artifacts = build.fetched_artifacts + [art['id']]
++        build.status = previous
++        build.save()
++        delete_artifact(gh, art['id'])
++        log.info('build %s: stored %s', build.uuid, ', '.join(e['name'] for e in entries) or 'nothing')
++
++    if gh_status != 'completed':
++        if now - build.created_at > timedelta(hours=settings.RDGEN_BUILD_TIMEOUT_HOURS):
++            try:
++                gh.request('POST', gh.repo_path(f'/actions/runs/{int(build.github_run_id)}/cancel'),
++                           ok=(202, 409))
++            except GitHubError as exc:
++                log.warning('build %s: cancel failed: %s', build.uuid, exc)
++            build.status = 'timed_out'
++            build.last_error = f'Build exceeded {settings.RDGEN_BUILD_TIMEOUT_HOURS} hours and was cancelled.'
++            build.completed_at = now
++            build.save()
++            return
++        build.status = 'in_progress' if gh_status == 'in_progress' else 'queued'
++        build.save(update_fields=['status', 'updated_at'])
++        return
++
++    # Completed: remove whatever is left on the run.
++    for art in list_artifacts(gh, build.github_run_id):
++        delete_artifact(gh, art['id'])
++    build.completed_at = now
++    if conclusion == 'success' and build.files:
++        build.status = 'success'
++    elif conclusion == 'success':
++        build.status = 'failure'
++        reason = f'The run succeeded but no usable {prefix}* artifact was stored.'
++        # keep an earlier, more specific reason (e.g. "Artifact ... rejected")
++        build.last_error = f'{build.last_error} {reason}'.strip() if build.last_error else reason
++    else:
++        build.status = conclusion if conclusion in TERMINAL_STATUSES else 'failure'
++    build.save()
++    if build.status == 'success':
++        # Removes the logs and the event payload (which held the ciphertext).
++        # A failure here is retried by prune().
++        try:
++            delete_run(gh, build.github_run_id)
++            build.run_deleted = True
++            build.save(update_fields=['run_deleted', 'updated_at'])
++        except GitHubError as exc:
++            log.warning('build %s: could not delete run yet: %s', build.uuid, exc)
++
++
++def poll_once(gh=None):
++    """One pass over all active builds. Returns the number of builds seen."""
++    active = list(GithubRun.objects.exclude(status__in=TERMINAL_STATUSES))
++    if not active:
++        return 0
++    gh = gh or GitHub()
++    for build in active:
++        try:
++            sync_build(gh, build)
++            if build.poll_failures:
++                build.poll_failures = 0
++                build.save(update_fields=['poll_failures', 'updated_at'])
++        except (GitHubError, OSError) as exc:
++            build.poll_failures += 1
++            build.last_error = str(exc)[:1000]
++            build.save(update_fields=['poll_failures', 'last_error', 'updated_at'])
++            log.warning('build %s: poll failed (%d): %s', build.uuid, build.poll_failures, exc)
++            if isinstance(exc, GitHubError) and exc.status in (401, 403, 429):
++                raise
++    return len(active)
++
++
++def prune_local(now=None):
++    """Delete builds older than RDGEN_RETENTION_DAYS and stale temp files."""
++    now = now or timezone.now()
++    root = artifact_root()
++    removed = 0
++    cutoff = now - timedelta(days=settings.RDGEN_RETENTION_DAYS)
++    for build in GithubRun.objects.filter(created_at__lt=cutoff):
++        if build.is_terminal or now - build.created_at > timedelta(days=settings.RDGEN_RETENTION_DAYS + 1):
++            if valid_uuid(build.uuid):
++                shutil.rmtree(root / build.uuid, ignore_errors=True)
++            build.delete()
++            removed += 1
++    known = set(GithubRun.objects.values_list('uuid', flat=True))
++    for entry in root.iterdir():
++        if entry.name.startswith(('.dl-', '.stage-')):
++            if now.timestamp() - entry.stat().st_mtime > 86400:
++                if entry.is_dir():
++                    shutil.rmtree(entry, ignore_errors=True)
++                else:
++                    entry.unlink(missing_ok=True)
++        elif valid_uuid(entry.name) and entry.name not in known and entry.is_dir():
++            shutil.rmtree(entry, ignore_errors=True)
++    return removed
++
++
++def prune_remote(gh, now=None):
++    """Delete finished runs on GitHub: successful ones at once (retry of a
++    failed delete), failed ones after RDGEN_FAILED_RUN_KEEP_HOURS."""
++    now = now or timezone.now()
++    keep = now - timedelta(hours=settings.RDGEN_FAILED_RUN_KEEP_HOURS)
++    base = GithubRun.objects.filter(status__in=TERMINAL_STATUSES, run_deleted=False,
++                                    github_run_id__isnull=False)
++    deleted = 0
++    for build in (base.filter(completed_at__lt=keep) | base.filter(status='success')):
++        try:
++            for art in list_artifacts(gh, build.github_run_id):
++                delete_artifact(gh, art['id'])
++            delete_run(gh, build.github_run_id)
++        except GitHubError as exc:
++            if exc.status not in (404,):
++                log.warning('build %s: could not delete run: %s', build.uuid, exc)
++                continue
++        build.run_deleted = True
++        build.save(update_fields=['run_deleted', 'updated_at'])
++        deleted += 1
++    return deleted
++
++
++def prune(gh=None, now=None):
++    removed = prune_local(now)
++    prune_remote(gh or GitHub(), now)
++    return removed
+diff --git a/rdgenerator/templates/_files.html b/rdgenerator/templates/_files.html
+new file mode 100644
+index 0000000..7003200
+--- /dev/null
++++ b/rdgenerator/templates/_files.html
+@@ -0,0 +1,8 @@
++{% if files %}
++    {% for f in files %}
++        <a href="{{ f.url }}" class="download-link">Download {{ f.name }}</a>
++        <div style="font-size:.75em;color:#888;margin:-4px 0 10px;word-break:break-all;">{{ f.size|filesizeformat }} &middot; sha256 {{ f.sha256 }}</div>
++    {% endfor %}
++{% else %}
++    <p>No files were stored for this build.</p>
++{% endif %}
+diff --git a/rdgenerator/templates/failure.html b/rdgenerator/templates/failure.html
+index 40482d2..223d31c 100644
+--- a/rdgenerator/templates/failure.html
++++ b/rdgenerator/templates/failure.html
+@@ -88,41 +88,15 @@
+         <h2 class="error-header">Workflow Interrupted</h2>
+         
+         <div class="warning-box">
+-            <strong>Warning:</strong> The build process did not complete successfully. Some files may be missing. You can attempt to download the available files below.
++            <strong>Warning:</strong> The build process did not complete successfully (status: {{ status }}). Files that were built before the failure are listed below.
++            {% if last_error %}<br><small>{{ last_error }}</small>{% endif %}
+         </div>
+ 
+         <div class="download-section">
+-            {% if platform == 'windows' %}
+-                <a href='/download?filename={{filename}}.exe&uuid={{uuid}}' class="download-link">Download {{filename}}.exe</a>
+-                <a href='/download?filename={{filename}}.msi&uuid={{uuid}}' class="download-link">Download {{filename}}.msi</a>
+-            {% elif platform == 'windows-x86' %}
+-                <a href='/download?filename={{filename}}.exe&uuid={{uuid}}' class="download-link">Download {{filename}}.exe</a>
+-            {% elif platform == 'linux' %}
+-                <a href='/download?filename={{filename}}-x86_64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.deb</a>
+-                <a href='/download?filename={{filename}}-x86_64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.rpm</a>
+-                <a href='/download?filename={{filename}}-suse-x86_64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-suse-x86_64.rpm</a>
+-                <a href='/download?filename={{filename}}-x86_64.pkg.tar.zst&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.pkg.tar.zst</a>
+-                <a href='/download?filename={{filename}}-aarch64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.deb</a>
+-                <a href='/download?filename={{filename}}-aarch64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.rpm</a>
+-                <a href='/download?filename={{filename}}-suse-aarch64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-suse-aarch64.rpm</a>
+-                <a href='/download?filename={{filename}}-aarch64.pkg.tar.zst&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.pkg.tar.zst</a>
+-                <a href='/download?filename={{filename}}-x86_64.AppImage&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.AppImage</a>
+-                <a href='/download?filename={{filename}}-aarch64.AppImage&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.AppImage</a>
+-                <a href='/download?filename={{filename}}-x86_64.flatpak&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.flatpak</a>
+-                <a href='/download?filename={{filename}}-aarch64.flatpak&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.flatpak</a>
+-            {% elif platform == 'android' %}
+-                <a href='/download?filename={{filename}}-aarch64.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.apk</a>
+-                <a href='/download?filename={{filename}}-x86_64.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.apk</a>
+-                <a href='/download?filename={{filename}}-armv7.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-armv7.apk</a>
+-            {% elif platform == 'macos' %}
+-                <a href='/download?filename={{filename}}-x86_64.dmg&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.dmg</a>
+-                <a href='/download?filename={{filename}}-aarch64.dmg&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.dmg</a>
+-            {% else %}
+-                <p>Error: No file generated</p>
+-            {% endif %}
++            {% include '_files.html' %}
+         </div>
+ 
+-        <a href="{{ log_url }}" target="_blank" class="log-link">Check GitHub Logs for error details ↗</a>
++        {% if log_url %}<a href="{{ log_url }}" target="_blank" rel="noopener noreferrer" class="log-link">Check GitHub Logs for error details ↗</a>{% endif %}
+         
+         <div id="platformNote" class="platform-note"></div>
+         <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+diff --git a/rdgenerator/templates/generated.html b/rdgenerator/templates/generated.html
+index 067d495..2afcd43 100644
+--- a/rdgenerator/templates/generated.html
++++ b/rdgenerator/templates/generated.html
+@@ -126,35 +126,7 @@
+     <div>
+         <h2 class="success-text">Build Generated Successfully</h2>
+         <div class="download-section">
+-            {% if platform == 'windows' %}
+-                <a href='/download?filename={{filename}}.exe&uuid={{uuid}}' class="download-link">Download {{filename}}.exe</a>
+-                <a href='/download?filename={{filename}}.msi&uuid={{uuid}}' class="download-link">Download {{filename}}.msi</a>
+-            {% elif platform == 'windows-x86' %}
+-                <a href='/download?filename={{filename}}.exe&uuid={{uuid}}' class="download-link">Download {{filename}}.exe</a>
+-            {% elif platform == 'linux' %}
+-                <a href='/download?filename={{filename}}-x86_64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.deb</a>
+-                <a href='/download?filename={{filename}}-unattended-wayland-x86_64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-unattended-wayland-x86_64.deb</a>
+-                <a href='/download?filename={{filename}}-x86_64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.rpm</a>
+-                <a href='/download?filename={{filename}}-suse-x86_64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-suse-x86_64.rpm</a>
+-                <a href='/download?filename={{filename}}-x86_64.pkg.tar.zst&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.pkg.tar.zst</a>
+-                <a href='/download?filename={{filename}}-aarch64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.deb</a>
+-                <a href='/download?filename={{filename}}-aarch64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.rpm</a>
+-                <a href='/download?filename={{filename}}-suse-aarch64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-suse-aarch64.rpm</a>
+-                <a href='/download?filename={{filename}}-aarch64.pkg.tar.zst&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.pkg.tar.zst</a>
+-                <a href='/download?filename={{filename}}-x86_64.AppImage&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.AppImage</a>
+-                <a href='/download?filename={{filename}}-aarch64.AppImage&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.AppImage</a>
+-                <a href='/download?filename={{filename}}-x86_64.flatpak&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.flatpak</a>
+-                <a href='/download?filename={{filename}}-aarch64.flatpak&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.flatpak</a>
+-            {% elif platform == 'android' %}
+-                <a href='/download?filename={{filename}}-aarch64.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.apk</a>
+-                <a href='/download?filename={{filename}}-x86_64.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.apk</a>
+-                <a href='/download?filename={{filename}}-armv7.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-armv7.apk</a>
+-            {% elif platform == 'macos' %}
+-                <a href='/download?filename={{filename}}-x86_64.dmg&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.dmg</a>
+-                <a href='/download?filename={{filename}}-aarch64.dmg&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.dmg</a>
+-            {% else %}
+-                <p>Error: No file generated</p>
+-            {% endif %}
++            {% include '_files.html' %}
+         </div>
+     </div>
+ 
+diff --git a/rdgenerator/templates/waiting.html b/rdgenerator/templates/waiting.html
+index 726451a..eb1f801 100644
+--- a/rdgenerator/templates/waiting.html
++++ b/rdgenerator/templates/waiting.html
+@@ -164,10 +164,12 @@
+         </div>
+         <p class="status-text">This can take 30-45 minutes. You can leave this page open or come back later.</p>
+         <p class="status-text">Status: <span id="statusText">{{status}}</span></p>
++        {% if last_error %}<p class="status-text" style="color:#c0392b;">Last poller error: {{ last_error }}</p>{% endif %}
++        {% if files %}<div class="download-section"><p class="status-text">Already downloaded:</p>{% include '_files.html' %}</div>{% endif %}
+ 
+         <div class="log-container">
+             <p style="margin: 0 0 8px 0; color: #888;">Technical View</p>
+-            <a href="{{ log_url }}" target="_blank" class="log-link">
++            <a href="{{ log_url }}" target="_blank" rel="noopener noreferrer" class="log-link">
+                 View GitHub Action Logs 
+                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+             </a>
+@@ -241,7 +243,7 @@
+         //simulateProgress();
+ 
+         setTimeout(function() {
+-            window.location.replace('{% url 'check_for_file' %}?filename={{filename}}&uuid={{uuid}}&platform={{platform}}');
++            window.location.replace('{% url 'check_for_file' %}?uuid={{uuid}}');
+         }, 30000); // 20000 milliseconds = 20 seconds
+     </script>
+ </body>
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 0c1e55d..5af49c6 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -1,6 +1,8 @@
+ import io
+ from pathlib import Path
+-from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
++from django.http import FileResponse, Http404, HttpResponse, JsonResponse, HttpResponseForbidden
++from django.urls import reverse
++from urllib.parse import urlencode
+ from django.shortcuts import render, get_object_or_404
+ from django.core.files.base import ContentFile
+ import os
+@@ -16,6 +18,7 @@ from django.db.models import Q
+ from .forms import GenerateForm
+ from .validation import sanitize_filename, validate_build_fields
+ from . import buildcfg, github
++from .poller import allowed_output_name, valid_uuid
+ from django.utils import timezone
+ import logging
+ 
+@@ -338,48 +341,37 @@ def generate_custom_client(params, full_url=None):
+ 
+ def _get_run_status(uuid_val):
+     """
+-    Core status-check logic shared by web form and JSON API.
++    Status of a generation run, read from the database only. The poller
++    (manage.py rdgen_poll) is the only component that talks to GitHub about
++    running builds; page views and API status calls never do.
+ 
+-    Args:
+-        uuid_val: the UUID string of the generation run
+-
+-    Returns:
+-        dict with 'found', 'status', 'github_log_url', and optionally 'gh_run'.
+-        If not found, 'found' is False.
++    Returns a dict with 'found', 'status', 'github_log_url', 'gh_run'.
+     """
+-    try:
+-        gh_run = GithubRun.objects.get(uuid=uuid_val)
+-    except GithubRun.DoesNotExist:
++    if not valid_uuid(uuid_val):
++        return {"found": False}
++    gh_run = GithubRun.objects.filter(uuid=uuid_val).first()
++    if gh_run is None:
+         return {"found": False}
+-
+-    github_log_url = f"https://github.com/{_settings.GHUSER}/{_settings.REPONAME}/actions/runs/{gh_run.github_run_id}"
+-
+-    if gh_run.status not in ['success', 'failure', 'cancelled', 'timed_out', 'skipped']:
+-        headers = {
+-            "Authorization": f"Bearer {_settings.GHBEARER}",
+-            "Accept": "application/vnd.github+json"
+-        }
+-        api_url = f"https://api.github.com/repos/{_settings.GHUSER}/{_settings.REPONAME}/actions/runs/{gh_run.github_run_id}"
+-        
+-        try:
+-            gh_response = requests.get(api_url, headers=headers)
+-            if gh_response.status_code == 200:
+-                gh_data = gh_response.json()
+-                
+-                if gh_data['status'] == 'completed':
+-                    gh_run.status = gh_data['conclusion']
+-                    gh_run.save()
+-        except Exception as e:
+-            print(f"Error checking GitHub: {e}")
+-
+     return {
+         "found": True,
+         "status": gh_run.status,
+-        "github_log_url": github_log_url,
+-        "gh_run": gh_run
++        "github_log_url": gh_run.html_url,
++        "gh_run": gh_run,
+     }
+ 
+ 
++def build_files(gh_run, url_name='download'):
++    """Manifest entries with download URLs."""
++    files = []
++    for entry in gh_run.files or []:
++        name = entry.get('name', '')
++        if not allowed_output_name(name, gh_run.filename):
++            continue
++        url = reverse(url_name) + '?' + urlencode({'uuid': gh_run.uuid, 'filename': name})
++        files.append({'name': name, 'size': entry.get('size', 0), 'sha256': entry.get('sha256', ''), 'url': url})
++    return files
++
++
+ def generator_view(request):
+     if request.method == 'POST':
+         form = GenerateForm(request.POST, request.FILES)
+@@ -402,56 +394,54 @@ def generator_view(request):
+ 
+ 
+ def check_for_file(request):
+-    filename = request.GET.get('filename')
+-    uuid = request.GET.get('uuid')
+-    platform = request.GET.get('platform')
+-
+-    result = _get_run_status(uuid)
++    result = _get_run_status(request.GET.get('uuid'))
+     if not result['found']:
+-        from django.http import Http404
+         raise Http404("Run not found")
+-
+     gh_run = result['gh_run']
+-    github_log_url = result['github_log_url']
+-
++    context = {
++        'filename': gh_run.filename,
++        'uuid': gh_run.uuid,
++        'platform': gh_run.platform,
++        'status': gh_run.status,
++        'log_url': result['github_log_url'],
++        'files': build_files(gh_run),
++        'last_error': gh_run.last_error,
++    }
+     if gh_run.status == "success":
+-        return render(request, 'generated.html', {
+-            'filename': filename, 
+-            'uuid': uuid, 
+-            'platform': platform
+-        })
+-        
+-    elif gh_run.status in ['failure', 'cancelled', 'timed_out', 'skipped', 'action_required']:
+-        return render(request, 'failure.html', {
+-            'log_url': github_log_url, 
+-            'filename': filename, 
+-            'uuid': uuid, 
+-            'platform': platform,
+-            'status': gh_run.status
+-        })
+-        
+-    else:
+-        return render(request, 'waiting.html', {
+-            'filename': filename, 
+-            'uuid': uuid, 
+-            'status': gh_run.status, 
+-            'platform': platform, 
+-            'log_url': github_log_url
+-        })
++        return render(request, 'generated.html', context)
++    if gh_run.is_terminal:
++        return render(request, 'failure.html', context)
++    return render(request, 'waiting.html', context)
++
++
++def serve_build_file(request):
++    """Stream one stored build output.
++
++    Upstream did open(os.path.join('exe', uuid, filename)) with both values
++    straight from the query string, so filename=/proc/self/environ (an
++    absolute path wins in os.path.join) or ../../ returned any file the
++    service could read, including GHBEARER and ZIP_PASSWORD. Now: uuid must
++    be a canonical UUID, filename a plain name listed in that build's
++    manifest, and the resolved path must stay inside the build directory.
++    """
++    uuid_val = request.GET.get('uuid', '')
++    filename = request.GET.get('filename', '')
++    if not valid_uuid(uuid_val) or filename != os.path.basename(filename):
++        raise Http404("Not found")
++    gh_run = GithubRun.objects.filter(uuid=uuid_val).first()
++    if gh_run is None or filename not in {f['name'] for f in build_files(gh_run)}:
++        raise Http404("Not found")
++    base = os.path.realpath(os.path.join(_settings.ARTIFACT_ROOT, uuid_val))
++    path = os.path.realpath(os.path.join(base, filename))
++    if os.path.dirname(path) != base or not os.path.isfile(path):
++        raise Http404("Not found")
++    return FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
++                        content_type='application/octet-stream')
++
+ 
+ def download(request):
+-    filename = request.GET['filename']
+-    uuid = request.GET['uuid']
+-    if not _safe_parts(uuid, filename):
+-        return HttpResponseForbidden("Invalid filename")
+-    file_path = os.path.join('exe', uuid, filename)
+-    with open(file_path, 'rb') as file:
+-        content = file.read()
+-    response = HttpResponse(content, headers={
+-        'Content-Type': 'application/vnd.microsoft.portable-executable',
+-        'Content-Disposition': f'attachment; filename="{filename}"'
+-    })
+-    return response
++    return serve_build_file(request)
++
+ 
+ def get_png(request):
+     filename = request.GET['filename']

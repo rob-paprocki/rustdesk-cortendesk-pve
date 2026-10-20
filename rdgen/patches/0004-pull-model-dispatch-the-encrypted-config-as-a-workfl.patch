@@ -1,0 +1,851 @@
+From 223553bb814e25d1296bd4a92379b0f479934f0c Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 00:44:13 -0400
+Subject: [PATCH 04/26] pull model: dispatch the encrypted config as a workflow
+ input
+
+Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back
+at this server (built from the request's Host header) and made the runner
+download it from /get_zip, plus the images from /get_png. So rdgen had to
+be reachable from the internet. This commit keeps everything outbound:
+
+  inputs = {version, cfg, build_uuid, proto}
+  cfg    = base64(AES-256 zip(secrets.json + assets/{icon,logo,privacy}.png))
+
+- rdgenerator/buildcfg.py: images (upload or data: URI) are decoded with a
+  pixel cap, re-encoded (which strips metadata and trailing data) and
+  shrunk step by step (palette quantization, then smaller sides) until
+  the dispatch payload fits GitHub's 65,535-character input limit, using
+  a 65,000 budget. If it still does not fit, the build is refused with a
+  clear 413 message instead of silently dropping the images.
+- The zip is built in memory. Nothing is written to temp_zips/ or png/
+  any more.
+- secrets.json only carries the icon/logo/privacy flags
+  ('embedded'/'false'), not callback URLs. genurl is gone.
+- rdgenerator/github.py: small REST client. The token is only ever in the
+  Authorization header. Owner/repo are validated before they go into
+  URL paths (upstream concatenated them). Errors are sanitized (status
+  plus GitHub's message, never headers). return_run_details:true gives
+  the run id; a 204 from an older API is tolerated (the poller then finds
+  the run by its run-name).
+- proto=1 is sent with every dispatch. The workflows require the same
+  value, and GitHub answers 422 for undeclared inputs, so a server and a
+  build repository that are out of sync fail at dispatch, not halfway
+  through a build.
+- Removed the SH_SECRET "self-hosted" branch and GENURL/PROTOCOL.
+- Optional site defaults (RDGEN_DEFAULT_SERVER/_API_SERVER/_KEY or
+  _KEY_FILE, e.g. the hbbs id_ed25519.pub in the same LXC) prefill the
+  form. A blank server/key/API field in an API call uses them instead of
+  RustDesk's public servers.
+- Model: AutoField PK (upstream's IntegerField PK never learned the rowid,
+  so a second save() inserted a duplicate), unique uuid, platform,
+  filename, version, timestamps, file manifest, fetched artifact ids,
+  last_error, poll_failures (migration 0003).
+- Dispatch failures are shown on the form or returned as JSON (502/503)
+  instead of a bare JsonResponse page. Oversized API bodies get 413 JSON.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgen/settings.py                         |  19 +-
+ rdgenerator/api_views.py                  |  14 +-
+ rdgenerator/buildcfg.py                   | 135 +++++++++++++
+ rdgenerator/forms.py                      |   1 -
+ rdgenerator/github.py                     | 117 +++++++++++
+ rdgenerator/migrations/0003_pull_model.py |  46 +++++
+ rdgenerator/models.py                     |  33 +++-
+ rdgenerator/validation.py                 |   2 +
+ rdgenerator/views.py                      | 228 ++++++++++------------
+ 9 files changed, 453 insertions(+), 142 deletions(-)
+ create mode 100644 rdgenerator/buildcfg.py
+ create mode 100644 rdgenerator/github.py
+ create mode 100644 rdgenerator/migrations/0003_pull_model.py
+
+diff --git a/rdgen/settings.py b/rdgen/settings.py
+index f7c3100..4e90663 100644
+--- a/rdgen/settings.py
++++ b/rdgen/settings.py
+@@ -116,10 +116,20 @@ if not re.match(r'^(https://|http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(/|$)
+     raise ImproperlyConfigured('RDGEN_GITHUB_API must be an https:// URL (plain http only for localhost stubs)')
+ GITHUB_API_VERSION = env('RDGEN_GITHUB_API_VERSION', '2026-03-10')
+ 
+-# Legacy push-model settings. Kept (empty) until the pull model replaces them.
+-GENURL = ''
+-PROTOCOL = 'https'
+-SH_SECRET = None
++# Pull model: poller and retention.
++RDGEN_POLL_INTERVAL = max(10, env_int('RDGEN_POLL_INTERVAL', 30))
++RDGEN_BUILD_TIMEOUT_HOURS = env_int('RDGEN_BUILD_TIMEOUT_HOURS', 6)
++RDGEN_RETENTION_DAYS = env_int('RDGEN_RETENTION_DAYS', 30)
++RDGEN_FAILED_RUN_KEEP_HOURS = env_int('RDGEN_FAILED_RUN_KEEP_HOURS', 48)
++RDGEN_MAX_ARTIFACT_BYTES = env_int('RDGEN_MAX_ARTIFACT_BYTES', 3 * 1024 ** 3)
++
++# Optional form defaults for this site (e.g. the hbbs in the same LXC).
++RDGEN_DEFAULTS = {
++    'server': env('RDGEN_DEFAULT_SERVER', ''),
++    'api_server': env('RDGEN_DEFAULT_API_SERVER', ''),
++    'key': env('RDGEN_DEFAULT_KEY', ''),
++    'key_file': env('RDGEN_DEFAULT_KEY_FILE', ''),
++}
+ 
+ # Bearer token for the JSON API (/api/*), e.g. for a console integration.
+ # Empty disables token auth; the API then only accepts a logged-in session.
+@@ -133,6 +143,7 @@ LOGOUT_REDIRECT_URL = 'login'
+ 
+ # Data lives outside the (root-owned, read-only) code tree.
+ DATA_DIR = Path(env('RDGEN_DATA_DIR', str(BASE_DIR / 'data')))
++ARTIFACT_ROOT = DATA_DIR / 'builds'
+ 
+ MEDIA_URL = '/media/'
+ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index 7dbbc37..7276f75 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -4,6 +4,7 @@ import re
+ from functools import wraps
+ 
+ from django.contrib.auth.decorators import login_not_required
++from django.core.exceptions import RequestDataTooBig
+ from django.http import JsonResponse
+ from django.middleware.csrf import CsrfViewMiddleware
+ from django.views.decorators.csrf import csrf_exempt
+@@ -38,7 +39,7 @@ _BOOL_DEFAULTS = {name: bool(GenerateForm.base_fields[name].initial) for name in
+ 
+ # Optional string fields (validated by validation.validate_build_fields)
+ OPTIONAL_STR_FIELDS = [
+-    'sh_secret_field', 'serverIP', 'serverPort', 'key', 'apiServer', 'urlLink', 'downloadLink',
++    'serverIP', 'serverPort', 'key', 'apiServer', 'urlLink', 'downloadLink',
+     'appname', 'compname', 'androidappid', 'permanentPassword',
+     'defaultManual', 'overrideManual',
+     'iconbase64', 'logobase64', 'privacybase64',
+@@ -161,7 +162,11 @@ def api_generate(request):
+         return JsonResponse({"success": False, "error": "Method not allowed. Use POST."}, status=405)
+ 
+     try:
+-        data = json.loads(request.body)
++        body = request.body
++    except RequestDataTooBig:
++        return JsonResponse({"success": False, "error": "Request body too large (max 8 MB)."}, status=413)
++    try:
++        data = json.loads(body)
+     except (json.JSONDecodeError, ValueError) as e:
+         return JsonResponse({"success": False, "error": f"Invalid JSON: {str(e)}"}, status=400)
+ 
+@@ -279,10 +284,7 @@ def api_generate(request):
+             "details": errors
+         }, status=400)
+ 
+-    # Build full_url the same way as generator_view
+-    full_url = f"{_settings.PROTOCOL}://{request.get_host()}" if _settings.GENURL else f"{_settings.PROTOCOL}://{request.get_host()}"
+-
+-    result = generate_custom_client(cleaned, full_url)
++    result = generate_custom_client(cleaned)
+ 
+     if result['success']:
+         # Add convenience URLs for the API consumer
+diff --git a/rdgenerator/buildcfg.py b/rdgenerator/buildcfg.py
+new file mode 100644
+index 0000000..75a5fe8
+--- /dev/null
++++ b/rdgenerator/buildcfg.py
+@@ -0,0 +1,135 @@
++"""Pack a build configuration into the `cfg` workflow_dispatch input.
++
++cfg = base64( AES-256 zip( secrets.json + assets/{icon,logo,privacy}.png ) )
++
++GitHub caps a dispatch at 25 inputs and 65,535 characters in total, so the
++PNGs are re-encoded (which also strips metadata and any trailing payload)
++and shrunk step by step until the payload fits. If even the smallest
++level does not fit, the build is refused with a clear message instead of
++silently dropping the images.
++"""
++import base64
++import io
++import json
++import warnings
++
++import pyzipper
++from PIL import Image
++
++# GitHub's documented limit is 65,535 characters for all inputs together.
++# Keep a margin for JSON punctuation/escaping differences on their side.
++INPUTS_MAX_CHARS = 65535
++INPUTS_BUDGET = 65000
++
++MAX_PIXELS = 4096 * 4096
++ASSET_NAMES = ('icon.png', 'logo.png', 'privacy.png')
++
++# (icon max side, logo max side, privacy max side, palette-quantize)
++LEVELS = (
++    (256, 512, 1024, False),
++    (256, 512, 1024, True),
++    (256, 384, 768, True),
++    (192, 256, 512, True),
++    (128, 200, 384, True),
++)
++
++
++class ConfigTooLarge(Exception):
++    pass
++
++
++class BadImage(Exception):
++    pass
++
++
++def load_png(source, name):
++    """Open an uploaded file or a data:image/png;base64 URI as a Pillow image."""
++    if source is None or source == '':
++        return None
++    if isinstance(source, str):
++        prefix = 'data:image/png;base64,'
++        if not source.startswith(prefix):
++            raise BadImage(f'{name}: expected a data:image/png;base64 URI')
++        try:
++            raw = base64.b64decode(source[len(prefix):], validate=True)
++        except ValueError:
++            raise BadImage(f'{name}: invalid base64') from None
++        fh = io.BytesIO(raw)
++    else:
++        source.seek(0)
++        fh = io.BytesIO(source.read())
++        source.seek(0)
++    try:
++        with warnings.catch_warnings():
++            warnings.simplefilter('error', Image.DecompressionBombWarning)
++            img = Image.open(fh)
++            if img.format != 'PNG':
++                raise BadImage(f'{name}: only PNG images are allowed')
++            if img.width * img.height > MAX_PIXELS:
++                raise BadImage(f'{name}: image is larger than {MAX_PIXELS} pixels')
++            img.load()
++    except BadImage:
++        raise
++    except (Image.DecompressionBombWarning, Image.DecompressionBombError):
++        raise BadImage(f'{name}: image is too large') from None
++    except Exception:
++        raise BadImage(f'{name}: not a valid PNG image') from None
++    if img.mode not in ('RGBA', 'RGB', 'LA', 'L', 'P'):
++        img = img.convert('RGBA')
++    elif img.mode == 'P':
++        img = img.convert('RGBA')
++    return img
++
++
++def encode_png(img, max_side, quantize):
++    img = img.copy()
++    if max(img.size) > max_side:
++        img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
++    if quantize:
++        img = img.convert('RGBA').quantize(colors=256, method=Image.Quantize.FASTOCTREE,
++                                           dither=Image.Dither.NONE)
++    out = io.BytesIO()
++    img.save(out, format='PNG', optimize=True)
++    return out.getvalue()
++
++
++def build_zip(secrets_dict, assets, password):
++    buf = io.BytesIO()
++    with pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_LZMA,
++                             encryption=pyzipper.WZ_AES) as zf:
++        zf.setpassword(password.encode('utf-8'))
++        zf.setencryption(pyzipper.WZ_AES, nbits=256)
++        zf.writestr('secrets.json', json.dumps(secrets_dict, separators=(',', ':')))
++        for name, data in assets.items():
++            # PNG is already deflated; LZMA would only add overhead.
++            zf.writestr(f'assets/{name}', data, compress_type=pyzipper.ZIP_STORED)
++    return buf.getvalue()
++
++
++def inputs_size(inputs):
++    return len(json.dumps(inputs, separators=(',', ':')))
++
++
++def pack(secrets_dict, images, password, make_inputs):
++    """Return (inputs, level_used).
++
++    images: {'icon.png': PIL.Image|None, ...}
++    make_inputs: callable(cfg_b64) -> dict of all dispatch inputs
++    """
++    present = {k: v for k, v in images.items() if v is not None}
++    last_size = None
++    for level, (icon_side, logo_side, privacy_side, quantize) in enumerate(LEVELS):
++        sides = {'icon.png': icon_side, 'logo.png': logo_side, 'privacy.png': privacy_side}
++        assets = {name: encode_png(img, sides[name], quantize) for name, img in present.items()}
++        cfg = base64.b64encode(build_zip(secrets_dict, assets, password)).decode('ascii')
++        inputs = make_inputs(cfg)
++        last_size = inputs_size(inputs)
++        if last_size <= INPUTS_BUDGET:
++            return inputs, level
++        if not present:
++            break
++    raise ConfigTooLarge(
++        f'The build configuration is {last_size:,} characters after shrinking the images, '
++        f'but GitHub accepts at most {INPUTS_MAX_CHARS:,} characters of workflow inputs. '
++        'Use simpler PNGs (flat colours, no photos), drop the privacy image, '
++        'or shorten the default/override settings.')
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index c67203d..ff31fa2 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -8,7 +8,6 @@ from .validation import validate_build_fields
+ MAX_PNG_BYTES = 4 * 1024 * 1024
+ 
+ class GenerateForm(forms.Form):
+-    sh_secret_field = forms.CharField(required=False)
+     #Platform
+     platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0'),('1.4.9','1.4.9'),('1.4.8','1.4.8'),('1.4.7','1.4.7'),('1.4.6','1.4.6'),('1.4.5','1.4.5'),('1.4.4','1.4.4'),('1.4.3','1.4.3'),('1.4.2','1.4.2'),('1.4.1','1.4.1'),('1.4.0','1.4.0')], initial='1.5.0')
+diff --git a/rdgenerator/github.py b/rdgenerator/github.py
+new file mode 100644
+index 0000000..acf114e
+--- /dev/null
++++ b/rdgenerator/github.py
+@@ -0,0 +1,117 @@
++"""Minimal GitHub REST client for the pull model.
++
++The token (settings.GHBEARER) is only ever placed in the Authorization
++header of requests to settings.GITHUB_API_URL. It is never logged and never
++included in exception messages. Artifact downloads are redirected (302) to
++a short-lived blob URL on another host; requests drops the Authorization
++header on that cross-host redirect, so the token never reaches the blob
++store.
++"""
++import logging
++import re
++
++import requests
++from django.conf import settings
++
++log = logging.getLogger(__name__)
++
++OWNER_RE = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
++REPO_RE = re.compile(r'[A-Za-z0-9._-]{1,100}')
++
++WORKFLOWS = {
++    'windows': 'generator-windows.yml',
++    'windows-x86': 'generator-windows-x86.yml',
++    'linux': 'generator-linux.yml',
++    'android': 'generator-android.yml',
++    'macos': 'generator-macos.yml',
++}
++
++# Protocol between this server and the workflows in the build repository.
++# Bump when the inputs or the cfg zip layout change; the workflows reject
++# any other value, and GitHub rejects unknown inputs with HTTP 422.
++PULL_PROTOCOL = '1'
++
++
++class GitHubError(Exception):
++    def __init__(self, message, status=None):
++        super().__init__(message)
++        self.status = status
++
++
++def configured():
++    return bool(settings.GHBEARER and settings.GHUSER and settings.REPONAME)
++
++
++class GitHub:
++    def __init__(self, token=None, owner=None, repo=None, api=None, timeout=30):
++        self.token = token if token is not None else settings.GHBEARER
++        self.owner = owner if owner is not None else settings.GHUSER
++        self.repo = repo if repo is not None else settings.REPONAME
++        self.api = (api or settings.GITHUB_API_URL).rstrip('/')
++        self.timeout = timeout
++        if not self.token:
++            raise GitHubError('GitHub token (GHBEARER) is not configured')
++        if not OWNER_RE.fullmatch(self.owner or '') or not REPO_RE.fullmatch(self.repo or ''):
++            raise GitHubError('GHUSER/REPONAME are missing or invalid')
++        self.session = requests.Session()
++        self.session.headers.update({
++            'Accept': 'application/vnd.github+json',
++            'Authorization': f'Bearer {self.token}',
++            'X-GitHub-Api-Version': settings.GITHUB_API_VERSION,
++            'User-Agent': 'rdgen-pull',
++        })
++
++    def repo_path(self, suffix=''):
++        return f'/repos/{self.owner}/{self.repo}{suffix}'
++
++    def request(self, method, path, ok=(200, 201, 202, 204), **kwargs):
++        kwargs.setdefault('timeout', self.timeout)
++        url = self.api + path
++        try:
++            resp = self.session.request(method, url, **kwargs)
++        except requests.RequestException as exc:
++            # str(exc) carries the URL at most, never headers.
++            raise GitHubError(f'{method} {path}: {type(exc).__name__}') from None
++        if resp.status_code not in ok:
++            detail = ''
++            try:
++                body = resp.json()
++                detail = str(body.get('message', ''))[:300]
++            except ValueError:
++                pass
++            raise GitHubError(f'{method} {path}: HTTP {resp.status_code} {detail}'.strip(),
++                              status=resp.status_code)
++        return resp
++
++    def json(self, method, path, **kwargs):
++        resp = self.request(method, path, **kwargs)
++        if resp.status_code == 204 or not resp.content:
++            return {}
++        try:
++            data = resp.json()
++        except ValueError:
++            raise GitHubError(f'{method} {path}: response is not JSON') from None
++        if not isinstance(data, dict):
++            raise GitHubError(f'{method} {path}: unexpected JSON')
++        return data
++
++    # --- dispatch -------------------------------------------------------
++    def dispatch(self, platform, inputs, ref=None):
++        """Start generator-<platform>.yml. Returns (run_id or None, html_url)."""
++        workflow = WORKFLOWS.get(platform)
++        if not workflow:
++            raise GitHubError(f'unknown platform {platform!r}')
++        body = {
++            'ref': ref or settings.GHBRANCH,
++            'inputs': inputs,
++            # Returns the run id (GitHub changelog 2026-02-19); older API
++            # versions answer 204 and the poller finds the run by name.
++            'return_run_details': True,
++        }
++        data = self.json('POST', self.repo_path(f'/actions/workflows/{workflow}/dispatches'),
++                         json=body, ok=(200, 204))
++        run_id = data.get('workflow_run_id')
++        if run_id is not None and not isinstance(run_id, int):
++            run_id = None
++        html_url = data.get('html_url') if isinstance(data.get('html_url'), str) else ''
++        return run_id, html_url
+diff --git a/rdgenerator/migrations/0003_pull_model.py b/rdgenerator/migrations/0003_pull_model.py
+new file mode 100644
+index 0000000..5e22dd6
+--- /dev/null
++++ b/rdgenerator/migrations/0003_pull_model.py
+@@ -0,0 +1,46 @@
++import django.utils.timezone
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('rdgenerator', '0002_githubrun_github_run_id'),
++    ]
++
++    operations = [
++        migrations.AlterField(
++            model_name='githubrun',
++            name='id',
++            field=models.AutoField(primary_key=True, serialize=False, verbose_name='ID'),
++        ),
++        migrations.AlterField(
++            model_name='githubrun',
++            name='uuid',
++            field=models.CharField(max_length=100, unique=True, verbose_name='uuid'),
++        ),
++        migrations.AddField(model_name='githubrun', name='platform',
++                            field=models.CharField(blank=True, default='', max_length=32)),
++        migrations.AddField(model_name='githubrun', name='filename',
++                            field=models.CharField(blank=True, default='', max_length=64)),
++        migrations.AddField(model_name='githubrun', name='version',
++                            field=models.CharField(blank=True, default='', max_length=32)),
++        migrations.AddField(model_name='githubrun', name='html_url',
++                            field=models.CharField(blank=True, default='', max_length=300)),
++        migrations.AddField(model_name='githubrun', name='created_at',
++                            field=models.DateTimeField(db_index=True, default=django.utils.timezone.now)),
++        migrations.AddField(model_name='githubrun', name='updated_at',
++                            field=models.DateTimeField(auto_now=True)),
++        migrations.AddField(model_name='githubrun', name='completed_at',
++                            field=models.DateTimeField(blank=True, null=True)),
++        migrations.AddField(model_name='githubrun', name='files',
++                            field=models.JSONField(blank=True, default=list)),
++        migrations.AddField(model_name='githubrun', name='fetched_artifacts',
++                            field=models.JSONField(blank=True, default=list)),
++        migrations.AddField(model_name='githubrun', name='run_deleted',
++                            field=models.BooleanField(default=False)),
++        migrations.AddField(model_name='githubrun', name='last_error',
++                            field=models.TextField(blank=True, default='')),
++        migrations.AddField(model_name='githubrun', name='poll_failures',
++                            field=models.PositiveIntegerField(default=0)),
++    ]
+diff --git a/rdgenerator/models.py b/rdgenerator/models.py
+index 7498bbd..7ec77b8 100644
+--- a/rdgenerator/models.py
++++ b/rdgenerator/models.py
+@@ -1,7 +1,36 @@
+ from django.db import models
++from django.utils import timezone
++
++# GitHub conclusions plus the poller's own end states.
++TERMINAL_STATUSES = {
++    'success', 'failure', 'cancelled', 'timed_out', 'skipped', 'stale',
++    'neutral', 'action_required', 'startup_failure',
++}
++
+ 
+ class GithubRun(models.Model):
+-    id = models.IntegerField(verbose_name="ID",primary_key=True)
+-    uuid = models.CharField(verbose_name="uuid", max_length=100)
++    # Upstream used a plain IntegerField PK, so Django never learned the rowid
++    # and a second save() inserted a duplicate row.
++    id = models.AutoField(verbose_name="ID", primary_key=True)
++    uuid = models.CharField(verbose_name="uuid", max_length=100, unique=True)
+     status = models.CharField(verbose_name="status", max_length=100)
+     github_run_id = models.BigIntegerField(null=True, blank=True)
++    # Pull model bookkeeping
++    platform = models.CharField(max_length=32, blank=True, default='')
++    filename = models.CharField(max_length=64, blank=True, default='')
++    version = models.CharField(max_length=32, blank=True, default='')
++    html_url = models.CharField(max_length=300, blank=True, default='')
++    created_at = models.DateTimeField(default=timezone.now, db_index=True)
++    updated_at = models.DateTimeField(auto_now=True)
++    completed_at = models.DateTimeField(null=True, blank=True)
++    # [{"name": ..., "size": ..., "sha256": ...}] of files stored locally
++    files = models.JSONField(default=list, blank=True)
++    # artifact ids already downloaded (and deleted on GitHub)
++    fetched_artifacts = models.JSONField(default=list, blank=True)
++    run_deleted = models.BooleanField(default=False)
++    last_error = models.TextField(blank=True, default='')
++    poll_failures = models.PositiveIntegerField(default=0)
++
++    @property
++    def is_terminal(self):
++        return self.status in TERMINAL_STATUSES
+diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
+index e81fc9f..6154f0b 100644
+--- a/rdgenerator/validation.py
++++ b/rdgenerator/validation.py
+@@ -31,6 +31,8 @@ RULES = {
+                 'http(s)://host[:port][/path] (no query string)'),
+     'downloadLink': (re.compile(rf'https?://{HOST}{_PORT}{_PATH}'),
+                      'http(s)://host[:port][/path] (no query string)'),
++    'app_version': (re.compile(r'[0-9]{1,4}(?:\.[0-9]{1,4}){2,3}'),
++                    'a version such as 1.5.0.1 (digits and dots)'),
+     'androidappid': (re.compile(r'[A-Za-z][A-Za-z0-9_]{0,40}(?:\.[A-Za-z][A-Za-z0-9_]{0,40}){1,6}'),
+                      'a Java package name such as com.example.remote'),
+ }
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 0f76da5..0c1e55d 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -14,7 +14,35 @@ import pyzipper
+ from django.conf import settings as _settings
+ from django.db.models import Q
+ from .forms import GenerateForm
+-from .validation import sanitize_filename
++from .validation import sanitize_filename, validate_build_fields
++from . import buildcfg, github
++from django.utils import timezone
++import logging
++
++log = logging.getLogger(__name__)
++
++
++def site_defaults():
++    """Form defaults for this site (RDGEN_DEFAULT_*), e.g. the local hbbs.
++
++    The key is read from RDGEN_DEFAULT_KEY or from the hbbs public key file
++    (RDGEN_DEFAULT_KEY_FILE, e.g. /var/lib/rustdesk-server/id_ed25519.pub).
++    Invalid values are ignored.
++    """
++    values = {
++        'serverIP': _settings.RDGEN_DEFAULTS.get('server', ''),
++        'apiServer': _settings.RDGEN_DEFAULTS.get('api_server', ''),
++        'key': _settings.RDGEN_DEFAULTS.get('key', ''),
++    }
++    key_file = _settings.RDGEN_DEFAULTS.get('key_file', '')
++    if not values['key'] and key_file:
++        try:
++            with open(key_file, encoding='ascii') as fh:
++                values['key'] = fh.read(200).strip()
++        except (OSError, UnicodeDecodeError):
++            values['key'] = ''
++    bad = validate_build_fields(values)
++    return {k: v for k, v in values.items() if v and k not in bad}
+ from .models import GithubRun
+ from PIL import Image
+ from urllib.parse import quote
+@@ -32,20 +60,19 @@ def _safe_parts(uuid_val, filename):
+     return True
+ 
+ 
+-def generate_custom_client(params, full_url):
++def generate_custom_client(params, full_url=None):
+     """
+     Core generation logic shared by web form and JSON API.
+ 
+     Args:
+         params: dict containing all configuration fields (keys match GenerateForm field names)
+-        full_url: the full URL of this service (protocol + host)
++        full_url: unused (kept for API compatibility; the pull model never
++            hands this server's URL to GitHub)
+ 
+     Returns:
+         dict with 'success' key. On success: also includes 'uuid', 'filename', 'platform', 'log_url'.
+         On failure: includes 'error' and optionally 'status_code'.
+     """
+-    user_secret = params.get('sh_secret_field', '')
+-    selfhosted = (_settings.SH_SECRET == user_secret)
+     platform = params.get('platform', 'windows')
+     version = params.get('version', '1.4.9')
+     app_version = params.get('app_version', '')
+@@ -68,14 +95,15 @@ def generate_custom_client(params, full_url):
+     apiServer = params.get('apiServer', '')
+     urlLink = params.get('urlLink', '')
+     downloadLink = params.get('downloadLink', '')
++    defaults = site_defaults()
+     if not server:
+-        server = 'rs-ny.rustdesk.com' #default rustdesk server
++        server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
+     if not serverPort:
+         serverPort = '21116' #default rustdesk rendezvous port
+     if not key:
+-        key = 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=' #default rustdesk key
++        key = defaults.get('key') or 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=' #default rustdesk key
+     if not apiServer:
+-        apiServer = server+":21114"
++        apiServer = defaults.get('apiServer') or server+":21114"
+     if not urlLink:
+         urlLink = "https://rustdesk.com"
+     if not downloadLink:
+@@ -124,36 +152,22 @@ def generate_custom_client(params, full_url):
+         appname = "rustdesk"
+     myuuid = str(uuid.uuid4())
+ 
++    # Images travel inside the encrypted cfg input (pull model): no /get_png
++    # callback, nothing stored on disk.
++    images = {}
+     try:
+-        iconfile = params.get('iconfile')
+-        if not iconfile:
+-            iconfile = params.get('iconbase64')
+-        iconlink_url, iconlink_uuid, iconlink_file = save_png(iconfile,myuuid,full_url,"icon.png")
+-    except:
+-        print("failed to get icon, using default")
+-        iconlink_url = "false"
+-        iconlink_uuid = "false"
+-        iconlink_file = "false"
+-    try:
+-        logofile = params.get('logofile')
+-        if not logofile:
+-            logofile = params.get('logobase64')
+-        logolink_url, logolink_uuid, logolink_file = save_png(logofile,myuuid,full_url,"logo.png")
+-    except:
+-        print("failed to get logo")
+-        logolink_url = "false"
+-        logolink_uuid = "false"
+-        logolink_file = "false"
+-    try:
+-        privacyfile = params.get('privacyfile')
+-        if not privacyfile:
+-            privacyfile = params.get('privacybase64')
+-        privacylink_url, privacylink_uuid, privacylink_file = save_png(privacyfile,myuuid,full_url,"privacy.png")
+-    except:
+-        print("failed to get logo")
+-        privacylink_url = "false"
+-        privacylink_uuid = "false"
+-        privacylink_file = "false"
++        for name, file_key, b64_key in (('icon.png', 'iconfile', 'iconbase64'),
++                                        ('logo.png', 'logofile', 'logobase64'),
++                                        ('privacy.png', 'privacyfile', 'privacybase64')):
++            images[name] = buildcfg.load_png(params.get(file_key) or params.get(b64_key), name)
++    except buildcfg.BadImage as exc:
++        return {"success": False, "error": str(exc), "status_code": 400}
++    icon = images['icon.png']
++    if icon is not None and icon.width != icon.height:
++        return {"success": False, "error": "Custom App Icon dimensions must be square.", "status_code": 400}
++    iconlink_url = 'embedded' if images['icon.png'] is not None else 'false'
++    logolink_url = 'embedded' if images['logo.png'] is not None else 'false'
++    privacylink_url = 'embedded' if images['privacy.png'] is not None else 'false'
+ 
+     ###create the custom.txt json here and send in as inputs below
+     decodedCustom = {}
+@@ -246,24 +260,6 @@ def generate_custom_client(params, full_url):
+     base64_bytes = base64.b64encode(string_bytes)
+     encodedCustom = base64_bytes.decode("ascii")
+ 
+-    ####from here run the github action, we need user, repo, access token.
+-    if platform == 'windows':
+-        url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-windows.yml/dispatches'
+-        if selfhosted:
+-            url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/sh-generator-windows.yml/dispatches'
+-    if platform == 'windows-x86':
+-        url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-windows-x86.yml/dispatches'
+-    elif platform == 'linux':
+-        url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-linux.yml/dispatches'
+-    elif platform == 'android':
+-        url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-android.yml/dispatches'
+-    elif platform == 'macos':
+-        url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-macos.yml/dispatches'
+-    else:
+-        url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/generator-windows.yml/dispatches'
+-        if selfhosted:
+-            url = 'https://api.github.com/repos/'+_settings.GHUSER+'/'+_settings.REPONAME+'/actions/workflows/sh-generator-windows.yml/dispatches'
+-
+     inputs_raw = {
+         "server":server,
+         "serverPort":serverPort,
+@@ -272,16 +268,9 @@ def generate_custom_client(params, full_url):
+         "custom":encodedCustom,
+         "uuid":myuuid,
+         "iconlink_url":iconlink_url,
+-        "iconlink_uuid":iconlink_uuid,
+-        "iconlink_file":iconlink_file,
+         "logolink_url":logolink_url,
+-        "logolink_uuid":logolink_uuid,
+-        "logolink_file":logolink_file,
+         "privacylink_url":privacylink_url,
+-        "privacylink_uuid":privacylink_uuid,
+-        "privacylink_file":privacylink_file,
+         "appname":appname,
+-        "genurl":_settings.GENURL,
+         "urlLink":urlLink,
+         "downloadLink":downloadLink,
+         "delayFix": 'true' if delayFix else 'false',
+@@ -294,74 +283,57 @@ def generate_custom_client(params, full_url):
+         "filename":filename
+     }
+ 
+-    temp_json_path = f"data_{uuid.uuid4()}.json"
+-    zip_filename = f"secrets_{uuid.uuid4()}.zip"
+-    zip_path = "temp_zips/%s" % (zip_filename)
+-    Path("temp_zips").mkdir(parents=True, exist_ok=True)
+-
+-    with open(temp_json_path, "w") as f:
+-        json.dump(inputs_raw, f)
++    if not github.configured():
++        return {"success": False, "status_code": 503,
++                "error": "The GitHub build repository is not configured (GHUSER/REPONAME/GHBEARER)."}
+ 
+-    with pyzipper.AESZipFile(zip_path, 'w', compression=pyzipper.ZIP_LZMA, encryption=pyzipper.WZ_AES) as zf:
+-        zf.setpassword(_settings.ZIP_PASSWORD.encode())
+-        zf.write(temp_json_path, arcname="secrets.json")
+-
+-    if os.path.exists(temp_json_path):
+-        os.remove(temp_json_path)
+-
+-    zipJson = {}
+-    zipJson['url'] = full_url
+-    zipJson['file'] = zip_filename
++    def make_inputs(cfg):
++        result = {
++            "version": version,
++            "cfg": cfg,
++            "build_uuid": myuuid,
++            "proto": github.PULL_PROTOCOL,
++        }
++        if app_version:
++            # validated by validation.py (digits and dots only): the
++            # workflows paste this input into a sed command
++            result["app_version"] = app_version
++        return result
+ 
+-    zip_url = json.dumps(zipJson)
++    try:
++        inputs, _level = buildcfg.pack(inputs_raw, images, _settings.ZIP_PASSWORD, make_inputs)
++    except buildcfg.ConfigTooLarge as exc:
++        return {"success": False, "error": str(exc), "status_code": 413}
+ 
+-    data = {
+-        "ref":_settings.GHBRANCH,
+-        "inputs":{
+-            "version":version,
+-            "app_version":app_version,
+-            "zip_url":zip_url
+-        },
+-        "return_run_details": True
+-    } 
+-    headers = {
+-        'Accept':  'application/vnd.github+json',
+-        'Content-Type': 'application/json',
+-        'Authorization': 'Bearer '+_settings.GHBEARER,
+-        'X-GitHub-Api-Version': '2026-03-10'
+-    }
+-    new_github_run = GithubRun(
++    new_github_run = GithubRun.objects.create(
+         uuid=myuuid,
+-        status="Starting generator...please wait"
++        status="dispatching",
++        platform=platform,
++        filename=filename,
++        version=version,
+     )
+     try:
+-        response = requests.post(url, json=data, headers=headers)
+-        if response.status_code == 204 or response.status_code == 200:
+-            github_data = response.json()
+-            print(github_data)
+-            new_github_run.github_run_id = github_data.get('workflow_run_id')
+-            new_github_run.status = "in_progress"
+-            new_github_run.save()
+-
+-            return {
+-                "success": True,
+-                "uuid": myuuid,
+-                "filename": filename,
+-                "platform": platform,
+-                "log_url": github_data.get('html_url')
+-            }
+-        else:
+-            return {
+-                "success": False,
+-                "error": "GitHub rejected the start request",
+-                "status_code": 500
+-            }
+-    except Exception as e:
+-        return {
+-            "success": False,
+-            "error": f"Connection error: {str(e)}",
+-            "status_code": 500
+-        }
++        run_id, html_url = github.GitHub().dispatch(platform, inputs)
++    except github.GitHubError as exc:
++        log.warning("dispatch of %s failed: %s", myuuid, exc)
++        new_github_run.status = "failure"
++        new_github_run.last_error = f"GitHub rejected the start request: {exc}"
++        new_github_run.completed_at = timezone.now()
++        new_github_run.save()
++        return {"success": False, "error": new_github_run.last_error, "status_code": 502}
++
++    new_github_run.github_run_id = run_id
++    new_github_run.html_url = html_url or (
++        f"https://github.com/{_settings.GHUSER}/{_settings.REPONAME}/actions/runs/{run_id}" if run_id else "")
++    new_github_run.status = "queued"
++    new_github_run.save()
++    return {
++        "success": True,
++        "uuid": myuuid,
++        "filename": filename,
++        "platform": platform,
++        "log_url": new_github_run.html_url,
++    }
+ 
+ 
+ def _get_run_status(uuid_val):
+@@ -413,8 +385,7 @@ def generator_view(request):
+         form = GenerateForm(request.POST, request.FILES)
+         if form.is_valid():
+             params = form.cleaned_data
+-            full_url = f"{_settings.PROTOCOL}://{request.get_host()}" if _settings.GENURL else f"{_settings.PROTOCOL}://{request.get_host()}"
+-            result = generate_custom_client(params, full_url)
++            result = generate_custom_client(params)
+             if result['success']:
+                 return render(request, 'waiting.html', {
+                     'filename': result['filename'],
+@@ -423,10 +394,9 @@ def generator_view(request):
+                     'platform': result['platform'],
+                     'log_url': result['log_url']
+                 })
+-            else:
+-                return JsonResponse({"error": result['error']}, status=result.get('status_code', 500))
++            form.add_error(None, result['error'])
+     else:
+-        form = GenerateForm()
++        form = GenerateForm(initial=site_defaults())
+     #return render(request, 'maintenance.html')
+     return render(request, 'generator.html', {'form': form})
+ 

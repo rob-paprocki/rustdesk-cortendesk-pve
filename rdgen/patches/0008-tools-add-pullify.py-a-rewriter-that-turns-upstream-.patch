@@ -1,0 +1,1179 @@
+From 3ab060e98ac62e935eb89957ac6f9000d42bc2a5 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 01:03:12 -0400
+Subject: [PATCH 08/26] tools: add pullify.py, a rewriter that turns upstream
+ workflows into pull-model ones
+
+The generator workflows are ~5,000 lines of YAML that upstream changes
+often. Instead of hand-rebasing edits to them on every sync, this script
+applies the pull-model changes mechanically and idempotently, keeping
+upstream's formatting and comments:
+
+- workflow_dispatch inputs: zip_url -> cfg, build_uuid, proto. The
+  run-name carries the build uuid, and the setup job passes build_uuid.
+- Top-level permissions: contents: read, actions: write.
+- Steps that POST to /cleanzip, set STATUS_URL (/updategh) or upload to
+  an API server's /api/save_custom_client are removed. Job-level env:
+  keys left empty are dropped.
+- Steps that POST builds to <GENURL>/save_custom_client become
+  actions/upload-artifact steps named rdgen-<build_uuid>-<job>-<index>,
+  with retention-days: 1, compression-level: 0 and
+  if-no-files-found: error. Paths are parsed from the curl -F file=@...
+  arguments.
+- /get_png downloads (pwsh Invoke-WebRequest, wget, and macOS's
+  multi-line curl||wget) become copies from $RUNNER_TEMP/rdgen-assets.
+- Patch downloads from raw.githubusercontent.com/bryangerlach/rdgen
+  master become copies from $RUNNER_TEMP/rdgen-patches (this commit's
+  .github/patches, staged by decrypt-secrets). The printer-adapter
+  checkout of bryangerlach/rdgen@master becomes ${{ github.repository }}
+  at ${{ github.sha }}. Builds therefore run only code from the
+  user's own repository at the dispatched commit.
+- Every remote action is pinned to a full commit SHA (resolved with git
+  ls-remote on 2026-09-30). @master/@main of the artifact actions map to
+  their latest release (download v8.0.1, upload v7.0.1).
+  github-script@v6 (node16) maps to v7. Upstream's trailing comments are
+  kept.
+- Existing upload-artifact steps without retention-days get 1 day. This
+  covers the Linux .deb upload, which carries custom_.txt with the preset
+  password and had no retention (90 days by default).
+- Workflows the pull model does not use are deleted, because a token with
+  Actions: write can start any workflow_dispatch workflow:
+  sh-generator-windows.yml (the SH_SECRET variant), build-web.yml,
+  clear-cache.yml (purges all caches), vcpkg.yml, and docker-build.yml
+  (runs on every push and pushes a Docker image). An unknown new
+  workflow with its own trigger fails the check.
+
+Post-conditions are checked on every run: no callback URLs, no upstream
+master fetches, every action pinned, and an rdgen artifact upload in each
+generator. An unknown action or a new callback step makes it exit 2, so
+an automated upstream sync stops instead of pushing a half-converted
+tree. --check only reports (exit 1 when a rewrite is pending).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ tools/pullify.py | 1115 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 1115 insertions(+)
+ create mode 100755 tools/pullify.py
+
+diff --git a/tools/pullify.py b/tools/pullify.py
+new file mode 100755
+index 0000000..ea9a9a6
+--- /dev/null
++++ b/tools/pullify.py
+@@ -0,0 +1,1115 @@
++#!/usr/bin/env python3
++"""Rewrite upstream rdgen generator workflows for the pull model.
++
++Usage:  python3 tools/pullify.py [--check] [REPO_ROOT]
++
++Idempotent, text-based (keeps upstream formatting and comments, so the
++result stays diffable against upstream). Run it again after merging a new
++upstream master; with --check it only reports whether anything would
++change. It exits non-zero when a post-condition fails (for example a new
++upstream step still calls back to rdgen, or an action this script has no
++pin for), so an automatic update can stop and keep the last good tree.
++
++What it does, per generator-*.yml (plus the reusable workflows it calls):
++  * workflow_dispatch inputs: zip_url -> cfg, build_uuid, proto
++  * run-name carries the build uuid (the poller can find runs by it)
++  * top-level permissions: contents: read, actions: write
++  * the setup job passes build_uuid instead of zip_url_json
++  * steps that POST to /cleanzip, /updategh (STATUS_URL) or to an API
++    server's /api/save_custom_client are removed
++  * steps that POST builds to <GENURL>/save_custom_client become
++    actions/upload-artifact steps named rdgen-<build_uuid>-<job>-<index>
++    with retention-days: 1
++  * image downloads from /get_png become copies from
++    $RUNNER_TEMP/rdgen-assets (staged by the decrypt-secrets action)
++  * patch downloads from raw.githubusercontent.com/bryangerlach/rdgen
++    master become copies from $RUNNER_TEMP/rdgen-patches (this commit)
++  * the printer-adapter checkout of bryangerlach/rdgen@master becomes
++    this repository at this commit
++  * every remote action is pinned to a full commit SHA
++  * uploads without retention-days get retention-days: 1
++  * workflows the pull model does not use are deleted (UNUSED); any other
++    new workflow_dispatch workflow makes the check fail
++  * Linux: custom_.txt is staged in /usr/share/<app name>/ next to the
++    renamed program (upstream left it in /usr/share/rustdesk/, where a
++    custom-named client never reads it); the Flatpak ID keeps only letters
++    and digits of the app name (IDs reject spaces, brackets and hyphens in
++    inner parts), and the metainfo launchable names <ID>.desktop
++  * macOS: custom_.txt goes into Contents/Resources, where RustDesk reads
++    it on macOS (upstream wrote it into Contents/MacOS, so Mac clients never
++    loaded their settings, and signing treated it as a program)
++  * self-hosted runners: in the workflows listed in ROUTED every runs-on lets
++    a repository variable (RDGEN_RUNNER_LINUX, RDGEN_RUNNER_LINUX_ARM,
++    RDGEN_RUNNER_WINDOWS) name a runner label; on a self-hosted runner the
++    GitHub-image cleanup (sudo rm -rf /opt/ghc ...) is skipped and the Linux
++    and Windows build jobs check their prerequisites first
++  * Linux: inputs linux_arch (both, x86_64, aarch64) and linux_formats (all,
++    or deb for .deb and .rpm only, skipping AppImage and Flatpak)
++  * macOS: an input mac_arch (both, x86_64 or aarch64) picks which of the two
++    Mac jobs run (the matrix comes from fromJSON); repository variables
++    RDGEN_RUNNER_MACOS_X86_64 / RDGEN_RUNNER_MACOS_AARCH64 send a job to a
++    self-hosted runner with that label; on a self-hosted Mac a prepare step
++    checks Xcode and the tools tools/runner-mac.sh installs, the brew install
++    steps run on GitHub's Macs only (Homebrew no longer has prebuilt packages
++    for Intel Macs), and tools go to a per-job directory instead of sudo into
++    /usr/local; Create
++    DMG uses $GITHUB_WORKSPACE instead of /Users/runner/work and skips the
++    Finder layout there; the signing keychain is always removed
++  * macOS, with a Developer ID .p12 (MACOS_P12_BASE64, MACOS_P12_PASSWORD):
++    the rcodesign download is checked against a pinned sha256; upstream's
++    "Sign macOS app bundle" step (rcodesign on every file, secrets pasted
++    into the script) is dropped, and before "Create DMG" the app is signed
++    with Apple's codesign the way RustDesk signs its releases (hardened
++    runtime, timestamp, --deep); after it the DMG is signed, and with an App
++    Store Connect API key (APPLE_API_ISSUER_ID, APPLE_API_KEY_ID,
++    APPLE_API_KEY_P8, or rcodesign's MACOS_NOTARIZE_JSON) Apple notarizes it
++    and the ticket is stapled
++"""
++import json
++import os
++import re
++import sys
++
++GENERATORS = ['generator-windows.yml', 'generator-windows-x86.yml', 'generator-linux.yml',
++              'generator-android.yml', 'generator-macos.yml']
++REUSABLE = ['bridge.yml', 'third-party-RustDeskTempTopMostWindow.yml', 'fetch-encrypted-secrets.yml']
++# Deleted: an Actions-write token can start any workflow_dispatch workflow,
++# and docker-build.yml runs on every push.
++UNUSED = ['sh-generator-windows.yml', 'build-web.yml', 'clear-cache.yml', 'docker-build.yml', 'vcpkg.yml']
++
++# owner/repo@ref -> (sha, comment). Resolved with `git ls-remote` on
++# 2026-09-30. @master/@main of the artifact actions go to their latest
++# release; other branch refs are pinned to the branch head of that day.
++PINS = {
++    'actions/cache@v4': ('0057852bfaa89a56745cba8c7296529d2fc39830', 'v4'),
++    'actions/checkout@v4': ('11d5960a326750d5838078e36cf38b85af677262', 'v4'),
++    'actions/checkout@v5': ('fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09', 'v5'),
++    'actions/download-artifact@master': ('3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c', 'v8.0.1 (was @master)'),
++    'actions/download-artifact@v4': ('d3f86a106a0bac45b974a628896c90dbdf5c8093', 'v4'),
++    'actions/download-artifact@v5': ('634f93cb2916e3fdff6788551b99b062d0335ce0', 'v5'),
++    # v6 runs on the retired node16 runtime (actionlint: runner too old)
++    'actions/github-script@v6': ('f28e40c7f34bde8b3046d885e986cb6290c5673b', 'v7 (was v6)'),
++    'actions/github-script@v7': ('f28e40c7f34bde8b3046d885e986cb6290c5673b', 'v7'),
++    'actions/setup-python@v5': ('a26af69be951a213d495a4c3e4e4022e16d87065', 'v5'),
++    'actions/upload-artifact@master': ('043fb46d1a93c77aae656e7c1c64a875d1fc6a0a', 'v7.0.1 (was @master)'),
++    'actions/upload-artifact@v4': ('ea165f8d65b6e75b540449e92b4886f43607fa02', 'v4'),
++    'actions/upload-artifact@v5': ('330a01c490aca151604b8cf639adc76d48f6c5d4', 'v5'),
++    'dtolnay/rust-toolchain@v1': ('02cb101ec7c40f2c49e1d9714d64511d8e1b74de', 'v1'),
++    'geekyeggo/delete-artifact@v5': ('f275313e70c08f6120db482d7a6b98377786765b', 'v5'),
++    'jlumbroso/free-disk-space@main': ('36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523', 'main @ 2026-09-30'),
++    'KyleMayes/install-llvm-action@v1': ('1a3da29f56261a1e1f937ec88f0856a9b8321d7e', 'v1'),
++    'lukka/run-vcpkg@v11': ('b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2', 'v11 branch @ 2026-09-30'),
++    'microsoft/setup-msbuild@v2': ('6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce', 'v2'),
++    'microsoft/setup-msbuild@v3': ('30375c66a4eea26614e0d39710365f22f8b0af57', 'v3'),
++    'nick-fields/retry@v3': ('ce71cc2ab81d554ebbe88c79ab5975992d79ba08', 'v3'),
++    'nttld/setup-ndk@v1': ('ed92fe6cadad69be94a966a7ee3271275e62f779', 'v1'),
++    'NuGet/setup-nuget@v2': ('d105a947828025cd7a980103c35ba2bfae586d0f', 'v2'),
++    'pierotofy/set-swap-space@master': ('fc79b3f67fa8a838184ce84a674ca12238d2c761', 'master @ 2026-09-30'),
++    'r0adkll/sign-android-release@v1': ('349ebdef58775b1e0d8099458af0816dc79b6407', 'v1'),
++    'rustdesk-org/arch-makepkg-action@master': ('04200739ed1d0bf6f2188b6736b26a767c57a7f9', 'master @ 2026-09-30'),
++    'subosito/flutter-action@v2': ('1a449444c387b1966244ae4d4f8c696479add0b2', 'v2'),
++    'subosito/flutter-action@v2.12.0': ('2783a3f08e1baf891508463f8c6653c258246225', 'v2.12.0'),
++    'Swatinem/rust-cache@v2': ('6323deb102c322ba6fcbdcafc7e3dddab59af2b6', 'v2'),
++}
++UPLOAD_ACTION = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4'
++
++NEW_INPUTS = """{i}cfg:
++{i}  description: 'rdgen pull model: base64 of the AES-encrypted config zip'
++{i}  required: true
++{i}  type: string
++{i}build_uuid:
++{i}  description: 'rdgen build id'
++{i}  required: true
++{i}  type: string
++{i}proto:
++{i}  description: 'rdgen pull protocol version'
++{i}  required: true
++{i}  type: string
++"""
++
++PERMISSIONS = """permissions:
++  contents: read
++  actions: write
++
++"""
++
++FORBIDDEN = [
++    ('get_png', 'image download from rdgen'),
++    ('save_custom_client', 'build upload to rdgen/api server'),
++    ('cleanzip', 'cleanup callback'),
++    ('updategh', 'status callback'),
++    ('STATUS_URL', 'status callback'),
++    ('GENURL', 'rdgen URL secret'),
++    ('zip_url', 'push-model input'),
++    ('env.token', 'callback token'),
++    ('raw.githubusercontent.com/bryangerlach', 'patch fetched from upstream master'),
++    ('repository: bryangerlach/rdgen', 'checkout of upstream master'),
++    ('link_uuid', 'push-model image id'),
++    ('link_file', 'push-model image name'),
++    ('fjogeleit/http-request-action', 'HTTP callback action'),
++]
++
++
++# ---------------------------------------------------------------- helpers
++# rcodesign handles the signing key, so its download must match a known hash
++RCODESIGN_SHA256 = {
++    'apple-codesign-0.22.0-macos-universal.tar.gz': '7031ee75ca2a55c558071701078517c05d959e012dd87833ac6b4a23c5ff52b9',
++}
++SIGN_MARK = 'rdgen: Developer ID signature'
++# RustDesk reads <app>/Contents/Resources/custom.txt on macOS (src/common.rs load_custom_client; allowCustom.py
++# renames it to custom_.txt). Contents/MacOS is for code only: codesign and rcodesign try to sign files there.
++MAC_CUSTOM_OLD = '/Contents/MacOS/custom_.txt'
++MAC_CUSTOM_NEW = '/Contents/Resources/custom_.txt'
++UPSTREAM_MAC_SIGN = re.compile(r'^\s*-\s+name:\s*Sign macOS app bundle\s*$')
++# Mac jobs: which ones run (input mac_arch), where they run (repository variables naming a runner label), and what a
++# self-hosted Mac needs that GitHub's images bring along
++MAC_ARCH_INPUT = """{i}mac_arch:
++{i}  description: 'rdgen: Mac builds to make: both, x86_64 (Intel) or aarch64 (Apple Silicon)'
++{i}  required: false
++{i}  default: 'both'
++{i}  type: string
++"""
++MAC_RUNS_ON = ("runs-on: ${{ (matrix.job.arch == 'x86_64' && vars.RDGEN_RUNNER_MACOS_X86_64) || "
++               "(matrix.job.arch == 'aarch64' && vars.RDGEN_RUNNER_MACOS_AARCH64) || matrix.job.os }}")
++SELFHOSTED_MARK = 'rdgen: a Mac of your own'
++MAC_PREP_STEPS = """{p}- name: Prepare a self-hosted Mac
++{p}  if: runner.environment == 'self-hosted'
++{p}  shell: bash
++{p}  run: |
++{p}    # {mark}: GitHub's Mac images come with Homebrew and the build tools. tools/runner-mac.sh gives a Mac
++{p}    # of yours the same tools in the runner's folder, because Homebrew no longer has prebuilt packages for Intel
++{p}    # Macs: its brew install steps would build LLVM, GCC and Ruby from source for hours, so they run on GitHub's
++{p}    # Macs only. Tools the build downloads go to a per-job directory on PATH instead of sudo into /usr/local, and
++{p}    # create-dmg skips the Finder window layout, which needs a desktop session that may send Apple events.
++{p}    set -euo pipefail
++{p}    xcodebuild -version >/dev/null 2>&1 || {{ echo "::error::this Mac needs Xcode (not only the Command Line Tools), opened once"; exit 1; }}
++{p}    missing=""
++{p}    for tool in {tools}; do command -v "$tool" >/dev/null || missing="$missing $tool"; done
++{p}    [ -z "$missing" ] || {{ echo "::error::this Mac is missing:$missing (tools/runner-mac.sh installs them)"; exit 1; }}
++{p}    bin="$RUNNER_TEMP/rdgen-bin"
++{p}    mkdir -p "$bin"
++{p}    echo "$bin" >> "$GITHUB_PATH"
++{p}    echo "RDGEN_BIN=$bin" >> "$GITHUB_ENV"
++{p}    echo "RDGEN_DMG_ARGS=--skip-jenkins" >> "$GITHUB_ENV"
++"""
++# what the brew install steps and GitHub's image provide (tools/runner-mac.sh installs these on a Mac of yours)
++MAC_SELFHOSTED_TOOLS = 'python pip magick potrace create-dmg pkg-config cmake ninja wget jq pod rustup'
++MAC_BREW_INSTALL = re.compile(r'^\s*brew install\b', re.M)
++MAC_NASM_OLD = 'sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm'
++MAC_NASM_NEW = ('if [ -n "${RDGEN_BIN:-}" ]; then cp nasm-2.16.03/nasm "$RDGEN_BIN/nasm"; '
++                'else sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm; fi')
++MAC_RCODESIGN_OLD = 'mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin'
++MAC_RCODESIGN_NEW = 'mv apple-codesign-0.22.0-macos-universal/rcodesign "${RDGEN_BIN:-/usr/local/bin}"'
++MAC_RUNNER_PATH = '/Users/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}'
++MAC_CREATE_DMG = 'create-dmg ${RDGEN_DMG_ARGS:-} \\'
++NOTARIZE_MARK = 'rdgen: notarized DMG'
++# Apple's Developer ID intermediates (https://www.apple.com/certificateauthority/), so codesign can build the chain
++APPLE_INTERMEDIATES = {
++    'DeveloperIDG2CA.cer': 'f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a',
++    'DeveloperIDCA.cer': '7afc9d01a62f03a2de9637936d4afe68090d2de18d03f29c88cfb0b1ba63587f',
++}
++SIGN_STEP = """{p}- name: Sign the app with the Developer ID
++{p}  if: env.MACOS_P12_BASE64 != ''
++{p}  shell: bash
++{p}  env:
++{p}    MACOS_P12_PASSWORD: ${{{{ secrets.MACOS_P12_PASSWORD }}}}
++{p}  run: |
++{p}    # {mark}, applied the way RustDesk signs its releases: Apple's codesign with the hardened runtime and a
++{p}    # secure timestamp on every nested binary, which notarization requires. Replaces the build's ad-hoc signature.
++{p}    set -euo pipefail
++{p}    cd "$GITHUB_WORKSPACE/flutter/build/macos/Build/Products/Release"
++{p}    app="${{appname}}.app"; [ -d "$app" ] || app="RustDesk.app"
++{p}    work="$RUNNER_TEMP/rdgen-keychain"; mkdir -p "$work"; chmod 700 "$work"
++{p}    trap 'rm -rf "$work"' EXIT
++{p}    kc="$RUNNER_TEMP/rdgen-sign.keychain-db"; kcpw=$(openssl rand -hex 24)   # the DMG step signs with it too
++{p}    security create-keychain -p "$kcpw" "$kc"
++{p}    security set-keychain-settings -lut 3600 "$kc"
++{p}    security unlock-keychain -p "$kcpw" "$kc"
++{intermediates}
++{p}    printf '%s' "$MACOS_P12_BASE64" | base64 --decode > "$work/cert.p12"
++{p}    security import "$work/cert.p12" -k "$kc" -P "$MACOS_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
++{p}    security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
++{p}    # codesign looks up the identity and the intermediates in the search list (keychain paths have no spaces)
++{p}    # shellcheck disable=SC2046
++{p}    security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
++{p}    id=$(security find-identity -v -p codesigning "$kc" | awk '/Developer ID Application/ {{print $2; exit}}')
++{p}    if [ -z "$id" ]; then
++{p}      echo "::error::MACOS_P12_BASE64 holds no Developer ID Application certificate with its private key"
++{p}      exit 1
++{p}    fi
++{p}    xattr -cr "$app"   # codesign refuses Finder info and resource forks ("detritus")
++{p}    codesign --force --options runtime --timestamp --deep --strict -s "$id" "$app"
++{p}    codesign --verify --deep --strict --verbose=2 "$app"
++{p}    echo "RDGEN_SIGN_ID=$id" >> "$GITHUB_ENV"
++{p}    echo "RDGEN_KEYCHAIN=$kc" >> "$GITHUB_ENV"
++"""
++NOTARIZE_STEP = """{p}- name: Sign and notarize the DMG
++{p}  if: env.MACOS_P12_BASE64 != ''
++{p}  shell: bash
++{p}  env:
++{p}    APPLE_API_ISSUER_ID: ${{{{ secrets.APPLE_API_ISSUER_ID }}}}
++{p}    APPLE_API_KEY_ID: ${{{{ secrets.APPLE_API_KEY_ID }}}}
++{p}    APPLE_API_KEY_P8: ${{{{ secrets.APPLE_API_KEY_P8 }}}}
++{p}    MACOS_NOTARIZE_JSON: ${{{{ secrets.MACOS_NOTARIZE_JSON }}}}
++{p}  run: |
++{p}    # {mark}: sign it, have Apple's notary service check it and staple the ticket to it, so macOS opens
++{p}    # the app without the "cannot verify" block
++{p}    set -euo pipefail
++{p}    dmg="$GITHUB_WORKSPACE/${{appname}}-${{{{ matrix.job.arch }}}}.dmg"
++{p}    key="$RUNNER_TEMP/rdgen-notary"; mkdir -p "$key"; chmod 700 "$key"
++{p}    trap 'rm -rf "$key"; security delete-keychain "$RDGEN_KEYCHAIN" 2>/dev/null || true' EXIT
++{p}    codesign --force --timestamp -s "$RDGEN_SIGN_ID" "$dmg"
++{p}    if [ -n "$MACOS_NOTARIZE_JSON" ]; then
++{p}      printf '%s' "$MACOS_NOTARIZE_JSON" | base64 --decode > "$key/api.json"
++{p}    elif [ -n "$APPLE_API_ISSUER_ID" ] && [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_KEY_P8" ]; then
++{p}      # rcodesign's unified key wants the base64 DER of the private key: the .p8 without its BEGIN/END lines and
++{p}      # line breaks (as `rcodesign encode-app-store-connect-api-key` writes it); the full PEM is "invalid"
++{p}      APPLE_API_KEY_DER=$(printf '%s' "$APPLE_API_KEY_P8" | tr -d '\\r' | sed '/^-----/d' | tr -d ' \\t\\n')
++{p}      if ! [[ "$APPLE_API_KEY_DER" =~ ^[A-Za-z0-9+/]{{100,}}={{0,2}}$ ]]; then
++{p}        echo "::error::APPLE_API_KEY_P8 is not the contents of an App Store Connect .p8 key file"
++{p}        exit 1
++{p}      fi
++{p}      # a pasted ID often ends in a newline, which would break the token Apple checks
++{p}      APPLE_API_ISSUER_ID=$(printf '%s' "$APPLE_API_ISSUER_ID" | tr -d ' \\t\\r\\n')
++{p}      APPLE_API_KEY_ID=$(printf '%s' "$APPLE_API_KEY_ID" | tr -d ' \\t\\r\\n')
++{p}      export APPLE_API_ISSUER_ID APPLE_API_KEY_ID APPLE_API_KEY_DER   # to jq via the environment, not its argv
++{p}      jq -n '{{issuer_id: env.APPLE_API_ISSUER_ID, key_id: env.APPLE_API_KEY_ID, private_key: env.APPLE_API_KEY_DER}}' \\
++{p}        > "$key/api.json"
++{p}    else
++{p}      echo "::warning::Signed with the Developer ID but not notarized: set APPLE_API_ISSUER_ID, APPLE_API_KEY_ID and APPLE_API_KEY_P8"
++{p}      exit 0
++{p}    fi
++{p}    rcodesign notary-submit --api-key-path "$key/api.json" --max-wait-seconds 1800 --staple "$dmg"
++
++{p}- name: Remove the signing keychain
++{p}  if: always() && env.RDGEN_KEYCHAIN != ''
++{p}  shell: bash
++{p}  run: security delete-keychain "$RDGEN_KEYCHAIN" 2>/dev/null || true   # a self-hosted Mac keeps no leftovers
++"""
++
++
++LINUX_CUSTOM_OLD = ('mkdir -p flutter/tmpdeb/usr/share/rustdesk\n',
++                    'cp ./custom_.txt ./flutter/tmpdeb/usr/share/rustdesk/custom_.txt\n')
++LINUX_CUSTOM_NEW = ('mkdir -p "flutter/tmpdeb/usr/share/${{ env.appname }}"\n',
++                    'cp ./custom_.txt "./flutter/tmpdeb/usr/share/${{ env.appname }}/custom_.txt"\n')
++FLATPAK_ID_OLD = 'FLAT="$(echo "${{ env.appname }}" | tr -d \' \')"\n'
++FLATPAK_ID_NEW = ('FLAT="$(printf \'%s\' "${{ env.appname }}" | tr -cd \'A-Za-z0-9\')"; '
++                  'case "$FLAT" in \'\'|[0-9]*) FLAT="app$FLAT";; esac\n')
++# the metainfo's launchable names the exported desktop file, which flatpak renames to <app id>.desktop
++FLATPAK_METAINFO_ID = 'sed -ie "s|<id>com[^<]*</id>|<id>${BUNDLE_ID}</id>|" flatpak/*.metainfo.xml\n'
++FLATPAK_LAUNCHABLE = ('sed -i -e "s|<launchable type=\\"desktop-id\\">[^<]*</launchable>|'
++                      '<launchable type=\\"desktop-id\\">${BUNDLE_ID}.desktop</launchable>|" flatpak/*.metainfo.xml\n')
++
++
++LINUX_INPUTS = """{i}linux_arch:
++{i}  description: 'rdgen: Linux builds to make: both, x86_64 or aarch64'
++{i}  required: false
++{i}  default: 'both'
++{i}  type: string
++{i}linux_formats:
++{i}  description: 'rdgen: all (deb, rpm, AppImage, Flatpak) or deb (deb and rpm only)'
++{i}  required: false
++{i}  default: 'all'
++{i}  type: string
++"""
++LINUX_FORMATS_IF = "if: ${{ inputs.linux_formats != 'deb' }}"
++# RustDesk 1.5.0 brought a DRM/KMS capture backend, which upstream's build-rustdesk-linux-drm job builds into an extra
++# <name>-unattended-wayland-x86_64.deb. Its build and upload steps test DRM_SUPPORTED, which upstream's "Detect DRM
++# support" step (#298) set from build.py until 2026-10-04, when the step went away and the tests stayed: a 1.4.x build
++# then failed the whole run (rdgen reports a run that is not a success as failed, client or not) and 1.5.0 never
++# uploaded the .deb. So: detection back when nothing sets DRM_SUPPORTED, the DRM build only where it is set, no
++# x86_64-only job in an ARM-only build, and never a failed run because of this extra (see DRM_JOB_IF).
++DRM_JOB = 'build-rustdesk-linux-drm'
++DRM_GATE = "env.DRM_SUPPORTED == 'true'"
++# on a Linux runner of yours only with RDGEN_LINUX_DRM=true: on 2026-10-05 it ran 40 minutes there and failed while
++# upstream was still reworking it, holding up the small jobs of every other build on that one runner
++DRM_JOB_IF = "inputs.linux_arch != 'aarch64' && (vars.RDGEN_RUNNER_LINUX == '' || vars.RDGEN_LINUX_DRM == 'true')"
++DRM_DETECT_STEP = """{p}- name: Detect DRM support
++{p}  run: |
++{p}    # rdgen: upstream's check (#298): only a RustDesk whose build.py knows --drm can build this job
++{p}    if grep -q "'--drm'" build.py; then
++{p}      echo "DRM_SUPPORTED=true" >> $GITHUB_ENV
++{p}      echo "::notice::DRM/KMS capture backend detected in this RustDesk version"
++{p}    else
++{p}      echo "DRM_SUPPORTED=false" >> $GITHUB_ENV
++{p}      echo "::notice::DRM/KMS capture backend not present in this RustDesk version, skipping the DRM build"
++{p}    fi
++"""
++
++
++def linux_drm_rewrite(lines):
++    """The DRM job (see DRM_JOB): detection if nothing sets DRM_SUPPORTED, its build gated on it, never fatal."""
++    start = next((i for i, line in enumerate(lines) if line.rstrip() == f'  {DRM_JOB}:'), None)
++    if start is None:
++        return False   # upstream dropped the job
++    end = next((i for i in range(start + 1, len(lines)) if re.match(r'^  [A-Za-z0-9_-]+:\s*$', lines[i])), len(lines))
++    changed = False
++    job = ''.join(lines[start:end])
++    if 'DRM_SUPPORTED=' not in job:
++        steps = [s for s in split_steps(lines) if start < s[0] < end]
++        checkouts = [s for s in steps if 'repository: rustdesk/rustdesk' in ''.join(lines[s[0]:s[1]])]
++        if not checkouts:
++            raise SystemExit(f'pullify: {DRM_JOB} no longer checks out rustdesk/rustdesk; place its DRM detection')
++        _, after, item_indent = checkouts[-1]
++        lines[after:after] = ['\n', DRM_DETECT_STEP.format(p=' ' * item_indent)]   # elements, like the other steps
++        end += 2
++        changed = True
++    for s_start, s_end, item_indent in reversed([s for s in split_steps(lines) if start < s[0] < end]):
++        step = ''.join(lines[s_start:s_end])
++        if ("'--drm'" not in step and ('--drm' in step or 'build_libdrmtap_so' in step)
++                and 'DRM_SUPPORTED' not in step):
++            add_condition(lines, s_start, s_end, item_indent + 2, DRM_GATE)
++            changed = True
++    head = next(i for i in range(start + 1, end) if lines[i].rstrip() == '    steps:')
++    if not any(lines[i].rstrip() == '    continue-on-error: true' for i in range(start + 1, head)):
++        lines.insert(start + 1, '    continue-on-error: true\n')
++        head += 1
++        changed = True
++    if DRM_JOB_IF not in ''.join(lines[start:head]):
++        add_condition(lines, start, head, 4, DRM_JOB_IF)
++        changed = True
++    return changed
++
++
++def linux_options_rewrite(lines):
++    """inputs.linux_arch picks the architectures of the three per-arch jobs; inputs.linux_formats == 'deb' skips the
++    AppImage and Flatpak jobs (their dependents run with if: always())."""
++    changed = False
++    if not any("fromJSON(inputs.linux_arch" in line for line in lines):
++        if arch_matrix_rewrite(lines, 'linux_arch') != 3:
++            raise SystemExit('pullify: generator-linux.yml no longer has its three x86_64/aarch64 matrices')
++        changed = True
++    for idx, line in enumerate(lines):
++        if re.match(r'^  build-(appimage|flatpak):\s*$', line) and LINUX_FORMATS_IF not in ''.join(lines[idx:idx + 4]):
++            lines.insert(idx + 1, '    ' + LINUX_FORMATS_IF + '\n')
++            changed = True
++    return changed
++
++
++def linux_rewrite(lines):
++    """custom_.txt next to the renamed program; a valid Flatpak ID for any app name; build options; the DRM job."""
++    changed = linux_options_rewrite(lines)
++    changed |= linux_drm_rewrite(lines)
++    for idx, line in enumerate(lines):
++        body, pad = line.lstrip(' '), line[:len(line) - len(line.lstrip(' '))]
++        for old, new in zip(LINUX_CUSTOM_OLD + (FLATPAK_ID_OLD,), LINUX_CUSTOM_NEW + (FLATPAK_ID_NEW,)):
++            if body == old:
++                lines[idx] = pad + new
++                changed = True
++    for idx in range(len(lines) - 1, -1, -1):
++        body, pad = lines[idx].lstrip(' '), lines[idx][:len(lines[idx]) - len(lines[idx].lstrip(' '))]
++        if body == FLATPAK_METAINFO_ID and (idx + 1 >= len(lines) or lines[idx + 1].lstrip(' ') != FLATPAK_LAUNCHABLE):
++            lines.insert(idx + 1, pad + FLATPAK_LAUNCHABLE)
++            changed = True
++    return changed
++
++
++def parse_arch_matrix(lines, idx):
++    """The `- {...}` items of the matrix list whose `job:` key is at lines[idx], and where that list ends.
++
++    Items are YAML flow mappings, on one line or over several, with plain or double-quoted values."""
++    ind = indent_of(lines[idx])
++    entries, cur, end = [], None, idx + 1
++
++    def item(body, raw):
++        kv = re.match(r'^([A-Za-z0-9_-]+)\s*:\s*(.*?)$', body.strip().rstrip(',').strip())
++        if not kv:
++            raise SystemExit(f'pullify: cannot read this line of a build matrix: {raw}')
++        value = kv.group(2).strip()
++        if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
++            value = value[1:-1]
++        cur[kv.group(1)] = value
++
++    while end < len(lines):
++        raw = lines[end].strip()
++        if raw and indent_of(lines[end]) <= ind:
++            break
++        body = '' if raw.startswith('#') else re.sub(r'\s#.*$', '', raw).strip()
++        one = re.match(r'^-\s*\{(.*)\}\s*,?$', body)
++        if one:
++            cur = {}
++            for part in one.group(1).split(','):
++                if part.strip():
++                    item(part, raw)
++            entries.append(cur)
++            cur = None
++        elif body == '- {':
++            cur = {}
++        elif body in ('}', '},'):
++            if cur is not None:
++                entries.append(cur)
++            cur = None
++        elif cur is not None and body:
++            item(body, raw)
++        end += 1
++    while end > idx + 1 and not lines[end - 1].strip():   # blank lines before the next key stay
++        end -= 1
++    return entries, end
++
++
++def arch_matrix_rewrite(lines, input_name):
++    """Every `job:` matrix with exactly one x86_64 and one aarch64 item follows inputs.<input_name>: both (the default),
++    x86_64 or aarch64. Returns how many matrices it rewrote."""
++    done = 0
++    for idx, line in enumerate(lines):
++        if not re.match(r'^\s*job:\s*$', line):
++            continue
++        prev = idx - 1
++        while prev > 0 and (not lines[prev].strip() or lines[prev].strip().startswith('#')):
++            prev -= 1
++        if not re.match(r'^\s*matrix:\s*$', lines[prev]):
++            continue
++        entries, end = parse_arch_matrix(lines, idx)
++        by_arch = {e.get('arch'): e for e in entries}
++        if len(entries) != 2 or set(by_arch) != {'x86_64', 'aarch64'}:
++            continue
++        js = {a: json.dumps(e, separators=(',', ':')) for a, e in by_arch.items()}
++        if any("'" in v or ': ' in v or ' #' in v for v in js.values()):
++            raise SystemExit('pullify: a matrix value cannot go into a single-quoted expression string')
++        x, a = js['x86_64'], js['aarch64']
++        lines[idx:end] = [f"{' ' * indent_of(line)}job: ${{{{ fromJSON(inputs.{input_name} == 'x86_64' && '[{x}]' || "
++                          f"inputs.{input_name} == 'aarch64' && '[{a}]' || '[{x},{a}]') }}}}\n"]
++        done += 1
++        return done + arch_matrix_rewrite(lines, input_name)   # indices moved: start over
++    return done
++
++
++def macos_matrix_rewrite(lines):
++    """The Mac jobs' matrix comes from inputs.mac_arch: both (the default), x86_64 or aarch64."""
++    if any("fromJSON(inputs.mac_arch" in line for line in lines):
++        return False
++    if arch_matrix_rewrite(lines, 'mac_arch') != 1:
++        raise SystemExit('pullify: the macOS matrix no longer has exactly one x86_64 and one aarch64 job')
++    return True
++
++
++def macos_selfhosted_rewrite(lines):
++    """Runner choice per Mac architecture, and what a self-hosted Mac needs (see MAC_PREP_STEPS)."""
++    changed = False
++    for idx, line in enumerate(lines):
++        body, pad = line.strip(), line[:indent_of(line)]
++        if body == 'runs-on: ${{ matrix.job.os }}':
++            lines[idx] = pad + MAC_RUNS_ON + '\n'
++        elif body == MAC_NASM_OLD:
++            lines[idx] = pad + MAC_NASM_NEW + '\n'
++        elif body == MAC_RCODESIGN_OLD:
++            lines[idx] = pad + MAC_RCODESIGN_NEW + '\n'
++        elif MAC_RUNNER_PATH in line:
++            lines[idx] = line.replace(MAC_RUNNER_PATH, '"$GITHUB_WORKSPACE"')
++        elif body == 'create-dmg \\':
++            lines[idx] = pad + MAC_CREATE_DMG + '\n'
++        else:
++            continue
++        changed = True
++    if SELFHOSTED_MARK not in ''.join(lines):
++        for start, end, item_indent in split_steps(lines):
++            if re.search(r'^\s*-\s+name:\s*Checkout Repository\s*$', lines[start]):
++                lines[end:end] = ['\n', MAC_PREP_STEPS.format(p=' ' * item_indent, mark=SELFHOSTED_MARK,
++                                                              tools=MAC_SELFHOSTED_TOOLS)]
++                changed = True
++                break
++    changed |= hosted_only(lines, lambda name, text: MAC_BREW_INSTALL.search(text))
++    return changed
++
++
++# Jobs of these workflows run on a self-hosted runner when the repository variable for their kind of machine names
++# its label: RDGEN_RUNNER_LINUX, RDGEN_RUNNER_LINUX_ARM, RDGEN_RUNNER_WINDOWS (the Mac build jobs: MAC_RUNS_ON).
++# Android stays on GitHub: its jobs need the Android SDK of GitHub's image.
++ROUTED = ['generator-linux.yml', 'generator-windows.yml', 'generator-windows-x86.yml', 'generator-macos.yml',
++          'bridge.yml', 'fetch-encrypted-secrets.yml', 'third-party-RustDeskTempTopMostWindow.yml']
++RUNNER_VAR_FOR = (('ubuntu', '-arm', 'RDGEN_RUNNER_LINUX_ARM'), ('ubuntu', '', 'RDGEN_RUNNER_LINUX'),
++                  ('windows', '', 'RDGEN_RUNNER_WINDOWS'))
++# steps that only make sense (or only work) on GitHub's throwaway images: swapon is not allowed in an LXC
++GITHUB_ONLY_STEPS = ('Set Swap Space',)
++HOSTED_ONLY = "runner.environment != 'self-hosted'"
++GATED_RM = ('sudo rm -rf /opt/ghc', 'sudo rm -rf /usr/local/lib/android', 'sudo rm -rf /usr/share/dotnet')
++LINUX_CHECK_STEP = """{p}- name: Check this self-hosted Linux runner
++{p}  if: runner.environment == 'self-hosted'
++{p}  shell: bash
++{p}  run: |
++{p}    # rdgen: the build runs in Docker and installs packages with sudo apt-get (tools/runner-lxc.sh sets both up)
++{p}    docker info >/dev/null 2>&1 || {{ echo "::error::this runner needs Docker its user can use"; exit 1; }}
++{p}    sudo -n true 2>/dev/null || {{ echo "::error::this runner needs passwordless sudo"; exit 1; }}
++{p}    command -v apt-get >/dev/null || {{ echo "::error::this runner needs Ubuntu (apt-get)"; exit 1; }}
++
++"""
++WINDOWS_CHECK_STEP = """{p}- name: Check this self-hosted Windows runner
++{p}  if: runner.environment == 'self-hosted'
++{p}  shell: powershell
++{p}  run: |
++{p}    # rdgen: tools GitHub's windows-2022 image brings and these jobs use (tools/runner-windows.ps1 installs them)
++{p}    $missing = @('bash', 'pwsh', 'python', 'choco', 'nuget') | Where-Object {{ -not (Get-Command $_ -ErrorAction SilentlyContinue) }}
++{p}    $vswhere = Join-Path ${{env:ProgramFiles(x86)}} 'Microsoft Visual Studio\\Installer\\vswhere.exe'
++{p}    if (-not (Test-Path $vswhere) -or -not (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)) {{
++{p}      $missing += 'Visual Studio 2022 C++ build tools'
++{p}    }}
++{p}    if ($missing) {{ Write-Output "::error::this runner is missing: $($missing -join ', ')"; exit 1 }}
++
++"""
++
++
++TOOL_CACHE_RE = re.compile(r'C:/hostedtoolcache/windows/((?:\$\{\{[^}]*\}\}|[^\s"\'])+)')
++
++
++# A self-hosted runner keeps Flutter's SDK in its tool cache from one build to the next (GitHub's machines start
++# fresh), so the SDK already carries the dropdown patch from the last build and a plain `git apply` fails: apply it
++# only where it is not applied yet.
++FLUTTER_PATCH_RE = re.compile(r'git apply ((?:\$\{\{[^}]*\}\}|\S)*flutter_[A-Za-z0-9_.-]+\.diff)\s*$')
++FLUTTER_PATCH_GUARD = 'git apply --reverse --check'
++
++
++def flutter_patch_rewrite(lines):
++    """`git apply <flutter patch>` -> applied unless the SDK has it already (see FLUTTER_PATCH_RE)."""
++    changed = False
++    for idx, line in enumerate(lines):
++        m = FLUTTER_PATCH_RE.search(line.rstrip('\n'))
++        if m and FLUTTER_PATCH_GUARD not in line:
++            diff = m.group(1)
++            lines[idx] = (line[:m.start()] + '{ ' + f'{FLUTTER_PATCH_GUARD} {diff} 2>/dev/null || git apply {diff}' +
++                          '; }\n')
++            changed = True
++    return changed
++
++
++def windows_rewrite(lines):
++    """Paths into GitHub's tool cache follow RUNNER_TOOL_CACHE (C:\\hostedtoolcache\\windows on GitHub's image)."""
++    changed = False
++    for idx, line in enumerate(lines):
++        new = TOOL_CACHE_RE.sub(lambda m: '"$env:RUNNER_TOOL_CACHE/%s"' % m.group(1), line)
++        if new != line:
++            lines[idx] = new
++            changed = True
++    return changed
++
++
++def routed_runs_on(value):
++    """runs-on value -> the same, but with the repository variable for that kind of machine taking precedence."""
++    value = value.strip()
++    if 'vars.RDGEN_RUNNER' in value:
++        return None
++    m = re.fullmatch(r'\$\{\{\s*(.+?)\s*\}\}', value)
++    if m:   # decided at run time (matrix.job.os, inputs.target...)
++        e = m.group(1)
++        return ("${{ (startsWith(%s, 'windows') && vars.RDGEN_RUNNER_WINDOWS) || "
++                "(startsWith(%s, 'ubuntu') && endsWith(%s, '-arm') && vars.RDGEN_RUNNER_LINUX_ARM) || "
++                "(startsWith(%s, 'ubuntu') && !endsWith(%s, '-arm') && vars.RDGEN_RUNNER_LINUX) || %s }}") % ((e,) * 6)
++    for prefix, suffix, var in RUNNER_VAR_FOR:
++        if value.startswith(prefix) and value.endswith(suffix) and (suffix or not value.endswith('-arm')):
++            return "${{ vars.%s || '%s' }}" % (var, value)
++    return None
++
++
++# Swatinem/rust-cache deletes, after a successful job, every file that was in $CARGO_HOME/bin when the job started (it
++# caches only what the job installed). GitHub's machines are thrown away anyway; on a runner of yours that deleted
++# rustup itself (the Mac's next build stopped at its tool check). cache-bin false keeps it from touching that folder.
++RUST_CACHE_BIN = "cache-bin: ${{ runner.environment != 'self-hosted' }}"
++
++
++def rust_cache_rewrite(lines):
++    """Every Swatinem/rust-cache step gets RUST_CACHE_BIN."""
++    changed = False
++    for start, end, item_indent in reversed(split_steps(lines)):
++        if 'Swatinem/rust-cache@' not in lines[start] or 'cache-bin:' in ''.join(lines[start:end]):
++            continue
++        key, value = ' ' * (item_indent + 2), ' ' * (item_indent + 4)
++        at = next((i for i in range(start + 1, end) if lines[i].rstrip() == key + 'with:'), None)
++        if at is None:
++            lines.insert(start + 1, f'{key}with:\n')
++            at = start + 1
++        lines.insert(at + 1, f'{value}{RUST_CACHE_BIN}\n')
++        changed = True
++    return changed
++
++
++def add_condition(lines, start, end, key_indent, cond):
++    """AND cond into the `if:` at key_indent in lines[start + 1:end], or insert `if: cond` after lines[start]."""
++    key = ' ' * key_indent
++    for idx in range(start + 1, end):
++        m = re.match(r'^' + key + r'if:\s*(.+?)\s*$', lines[idx])
++        if m:
++            inner = re.fullmatch(r'\$\{\{\s*(.+?)\s*\}\}', m.group(1))
++            expr = inner.group(1) if inner else m.group(1)
++            lines[idx] = f'{key}if: ${{{{ {cond} && ({expr}) }}}}\n'
++            return
++    lines.insert(start + 1, f'{key}if: {cond}\n')
++
++
++def hosted_only(lines, wanted):
++    """Run the steps for which wanted(step name, step text) holds on GitHub's machines only."""
++    changed = False
++    for start, end, item_indent in reversed(split_steps(lines)):
++        m = re.match(r'^\s*-\s+name:\s*(.+?)\s*$', lines[start])
++        text = ''.join(lines[start:end])
++        if not wanted(m.group(1) if m else '', text) or HOSTED_ONLY in text:
++            continue
++        add_condition(lines, start, end, item_indent + 2, HOSTED_ONLY)
++        changed = True
++    return changed
++
++
++def runner_rewrite(lines, name):
++    """Route jobs to self-hosted runners on request; on those, skip GitHub-image cleanup and check prerequisites."""
++    changed = False
++    for idx, line in enumerate(lines):
++        m = re.match(r'^(\s*)runs-on:\s*(.+?)\s*$', line)
++        if m:
++            new = routed_runs_on(m.group(2))
++            if new:
++                lines[idx] = f'{m.group(1)}runs-on: {new}\n'
++                changed = True
++            continue
++        body = line.strip()
++        if body in GATED_RM:   # frees space on GitHub's throwaway image; on a machine of yours it would delete things
++            lines[idx] = line.replace(body, '[ "$RUNNER_ENVIRONMENT" = self-hosted ] || ' + body)
++            changed = True
++    changed |= hosted_only(lines, lambda name, text: name in GITHUB_ONLY_STEPS)
++    changed |= rust_cache_rewrite(lines)
++    text = ''.join(lines)
++    if name == 'generator-linux.yml' and 'Check this self-hosted Linux runner' not in text:
++        for start, end, item_indent in reversed(split_steps(lines)):
++            if re.search(r'^\s*-\s+name:\s*Maximize build space\s*$', lines[start]):
++                lines[start:start] = [LINUX_CHECK_STEP.format(p=' ' * item_indent)]
++                changed = True
++    if name in ('generator-windows.yml', 'generator-windows-x86.yml') and 'Check this self-hosted Windows runner' not in text:
++        for start, end, item_indent in split_steps(lines):
++            if re.search(r'^\s*-\s+name:\s*Checkout Repository\s*$', lines[start]):
++                lines[start:start] = [WINDOWS_CHECK_STEP.format(p=' ' * item_indent)]
++                changed = True
++                break   # the first job with steps is the Windows build job
++    return changed
++
++
++def macos_rewrite(lines):
++    """custom_.txt into Resources; pin the rcodesign download; sign the app with codesign before "Create DMG"
++    instead of upstream's rcodesign step, and notarize the DMG after it. Also macos_matrix_rewrite and
++    macos_selfhosted_rewrite."""
++    changed = macos_matrix_rewrite(lines)
++    changed |= macos_selfhosted_rewrite(lines)
++    for idx, line in enumerate(lines):
++        if MAC_CUSTOM_OLD in line:
++            lines[idx] = line.replace(MAC_CUSTOM_OLD, MAC_CUSTOM_NEW)
++            changed = True
++    for start, end, _ in split_steps(lines):
++        if UPSTREAM_MAC_SIGN.match(lines[start]):
++            while start > 0 and not lines[start - 1].strip():   # with the blank lines before it
++                start -= 1
++            del lines[start:end]
++            changed = True
++            break
++    for idx in range(len(lines) - 1, -1, -1):
++        m = re.match(r'^(\s*)wget \S*/(apple-codesign-[0-9.]+-macos-universal\.tar\.gz)\s*$', lines[idx])
++        if m and m.group(2) in RCODESIGN_SHA256 and RCODESIGN_SHA256[m.group(2)] not in ''.join(lines[idx + 1:idx + 2]):
++            lines.insert(idx + 1, f'{m.group(1)}echo "{RCODESIGN_SHA256[m.group(2)]}  {m.group(2)}" | shasum -a 256 -c -\n')
++            changed = True
++    text = ''.join(lines)
++    if SIGN_MARK in text and NOTARIZE_MARK in text:
++        return changed
++    for start, end, item_indent in split_steps(lines):
++        if re.search(r'^\s*-\s+name:\s*Create DMG\s*$', lines[start]):
++            p = ' ' * item_indent
++            fetch = ''.join(
++                f'{p}    curl -fsSLo "$work/{name}" "https://www.apple.com/certificateauthority/{name}"\n'
++                f'{p}    echo "{sha}  $work/{name}" | shasum -a 256 -c - >/dev/null\n'
++                f'{p}    security import "$work/{name}" -k "$kc" >/dev/null\n'
++                for name, sha in APPLE_INTERMEDIATES.items()).rstrip('\n')
++            if NOTARIZE_MARK not in text:
++                lines[end:end] = ['\n', NOTARIZE_STEP.format(p=p, mark=NOTARIZE_MARK)]
++            if SIGN_MARK not in text:
++                lines[start:start] = [SIGN_STEP.format(p=p, mark=SIGN_MARK, intermediates=fetch), '\n']
++            return True
++    return changed
++
++
++def indent_of(line):
++    return len(line) - len(line.lstrip(' '))
++
++
++def split_steps(lines):
++    """Yield (start, end) line ranges of every step item in every steps: list."""
++    ranges = []
++    i = 0
++    n = len(lines)
++    while i < n:
++        m = re.match(r'^(\s*)steps:\s*$', lines[i])
++        if not m:
++            i += 1
++            continue
++        base = len(m.group(1))
++        j = i + 1
++        while j < n and not lines[j].strip():
++            j += 1
++        if j >= n or not lines[j].lstrip().startswith('- '):
++            i = j
++            continue
++        item_indent = indent_of(lines[j])
++        k = j
++        while k < n:
++            line = lines[k]
++            if line.strip() and indent_of(line) <= base:
++                break
++            if line.strip() and indent_of(line) == item_indent and line.lstrip().startswith('- '):
++                start = k
++                k += 1
++                while k < n:
++                    nxt = lines[k]
++                    if nxt.strip() and (indent_of(nxt) < item_indent or
++                                        (indent_of(nxt) == item_indent and nxt.lstrip().startswith('- '))):
++                        break
++                    if nxt.strip() and indent_of(nxt) <= base:
++                        break
++                    k += 1
++                end = k
++                # trailing blank lines belong to the gap, not the step
++                while end > start + 1 and not lines[end - 1].strip():
++                    end -= 1
++                ranges.append((start, end, item_indent))
++                continue
++            k += 1
++        i = k
++    return ranges
++
++
++def drop_empty_env(text):
++    """Remove `env:` keys left without children (e.g. after STATUS_URL)."""
++    lines = text.splitlines(keepends=True)
++    out = []
++    for idx, line in enumerate(lines):
++        m = re.match(r'^(\s*)env:\s*$', line)
++        if m:
++            nxt = next((l for l in lines[idx + 1:] if l.strip()), '')
++            if indent_of(nxt) <= len(m.group(1)):
++                continue
++        out.append(line)
++    return ''.join(out)
++
++
++def upload_step(block, item_indent):
++    text = ''.join(block)
++    paths = re.findall(r'"file=@([^"]+)"', text)
++    if not paths:
++        raise SystemExit('pullify: save_custom_client step without file=@ paths:\n' + text)
++    paths = [p.replace('$GITHUB_WORKSPACE/', '${{ github.workspace }}/') for p in paths]
++    cond = re.search(r'^\s*if:\s*(.+)$', text, re.M)
++    pad = ' ' * item_indent
++    out = [f'{pad}- name: upload build for rdgen (pull model)\n']
++    if cond:
++        out.append(f'{pad}  if: {cond.group(1).strip()}\n')
++    out.append(f'{pad}  uses: {UPLOAD_ACTION}\n')
++    out.append(f'{pad}  with:\n')
++    out.append(f'{pad}    name: rdgen-${{{{ inputs.build_uuid }}}}-${{{{ github.job }}}}-${{{{ strategy.job-index }}}}\n')
++    out.append(f'{pad}    path: |\n')
++    for p in paths:
++        out.append(f'{pad}      {p}\n')
++    out.append(f'{pad}    if-no-files-found: error\n')
++    out.append(f'{pad}    retention-days: 1\n')
++    out.append(f'{pad}    compression-level: 0\n')
++    return out
++
++
++def rewrite_steps(lines):
++    changed = False
++    for start, end, item_indent in reversed(split_steps(lines)):
++        block = lines[start:end]
++        text = ''.join(block)
++        if ('/cleanzip' in text or 'STATUS_URL=' in text or '/api/save_custom_client' in text):
++            del lines[start:end]
++            # drop one blank separator line so gaps stay single
++            if start < len(lines) and not lines[start].strip() and start > 0 and not lines[start - 1].strip():
++                del lines[start]
++            changed = True
++        elif '${{ inputs.app_version }}' in text and 'APP_VERSION: ${{' not in text and re.search(r'^\s*run:', text, re.M):
++            # a dispatch input pasted into a shell command: hand it over as an
++            # environment variable instead (the value is also validated by rdgen)
++            body = text.replace('APP_VERSION="${{ inputs.app_version }}" python3', 'python3')
++            body = body.replace('${{ inputs.app_version }}', "'\"$APP_VERSION\"'")
++            new = body.splitlines(keepends=True)
++            for idx, line in enumerate(new):
++                if re.match(r'^\s*run:', line):
++                    pad = ' ' * indent_of(line)
++                    new[idx:idx] = [f'{pad}env:\n', f'{pad}  APP_VERSION: ${{{{ inputs.app_version }}}}\n']
++                    break
++            lines[start:end] = new
++            changed = True
++        elif 'save_custom_client' in text and 'GENURL' in text:
++            lines[start:end] = upload_step(block, item_indent)
++            changed = True
++        elif re.search(r'uses:\s*actions/upload-artifact@', text) and 'retention-days' not in text:
++            for idx in range(start, end):
++                m = re.match(r'^(\s*)with:\s*$', lines[idx])
++                if m:
++                    key_indent = indent_of(lines[idx + 1]) if idx + 1 < end else indent_of(lines[idx]) + 2
++                    lines.insert(idx + 1, ' ' * key_indent + 'retention-days: 1\n')
++                    changed = True
++                    break
++    return changed
++
++
++def logical_commands(lines):
++    """Group backslash-continued shell lines: yields (start, end)."""
++    i = 0
++    while i < len(lines):
++        j = i
++        while j < len(lines) - 1 and lines[j].rstrip('\n').rstrip().endswith('\\'):
++            j += 1
++        yield i, j + 1
++        i = j + 1
++
++
++def rewrite_fetches(lines):
++    changed = False
++    groups = list(logical_commands(lines))
++    for start, end in reversed(groups):
++        text = ''.join(lines[start:end])
++        pad = ' ' * indent_of(lines[start])
++        m = re.search(r'env\.(icon|logo|privacy)link_url \}\}/get_png', text)
++        if m:
++            kind = m.group(1)
++            target = re.search(r'(?:-OutFile|-o|-O)\s+("[^"]+"|\S+)', text)
++            if not target:
++                raise SystemExit('pullify: get_png without output path:\n' + text)
++            dest = target.group(1)
++            if 'Invoke-WebRequest' in text:
++                new = f'{pad}Copy-Item -Force -LiteralPath "$env:RUNNER_TEMP/rdgen-assets/{kind}.png" -Destination {dest}\n'
++            else:
++                new = f'{pad}cp "$RUNNER_TEMP/rdgen-assets/{kind}.png" {dest}\n'
++            lines[start:end] = [new]
++            changed = True
++            continue
++        m = re.search(r'https://raw\.githubusercontent\.com/bryangerlach/rdgen/refs/heads/master/\.github/patches/([A-Za-z0-9._-]+)', text)
++        if m:
++            name = m.group(1)
++            if 'Invoke-WebRequest' in text:
++                out = re.search(r'-OutFile\s+(\S+)', text)
++                dest = out.group(1) if out else name
++                new = f'{pad}Copy-Item -Force -LiteralPath "$env:RUNNER_TEMP/rdgen-patches/{name}" -Destination {dest}\n'
++            elif re.match(r'\s*wget\s+https://', text):
++                new = f'{pad}cp "$RUNNER_TEMP/rdgen-patches/{name}" ./{name}\n'
++            elif re.match(r'\s*curl\s', text) and re.search(r'\s-o\s+[A-Za-z0-9._-]+\s', text):
++                dest = re.search(r'\s-o\s+([A-Za-z0-9._-]+)\s', text).group(1)
++                new = f'{pad}cp "$RUNNER_TEMP/rdgen-patches/{name}" ./{dest}\n'
++            else:
++                raise SystemExit('pullify: unknown patch download form:\n' + text)
++            lines[start:end] = [new]
++            changed = True
++    return changed
++
++
++def rewrite_text(src, is_generator, name=''):
++    lines = src.splitlines(keepends=True)
++    changed = False
++    if name == 'generator-macos.yml':
++        changed |= macos_rewrite(lines)
++    if name == 'generator-linux.yml':
++        changed |= linux_rewrite(lines)
++    if name in ('generator-windows.yml', 'generator-windows-x86.yml'):
++        changed |= windows_rewrite(lines)
++    if name in ('generator-windows.yml', 'generator-windows-x86.yml', 'generator-macos.yml'):
++        changed |= flutter_patch_rewrite(lines)
++    if name in ROUTED:
++        changed |= runner_rewrite(lines, name)
++
++    if is_generator:
++        # dispatch inputs
++        for idx, line in enumerate(lines):
++            m = re.match(r'^(\s*)zip_url:\s*$', line)
++            if m:
++                ind = len(m.group(1))
++                end = idx + 1
++                while end < len(lines) and (not lines[end].strip() or indent_of(lines[end]) > ind):
++                    end += 1
++                while end > idx + 1 and not lines[end - 1].strip():
++                    end -= 1
++                lines[idx:end] = [NEW_INPUTS.format(i=' ' * ind)] + (
++                    [MAC_ARCH_INPUT.format(i=' ' * ind)] if name == 'generator-macos.yml' else []) + (
++                    [LINUX_INPUTS.format(i=' ' * ind)] if name == 'generator-linux.yml' else [])
++                changed = True
++                break
++        text = ''.join(lines)
++        # run-name
++        new = re.sub(r'^run-name: (?!.*build_uuid)(.*?)\s*$', r'run-name: \1 ${{ inputs.build_uuid }}', text, count=1, flags=re.M)
++        # permissions
++        if not re.search(r'^permissions:', new, re.M):
++            m = re.search(r'^(env:|jobs:)', new, re.M)
++            new = new[:m.start()] + PERMISSIONS + new[m.start():]
++        new = new.replace('zip_url_json: ${{ inputs.zip_url }}', 'build_uuid: ${{ inputs.build_uuid }}')
++        new = re.sub(r'^\s+STATUS_URL: .*\n', '', new, flags=re.M)
++        # upstream (2026-10-18) reads an upload-tag input no workflow declares
++        new = re.sub(r'^\s+TAG_NAME: "\$\{\{ inputs\.upload-tag \}\}"\n', '', new, flags=re.M)
++        new = drop_empty_env(new)
++        changed |= new != text
++        lines = new.splitlines(keepends=True)
++
++    changed |= rewrite_steps(lines)
++    changed |= rewrite_fetches(lines)
++    text = ''.join(lines)
++
++    # printer-adapter: this repository at this commit
++    new = re.sub(r'repository: bryangerlach/rdgen\n(\s*)ref: master',
++                 r'repository: ${{ github.repository }}\n\1ref: ${{ github.sha }}', text)
++
++    # pin actions
++    def pin(m):
++        spec, rest = m.group(2), m.group(3).strip()
++        if spec.startswith('./') or re.search(r'@[0-9a-f]{40}$', spec) or spec.startswith('docker://'):
++            return m.group(0)
++        if spec not in PINS:
++            UNPINNED.add(spec)
++            return m.group(0)
++        sha, comment = PINS[spec]
++        old_comment = rest.lstrip('#').strip()
++        suffix = f' ({old_comment})' if old_comment else ''
++        return f'{m.group(1)}{spec.split("@")[0]}@{sha} # {comment}{suffix}'
++    new = re.sub(r'^(\s*(?:-\s+)?uses:\s*)([^\s#]+)([^\n]*)$', pin, new, flags=re.M)
++    changed |= new != text
++    return new, changed
++
++
++UNPINNED = set()
++
++
++def check(path, text, is_generator):
++    problems = []
++    if os.path.basename(path) == 'generator-linux.yml':
++        if 'flutter/tmpdeb/usr/share/rustdesk' in text or text.count(LINUX_CUSTOM_NEW[1].strip()) < 2:
++            problems.append('generator-linux.yml: custom_.txt is not staged next to the renamed program in both build jobs')
++        if FLATPAK_ID_OLD.strip() in text or FLATPAK_ID_NEW.strip() not in text:
++            problems.append('generator-linux.yml: the Flatpak ID is not made of letters and digits only')
++        if FLATPAK_LAUNCHABLE.strip() not in text:
++            problems.append('generator-linux.yml: the Flatpak metainfo launchable is not set to the app ID')
++    if os.path.basename(path) == 'generator-macos.yml':
++        for m in re.finditer(r'(apple-codesign-[0-9.]+-macos-universal\.tar\.gz)\s*$', text, re.M):
++            if m.group(1) not in RCODESIGN_SHA256:
++                problems.append(f'generator-macos.yml: no sha256 for {m.group(1)}: add it to RCODESIGN_SHA256')
++        if SIGN_MARK not in text or NOTARIZE_MARK not in text:
++            problems.append('generator-macos.yml: no "Create DMG" step to add Developer ID signing and notarization around')
++        if MAC_CUSTOM_OLD in text or MAC_CUSTOM_NEW not in text:
++            problems.append('generator-macos.yml: custom_.txt is not written to Contents/Resources, where RustDesk reads it')
++        for needle, why in (("fromJSON(inputs.mac_arch == 'x86_64'", 'the Mac matrix does not follow inputs.mac_arch'),
++                            ('mac_arch:', 'there is no mac_arch input'),
++                            (MAC_RUNS_ON, 'Mac jobs cannot go to a self-hosted runner'),
++                            (SELFHOSTED_MARK, 'there is no prepare step for a self-hosted Mac'),
++                            (f'for tool in {MAC_SELFHOSTED_TOOLS}; do',
++                             'the prepare step does not check the tools a self-hosted Mac needs'),
++                            (MAC_NASM_NEW, 'NASM still needs sudo on a self-hosted Mac'),
++                            (MAC_RCODESIGN_NEW, 'rcodesign still goes to /usr/local/bin'),
++                            (MAC_CREATE_DMG, 'create-dmg does not skip the Finder layout on a self-hosted Mac'),
++                            ('Remove the signing keychain', 'the signing keychain is not always removed')):
++            if needle not in text:
++                problems.append(f'generator-macos.yml: {why}')
++        if '/Users/runner/' in text:
++            problems.append('generator-macos.yml: a path still assumes GitHub\'s runner user (/Users/runner)')
++        steps = text.splitlines(keepends=True)
++        for start, end, _ in split_steps(steps):
++            step = ''.join(steps[start:end])
++            if MAC_BREW_INSTALL.search(step) and HOSTED_ONLY not in step:
++                problems.append(f'generator-macos.yml: "{steps[start].strip()}" would brew install on a self-hosted Mac')
++        if any(UPSTREAM_MAC_SIGN.match(line) for line in text.splitlines()):
++            problems.append('generator-macos.yml: upstream\'s rcodesign "Sign macOS app bundle" step is still there')
++    if os.path.basename(path) in ROUTED:
++        for m in re.finditer(r'^\s*runs-on:\s*(.+?)\s*$', text, re.M):
++            if 'vars.RDGEN_RUNNER' not in m.group(1):
++                problems.append(f'{os.path.basename(path)}: a job cannot go to a self-hosted runner: runs-on: {m.group(1)}')
++        tl = text.splitlines(keepends=True)
++        for s_start, s_end, _ in split_steps(tl):
++            if 'Swatinem/rust-cache@' in tl[s_start] and RUST_CACHE_BIN not in ''.join(tl[s_start:s_end]):
++                problems.append(f'{os.path.basename(path)}: rust-cache would delete rustup from a self-hosted '
++                                f'runner\'s $CARGO_HOME/bin (no {RUST_CACHE_BIN})')
++        for m in re.finditer(r'^\s*(sudo rm -rf /\S+)\s*$', text, re.M):
++            problems.append(f'{os.path.basename(path)}: {m.group(1)} would also run on a self-hosted runner')
++    if os.path.basename(path) == 'generator-linux.yml':
++        if text.count("fromJSON(inputs.linux_arch == 'x86_64'") != 3 or 'linux_arch:' not in text:
++            problems.append('generator-linux.yml: the per-arch jobs do not follow inputs.linux_arch')
++        if text.count(LINUX_FORMATS_IF) != 2 or 'linux_formats:' not in text:
++            problems.append('generator-linux.yml: AppImage and Flatpak do not follow inputs.linux_formats')
++        if 'Check this self-hosted Linux runner' not in text:
++            problems.append('generator-linux.yml: no prerequisite check for a self-hosted Linux runner')
++        for step in re.split(r'\n\s*- name: ', text)[1:]:
++            if step.split('\n', 1)[0].strip() in GITHUB_ONLY_STEPS and HOSTED_ONLY not in step.split('\n      - ', 1)[0]:
++                problems.append(f'generator-linux.yml: "{step.split(chr(10), 1)[0].strip()}" would run on a self-hosted runner')
++        tl = text.splitlines(keepends=True)
++        js = next((i for i, line in enumerate(tl) if line.rstrip() == f'  {DRM_JOB}:'), None)
++        if js is not None:
++            je = next((i for i in range(js + 1, len(tl)) if re.match(r'^  [A-Za-z0-9_-]+:\s*$', tl[i])), len(tl))
++            jh = next((i for i in range(js + 1, je) if tl[i].rstrip() == '    steps:'), je)
++            head = ''.join(tl[js:jh])
++            if '    continue-on-error: true\n' not in head or DRM_JOB_IF not in head:
++                problems.append(f'generator-linux.yml: {DRM_JOB} could fail the run, or runs in ARM-only builds')
++            if 'DRM_SUPPORTED=true' not in ''.join(tl[js:je]):
++                problems.append(f'generator-linux.yml: nothing in {DRM_JOB} detects DRM support (DRM_SUPPORTED)')
++            for s_start, s_end, _ in split_steps(tl):
++                step = ''.join(tl[s_start:s_end])
++                if (js < s_start < je and "'--drm'" not in step and ('--drm' in step or 'build_libdrmtap_so' in step)
++                        and 'DRM_SUPPORTED' not in step):
++                    problems.append(f'generator-linux.yml: a DRM build step in {DRM_JOB} runs without DRM support')
++    if os.path.basename(path) in ('generator-windows.yml', 'generator-windows-x86.yml', 'generator-macos.yml'):
++        for line in text.splitlines():
++            if FLUTTER_PATCH_RE.search(line.rstrip()) and FLUTTER_PATCH_GUARD not in line:
++                problems.append(f'{os.path.basename(path)}: the Flutter patch would fail on a self-hosted runner whose '
++                                f'SDK has it already: {line.strip()}')
++    if os.path.basename(path) in ('generator-windows.yml', 'generator-windows-x86.yml'):
++        if 'C:/hostedtoolcache' in text:
++            problems.append(f'{os.path.basename(path)}: a path still assumes GitHub\'s tool cache (C:/hostedtoolcache)')
++        if 'Check this self-hosted Windows runner' not in text:
++            problems.append(f'{os.path.basename(path)}: no prerequisite check for a self-hosted Windows runner')
++    for needle, why in FORBIDDEN:
++        if needle in text:
++            problems.append(f'{os.path.basename(path)}: still contains {needle!r} ({why})')
++    for m in re.finditer(r'^\s*(?:-\s+)?uses:\s*([^\s#]+)', text, re.M):
++        spec = m.group(1)
++        if not (spec.startswith('./') or re.search(r'@[0-9a-f]{40}$', spec)):
++            problems.append(f'{os.path.basename(path)}: action not pinned to a SHA: {spec}')
++    if is_generator and 'rdgen-${{ inputs.build_uuid }}' not in text:
++        problems.append(f'{os.path.basename(path)}: no rdgen artifact upload')
++    return problems
++
++
++def main(argv):
++    check_only = '--check' in argv
++    args = [a for a in argv if not a.startswith('--')]
++    root = os.path.abspath(args[0] if args else os.path.join(os.path.dirname(__file__), '..'))
++    wf = os.path.join(root, '.github', 'workflows')
++    problems, touched = [], []
++    for name in GENERATORS + REUSABLE:
++        path = os.path.join(wf, name)
++        if not os.path.exists(path):
++            if name in GENERATORS:
++                problems.append(f'{name}: missing')
++            continue
++        with open(path, encoding='utf-8') as fh:
++            src = fh.read()
++        new, changed = rewrite_text(src, name in GENERATORS, name)
++        if changed:
++            touched.append(name)
++            if not check_only:
++                with open(path, 'w', encoding='utf-8') as fh:
++                    fh.write(new)
++        problems += check(path, new, name in GENERATORS)
++    for name in UNUSED:
++        path = os.path.join(wf, name)
++        if os.path.exists(path):
++            touched.append(f'{name} (deleted)')
++            if not check_only:
++                os.remove(path)
++    known = set(GENERATORS + REUSABLE)
++    for name in sorted(os.listdir(wf)):
++        if name.endswith(('.yml', '.yaml')) and name not in known and name not in UNUSED:
++            with open(os.path.join(wf, name), encoding='utf-8') as fh:
++                body = fh.read()
++            if re.search(r'^\s*(workflow_dispatch|push|pull_request|schedule|workflow_run)\s*:', body, re.M):
++                problems.append(f'{name}: unknown workflow with its own trigger; review it and add it to '
++                                'GENERATORS/REUSABLE or UNUSED')
++    for spec in sorted(UNPINNED):
++        problems.append(f'no pin for action {spec}: add it to PINS (git ls-remote https://github.com/{spec.split("@")[0]})')
++    for p in problems:
++        print('pullify: ' + p, file=sys.stderr)
++    if touched:
++        print(('would rewrite: ' if check_only else 'rewrote: ') + ', '.join(touched))
++    else:
++        print('nothing to do')
++    if problems:
++        return 2
++    return 1 if (check_only and touched) else 0
++
++
++if __name__ == '__main__':
++    sys.exit(main(sys.argv[1:]))

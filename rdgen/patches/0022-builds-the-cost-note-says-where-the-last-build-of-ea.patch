@@ -1,0 +1,359 @@
+From b574651625205c26d1151d13a6422a1ac20d1891 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Mon, 5 Oct 2026 16:35:03 -0400
+Subject: [PATCH 22/26] builds: the cost note says where the last build of each
+ kind ran
+
+The form's cost note quoted GitHub's prices for every build, including Mac
+builds that run on a Mac of your own and cost nothing: confusing. rdgen
+cannot read the repository variables that route jobs (its runtime token has
+Actions access only), but it can see where jobs ran.
+
+- When a run completes, the poller lists its jobs (before deleting a
+  successful run) and records each job's runner, and whether it was one of
+  GitHub's machines (runner group "GitHub Actions"): GithubRun.runners,
+  migration 0007.
+- The form gets, per kind of build (Windows, Windows 32-bit, Linux, Intel
+  Mac, Apple Silicon Mac, and the small setup/bridge/cleanup jobs), where the
+  last completed one ran. The note then says "your own Mac (runner) built it
+  last time, so no GitHub Actions minutes", or GitHub's cost where it ran on
+  GitHub's machines or nothing is known yet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ .../migrations/0007_githubrun_runners.py      | 16 +++++
+ rdgenerator/models.py                         |  3 +
+ rdgenerator/poller.py                         | 25 ++++++++
+ rdgenerator/templates/_build_cost.html        | 58 +++++++++++++------
+ rdgenerator/tests/ghstub.py                   |  8 +++
+ rdgenerator/tests/test_pull.py                | 17 ++++++
+ rdgenerator/tests/test_ui.py                  | 31 ++++++++++
+ rdgenerator/views.py                          | 32 +++++++++-
+ 8 files changed, 171 insertions(+), 19 deletions(-)
+ create mode 100644 rdgenerator/migrations/0007_githubrun_runners.py
+
+diff --git a/rdgenerator/migrations/0007_githubrun_runners.py b/rdgenerator/migrations/0007_githubrun_runners.py
+new file mode 100644
+index 0000000..e036af4
+--- /dev/null
++++ b/rdgenerator/migrations/0007_githubrun_runners.py
+@@ -0,0 +1,16 @@
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('rdgenerator', '0006_githubrun_deleted_at'),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='githubrun',
++            name='runners',
++            field=models.JSONField(blank=True, default=list),
++        ),
++    ]
+diff --git a/rdgenerator/models.py b/rdgenerator/models.py
+index 04dbea3..822b45c 100644
+--- a/rdgenerator/models.py
++++ b/rdgenerator/models.py
+@@ -46,6 +46,9 @@ class GithubRun(models.Model):
+     # deleted from Recent builds: files and share links are gone, and the build is hidden everywhere; the row
+     # stays until RDGEN_RETENTION_DAYS so prune_remote can still delete a failed run on GitHub
+     deleted_at = models.DateTimeField(null=True, blank=True)
++    # where the run's jobs ran, recorded when it completes: [{'job': name, 'runner': name, 'hosted': bool}];
++    # hosted means one of GitHub's machines (Actions minutes), else a runner of yours (see views.last_runners)
++    runners = models.JSONField(default=list, blank=True)
+ 
+     @property
+     def is_terminal(self):
+diff --git a/rdgenerator/poller.py b/rdgenerator/poller.py
+index 1e2e1b4..8ca054f 100644
+--- a/rdgenerator/poller.py
++++ b/rdgenerator/poller.py
+@@ -163,6 +163,27 @@ def delete_run(gh, run_id):
+     gh.request('DELETE', gh.repo_path(f'/actions/runs/{int(run_id)}'), ok=(204, 404))
+ 
+ 
++# GitHub's own machines sit in this runner group (and are named "GitHub Actions <n>"); a runner of yours is in its
++# own group, Default unless you made one
++GITHUB_RUNNER_GROUP = 'GitHub Actions'
++
++
++def list_job_runners(gh, run_id):
++    """[{'job', 'runner', 'hosted'}] for the jobs of the run's latest attempt that got a runner (skipped ones never do)."""
++    data = gh.json('GET', gh.repo_path(f'/actions/runs/{int(run_id)}/jobs'), params={'filter': 'latest', 'per_page': 100})
++    jobs = data.get('jobs', [])
++    if not isinstance(jobs, list):
++        raise GitHubError('job list is malformed')
++    out = []
++    for job in jobs:
++        runner = job.get('runner_name') if isinstance(job, dict) else None
++        if not isinstance(runner, str) or not runner:
++            continue
++        hosted = job.get('runner_group_name') == GITHUB_RUNNER_GROUP or runner.startswith(GITHUB_RUNNER_GROUP + ' ')
++        out.append({'job': str(job.get('name', ''))[:120], 'runner': runner[:100], 'hosted': hosted})
++    return out
++
++
+ def list_artifacts(gh, run_id):
+     data = gh.json('GET', gh.repo_path(f'/actions/runs/{int(run_id)}/artifacts'), params={'per_page': 100})
+     items = data.get('artifacts', [])
+@@ -269,6 +290,10 @@ def sync_build(gh, build, now=None):
+     # Completed: remove whatever is left on the run.
+     for art in list_artifacts(gh, build.github_run_id):
+         delete_artifact(gh, art['id'])
++    try:   # before a successful run is deleted below: where its jobs ran, for the form's cost notes
++        build.runners = list_job_runners(gh, build.github_run_id)
++    except GitHubError as exc:
++        log.warning('build %s: could not list the run\'s jobs: %s', build.uuid, exc)
+     build.completed_at = now
+     if conclusion == 'success' and build.files:
+         build.status = 'success'
+diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
+index 1e7d6cd..53904d3 100644
+--- a/rdgenerator/templates/_build_cost.html
++++ b/rdgenerator/templates/_build_cost.html
+@@ -8,20 +8,30 @@
+     {{ form.linuxArch }}
+     <label for="{{ form.linuxFormats.id_for_label }}">Linux packages:</label>
+     {{ form.linuxFormats }}
+-    <div class="rd-hint">Most PCs are x86_64; ARM is for boards like the Raspberry Pi. A self-hosted Linux runner in an LXC builds x86_64 .deb and .rpm only.</div>
++    <div class="rd-hint">Most PCs are x86_64; ARM is for boards like the Raspberry Pi. A Linux runner of your own builds x86_64 only, and .deb and .rpm alone take it about half as long.</div>
+ </div>
+ <div id="rd-cost-note" class="rd-hint" aria-live="polite"></div>
++{{ runner_notes|json_script:"rd-runner-notes" }}
+ <script>
+ (function () {
+-    // what a build costs in GitHub Actions minutes in a private repo (measured on real builds). The Free plan
++    // What a build costs in GitHub Actions minutes in a private repo (measured on real builds). The Free plan
+     // includes 2,000 minutes a month; GitHub's Mac minutes cost about ten times as much as Linux ones, Windows
+-    // minutes almost twice, and they use up the included minutes at that pace. Self-hosted runners cost nothing.
++    // minutes almost twice, and they use up the included minutes at that pace. Runners of your own cost nothing,
++    // and where the last build of each kind ran is known (views.last_runners), so the note says that instead.
+     var notes = {
+-        'windows': 'GitHub Actions cost: about 100 minutes per build.',
+-        'windows-x86': 'GitHub Actions cost: about 100 minutes per build.',
+-        'linux': 'GitHub Actions cost: about 100 minutes per build with everything, roughly half for x86_64 .deb '
+-               + 'and .rpm only, and nothing on a self-hosted runner.'
++        'windows': 'GitHub Actions cost on GitHub\'s machines: about 100 minutes per build.',
++        'windows-x86': 'GitHub Actions cost on GitHub\'s machines: about 100 minutes per build.',
++        'linux': 'GitHub Actions cost on GitHub\'s machines: about 100 minutes per build with everything, roughly '
++               + 'half for x86_64 .deb and .rpm only.'
+     };
++    var names = {'windows': 'Windows', 'windows-x86': 'Windows 32-bit', 'linux': 'Linux'};
++    var macs = {'x86_64': 'Intel', 'aarch64': 'Apple Silicon'};
++    var learned = {};
++    try { learned = JSON.parse(document.getElementById('rd-runner-notes').textContent) || {}; } catch (e) {}
++    function ours(key) {   // the runners of yours that built this kind last time, if none of GitHub's machines did
++        var l = learned[key];
++        return l && !l.hosted && l.own && l.own.length ? l.own.join(', ') : '';
++    }
+     var select = document.getElementById('id_platform');
+     var arch = document.getElementById('{{ form.macArch.id_for_label }}');
+     var archBox = document.getElementById('rd-mac-arch');
+@@ -29,20 +39,32 @@
+     var note = document.getElementById('rd-cost-note');
+     if (!select || !note) return;
+     function show() {
+-        var mac = select.value === 'macos';
+-        var text = notes[select.value] || '';
++        var p = select.value, mac = p === 'macos', parts = [], paid = false;
+         if (mac) {
+-            var both = !arch || arch.value === 'both';
+-            text = 'GitHub Actions cost: each kind of Mac runs on a GitHub Mac machine for 30-40 minutes, and Mac '
+-                 + 'minutes cost about ten times Linux ones. This build uses roughly '
+-                 + (both ? '600-700' : '300-350') + ' of the 2,000 minutes a month the Free plan includes, '
+-                 + 'unless it runs on a Mac of your own (self-hosted runner), where it costs nothing.';
++            var kinds = !arch || arch.value === 'both' ? ['x86_64', 'aarch64'] : [arch.value];
++            kinds.forEach(function (k) {
++                var own = ours('macos-' + k);
++                if (own) {
++                    parts.push(macs[k] + ': your own Mac (' + own + ') built it last time, so no GitHub Actions minutes.');
++                } else {
++                    paid = true;
++                    parts.push(macs[k] + ': ' + (learned['macos-' + k] ? 'built on GitHub\'s Macs last time'
++                        : 'runs on GitHub\'s Macs unless your build repo has a Mac runner for it') + ', about 300-350 '
++                        + 'of the 2,000 minutes a month the Free plan includes (Mac minutes cost about ten times Linux ones).');
++                }
++            });
++        } else if (notes[p]) {
++            var own = ours(p);
++            if (own) parts.push(names[p] + ': your own machine (' + own + ') built it last time, so no GitHub Actions minutes.');
++            else parts.push(notes[p]);
+         }
++        var helpers = ours('helpers');
++        if (parts.length && helpers) parts.push('Its small Linux jobs ran on ' + helpers + '.');
+         if (archBox) archBox.hidden = !mac;
+-        if (linuxBox) linuxBox.hidden = select.value !== 'linux';
+-        note.textContent = text;
+-        note.style.color = mac ? '#ffd58a' : '';
+-        note.hidden = !text;
++        if (linuxBox) linuxBox.hidden = p !== 'linux';
++        note.textContent = parts.join(' ');
++        note.style.color = paid ? '#ffd58a' : '';
++        note.hidden = !parts.length;
+     }
+     select.addEventListener('change', show);
+     if (arch) arch.addEventListener('change', show);
+diff --git a/rdgenerator/tests/ghstub.py b/rdgenerator/tests/ghstub.py
+index ff1a0b1..f380b92 100644
+--- a/rdgenerator/tests/ghstub.py
++++ b/rdgenerator/tests/ghstub.py
+@@ -44,6 +44,7 @@ class GitHubStub:
+         # Called with the run dict right after a dispatch; returns a list of
+         # (artifact_name, {filename: bytes}) that the run will upload.
+         self.artifacts_for = lambda run: []
++        self.jobs_for = lambda run: []   # GitHub's job objects: name, runner_name, runner_group_name
+         self.polls_to_complete = 2
+         self.conclusion = 'success'
+         self.return_run_details = True
+@@ -244,6 +245,13 @@ class GitHubStub:
+                         if art['run_id'] == run['id']:
+                             art['deleted'] = True
+                     return 204, None, None
++            m = re.fullmatch(repo + r'/actions/runs/(\d+)/jobs', path)
++            if m and method == 'GET':
++                run = self.runs.get(int(m.group(1)))
++                if not run or run['deleted']:
++                    return 404, {'message': 'Not Found'}, None
++                jobs = list(self.jobs_for(run))
++                return 200, {'total_count': len(jobs), 'jobs': jobs}, None
+             m = re.fullmatch(repo + r'/actions/runs/(\d+)/cancel', path)
+             if m and method == 'POST':
+                 run = self.runs.get(int(m.group(1)))
+diff --git a/rdgenerator/tests/test_pull.py b/rdgenerator/tests/test_pull.py
+index 1066c50..9f62b66 100644
+--- a/rdgenerator/tests/test_pull.py
++++ b/rdgenerator/tests/test_pull.py
+@@ -211,6 +211,23 @@ class PollerTests(StubTestCase):
+         self.assertTrue(list(self.stub.runs.values())[0]['deleted'])
+         self.assertTrue(GithubRun.objects.get(uuid=u).run_deleted)
+ 
++    def test_records_where_the_jobs_ran(self):
++        self.stub.artifacts_for = self.artifacts
++        self.stub.jobs_for = lambda run: [
++            {'name': 'setup / download-zip', 'runner_name': 'rdgen-linux-104', 'runner_group_name': 'Default'},
++            {'name': 'x86_64-apple-darwin', 'runner_name': 'rdgen-mac-mini', 'runner_group_name': 'Default'},
++            {'name': 'aarch64-apple-darwin', 'runner_name': 'GitHub Actions 1000000123',
++             'runner_group_name': 'GitHub Actions'},
++            {'name': 'build-appimage', 'runner_name': None, 'runner_group_name': None}]   # skipped: no runner
++        u = self.generate().json()['uuid']
++        build = self.poll_until_terminal(u)
++        self.assertEqual(build.status, 'success')
++        self.assertTrue(build.run_deleted)   # the jobs were listed before the run went
++        self.assertEqual(build.runners, [
++            {'job': 'setup / download-zip', 'runner': 'rdgen-linux-104', 'hosted': False},
++            {'job': 'x86_64-apple-darwin', 'runner': 'rdgen-mac-mini', 'hosted': False},
++            {'job': 'aarch64-apple-darwin', 'runner': 'GitHub Actions 1000000123', 'hosted': True}])
++
+     def test_success_without_artifacts_is_failure(self):
+         u = self.generate().json()['uuid']
+         build = self.poll_until_terminal(u)
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index 7beb1e9..b6484bf 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -2,12 +2,16 @@
+ import base64
+ import json
+ import re
++import uuid
++from datetime import timedelta
+ 
+ from django.contrib.auth import get_user_model
+ from django.test import Client, TestCase, override_settings
++from django.utils import timezone
+ 
+ from rdgen import settings as rdgen_settings
+ from rdgenerator import views
++from rdgenerator.models import GithubRun
+ from rdgenerator.tests.test_pull import StubTestCase, decrypt_cfg
+ from rdgenerator.validation import MANUAL_KEY
+ 
+@@ -70,6 +74,33 @@ class FormPageTests(TestCase):
+         self.assertEqual(len(data['keys']), 140)
+ 
+ 
++class RunnerNoteTests(TestCase):
++    def setUp(self):
++        self.c = Client()
++        self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++
++    def build(self, platform, minutes_ago, runners):
++        when = timezone.now() - timedelta(minutes=minutes_ago)
++        return GithubRun.objects.create(uuid=str(uuid.uuid4()), status='success', platform=platform,
++                                        completed_at=when, runners=runners)
++
++    def test_the_last_build_of_each_kind_counts(self):
++        self.build('macos', 90, [{'job': 'x86_64-apple-darwin', 'runner': 'GitHub Actions 7', 'hosted': True}])
++        self.build('macos', 10, [{'job': 'setup / download-zip', 'runner': 'rdgen-linux-104', 'hosted': False},
++                                 {'job': 'x86_64-apple-darwin', 'runner': 'rdgen-mac-mini', 'hosted': False}])
++        self.build('windows', 5, [{'job': 'Build Windows (x86_64)', 'runner': 'GitHub Actions 3', 'hosted': True}])
++        self.build('linux', 1, [])   # finished before runners were recorded: says nothing
++        page = self.c.get('/').content.decode()
++        data = json.loads(re.search(r'<script id="rd-runner-notes" type="application/json">(.*?)</script>',
++                                    page, re.S).group(1))
++        self.assertEqual(data['macos-x86_64'], {'own': ['rdgen-mac-mini'], 'hosted': False})
++        self.assertEqual(data['helpers'], {'own': ['rdgen-linux-104'], 'hosted': False})
++        self.assertEqual(data['windows'], {'own': [], 'hosted': True})
++        self.assertNotIn('macos-aarch64', data)
++        self.assertNotIn('linux', data)
++        self.assertIn("your own Mac (' + own + ') built it last time", page)
++
++
+ class ReferenceDataTests(TestCase):
+     def test_reference_data_is_consistent(self):
+         data = views.client_settings()
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 4b64264..65e0b72 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -407,6 +407,35 @@ def client_settings():
+         return json.load(fh)
+ 
+ 
++# the small jobs every build has (encrypted settings, the Flutter/Rust bridge, cleanup), apart from the build itself
++HELPER_JOBS = ('setup', 'generate-bridge', 'cleanup', 'deploy')
++MAC_JOB_ARCH = (('x86_64-apple-darwin', 'x86_64'), ('aarch64-apple-darwin', 'aarch64'))
++
++
++def last_runners(limit=50):
++    """Where the last completed build of each kind ran, from the jobs the poller recorded (GithubRun.runners):
++    {key: {'own': [runner names of yours], 'hosted': ran on GitHub's machines}} with the keys windows,
++    windows-x86, linux, android, macos-x86_64, macos-aarch64 (the build jobs) and helpers (the small jobs)."""
++    out = {}
++    for build in GithubRun.objects.filter(completed_at__isnull=False).order_by('-completed_at')[:limit]:
++        groups = {}
++        for job in build.runners or []:
++            name = str(job.get('job', ''))
++            if name.startswith(HELPER_JOBS):
++                key = 'helpers'
++            elif build.platform == 'macos':
++                key = next((f'macos-{arch}' for part, arch in MAC_JOB_ARCH if part in name), '')
++            else:
++                key = build.platform
++            if key:
++                groups.setdefault(key, []).append(job)
++        for key, jobs in groups.items():
++            if key not in out:
++                out[key] = {'own': sorted({str(j.get('runner', '')) for j in jobs if not j.get('hosted')}),
++                            'hosted': any(j.get('hosted') for j in jobs)}
++    return out
++
++
+ def generator_view(request):
+     if request.method == 'POST':
+         form = GenerateForm(request.POST, request.FILES)
+@@ -427,7 +456,8 @@ def generator_view(request):
+     #return render(request, 'maintenance.html')
+     return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
+                                               'client_settings': client_settings(),
+-                                              'update_base': _settings.RDGEN_UPDATE_BASE})
++                                              'update_base': _settings.RDGEN_UPDATE_BASE,
++                                              'runner_notes': last_runners()})
+ 
+ 
+ def check_for_file(request):

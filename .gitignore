@@ -1,0 +1,5 @@
+*.prev
+*.swp
+*~
+.rdgen-work/
+__pycache__/

@@ -1,0 +1,348 @@
+From 700ef2f619c84241efd363115badb4b83298debf Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Wed, 30 Sep 2026 00:39:44 -0400
+Subject: [PATCH 03/26] validation: strict server-side charset rules for values
+ that reach build scripts
+
+The generator workflows paste appname, compname, server, key, apiServer,
+urlLink, downloadLink and androidappid into bash/pwsh/sed/perl with
+${{ env.X }}. Since #303 only appname/compname were filtered, and only
+against a denylist; server, key and the URLs could inject into sed or the
+shell of the runner, which holds the signing secrets.
+
+- New rdgenerator/validation.py with allowlist regexes per field (host
+  names/IPs, 44-char base64 key, http(s) URLs without query strings, Java
+  package ids, names limited to letters, digits, space and . _ ( ) + , -).
+  The form (clean()) and the JSON API share it. The workflow decrypt step
+  re-checks the same rules (added in a later commit).
+- serverPort must be between 1 and 65532, because relay and websocket
+  ports are derived as +1..+3.
+- Default/override option names must be simple identifiers. The
+  permanent password and the manual settings text are length-capped.
+- sanitize_filename(): upstream's r'[^\w\s-]' let tabs and newlines
+  through into ${{ env.filename }}. Now only [A-Za-z0-9_-] is allowed.
+- PNG uploads are capped at 4 MB. Logo and privacy uploads are checked
+  too, not only the icon.
+- The generator page shows every field error, not just icon errors.
+- API: an omitted boolean now takes the web form's default. Upstream
+  defaulted all 20 booleans to False (keyboard, clipboard, ... off),
+  unlike the UI. Non-string values are rejected instead of crashing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
+---
+ rdgenerator/api_views.py             | 37 +++++++-----
+ rdgenerator/forms.py                 | 59 +++++++++++-------
+ rdgenerator/templates/generator.html |  8 ++-
+ rdgenerator/validation.py            | 89 ++++++++++++++++++++++++++++
+ rdgenerator/views.py                 |  7 +--
+ 5 files changed, 157 insertions(+), 43 deletions(-)
+ create mode 100644 rdgenerator/validation.py
+
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index 24208b6..7dbbc37 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -8,6 +8,8 @@ from django.http import JsonResponse
+ from django.middleware.csrf import CsrfViewMiddleware
+ from django.views.decorators.csrf import csrf_exempt
+ from django.conf import settings as _settings
++from .forms import GenerateForm
++from .validation import validate_build_fields
+ from .views import generate_custom_client, _get_run_status, _UUID_RE
+ 
+ 
+@@ -32,7 +34,9 @@ BOOL_FIELDS = [
+     'enableRemoteModi', 'removeWallpaper', 'enablePrinter', 'enableCamera', 'enableTerminal',
+ ]
+ 
+-# Optional string fields (no validation needed, just accept as-is)
++_BOOL_DEFAULTS = {name: bool(GenerateForm.base_fields[name].initial) for name in BOOL_FIELDS}
++
++# Optional string fields (validated by validation.validate_build_fields)
+ OPTIONAL_STR_FIELDS = [
+     'sh_secret_field', 'serverIP', 'serverPort', 'key', 'apiServer', 'urlLink', 'downloadLink',
+     'appname', 'compname', 'androidappid', 'permanentPassword',
+@@ -55,8 +59,10 @@ def validate_generate_params(data):
+     cleaned = {}
+ 
+     # Required string field
++    if not isinstance(data, dict):
++        return {}, {'body': 'Expected a JSON object.'}
+     exename = data.get('exename', '')
+-    if not exename:
++    if not isinstance(exename, str) or not exename.strip():
+         errors['exename'] = 'This field is required.'
+     else:
+         cleaned['exename'] = exename
+@@ -81,9 +87,10 @@ def validate_generate_params(data):
+         else:
+             cleaned[field] = value
+ 
+-    # Boolean fields
++    # Boolean fields. Omitted fields take the web form's default, so an API
++    # caller that leaves out enableKeyboard gets the same client as the UI.
+     for field in BOOL_FIELDS:
+-        value = data.get(field, False)
++        value = data.get(field, _BOOL_DEFAULTS[field])
+         
+         if isinstance(value, str) and value.lower() == 'on':
+             value = True
+@@ -95,17 +102,17 @@ def validate_generate_params(data):
+ 
+     # Optional string fields
+     for field in OPTIONAL_STR_FIELDS:
+-        cleaned[field] = data.get(field, '')
+-
+-    # Free-text names flow into single/double-quoted bash sed scripts
+-    # (same rule as GenerateForm.clean_appname/clean_compname).
+-    for field in ('appname', 'compname'):
+-        value = cleaned.get(field, '')
+-        if isinstance(value, str) and re.search(r'[&\\|\'"$`\r\n]', value):
+-            errors[field] = (
+-                'Contains characters unsupported in build scripts '
+-                '(& \\ | \' " $ `, newlines).'
+-            )
++        value = data.get(field, '')
++        if value is None:
++            value = ''
++        if not isinstance(value, str):
++            errors[field] = 'Must be a string.'
++            continue
++        cleaned[field] = value if field in ('permanentPassword',) else value.strip()
++
++    # Values that reach the build scripts (same rules as GenerateForm).
++    for field, message in validate_build_fields(cleaned).items():
++        errors.setdefault(field, message)
+ 
+     # File fields are not used in API mode (base64 fields are used instead)
+     cleaned['iconfile'] = None
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index 8b7415c..c67203d 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -3,10 +3,9 @@ import re
+ from django import forms
+ from PIL import Image
+ 
+-# App/company names are interpolated into single/double-quoted bash sed
+-# scripts in every generator workflow: & \ | corrupt the substitution
+-# silently, ' " $ ` break shell quoting, CR/LF break sed addressing.
+-UNSAFE_NAME_CHARS = re.compile(r'[&\\|\'"$`\r\n]')
++from .validation import validate_build_fields
++
++MAX_PNG_BYTES = 4 * 1024 * 1024
+ 
+ class GenerateForm(forms.Form):
+     sh_secret_field = forms.CharField(required=False)
+@@ -94,9 +93,10 @@ class GenerateForm(forms.Form):
+     removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
+ 
+     def clean_iconfile(self):
+-        print("checking icon")
+         image = self.cleaned_data['iconfile']
+         if image:
++            if image.size > MAX_PNG_BYTES:
++                raise forms.ValidationError("PNG files must be 4 MB or smaller.")
+             try:
+                 # Open the image using Pillow
+                 img = Image.open(image)
+@@ -111,24 +111,43 @@ class GenerateForm(forms.Form):
+                 # Check for square dimensions
+                 if width != height:
+                     raise forms.ValidationError("Custom App Icon dimensions must be square.")
+-                
++                image.seek(0)
+                 return image
++            except forms.ValidationError:
++                raise
+             except OSError:  # Handle cases where the uploaded file is not a valid image
+                 raise forms.ValidationError("Invalid icon file.")
+             except Exception as e: # Catch any other image processing errors
+                 raise forms.ValidationError(f"Error processing icon: {e}")
+ 
+-    def _reject_unsafe_name_chars(self, field):
+-        value = self.cleaned_data.get(field, '')
+-        if value and UNSAFE_NAME_CHARS.search(value):
+-            raise forms.ValidationError(
+-                "Contains characters unsupported in build scripts "
+-                "(& \\ | ' \" $ `, newlines)."
+-            )
+-        return value
+-
+-    def clean_appname(self):
+-        return self._reject_unsafe_name_chars('appname')
+-
+-    def clean_compname(self):
+-        return self._reject_unsafe_name_chars('compname')
++    def _clean_png(self, field):
++        image = self.cleaned_data.get(field)
++        if not image:
++            return image
++        if image.size > MAX_PNG_BYTES:
++            raise forms.ValidationError("PNG files must be 4 MB or smaller.")
++        try:
++            img = Image.open(image)
++            if img.format != 'PNG':
++                raise forms.ValidationError("Only PNG images are allowed.")
++        except forms.ValidationError:
++            raise
++        except Exception:
++            raise forms.ValidationError("Invalid PNG file.")
++        finally:
++            image.seek(0)
++        return image
++
++    def clean_logofile(self):
++        return self._clean_png('logofile')
++
++    def clean_privacyfile(self):
++        return self._clean_png('privacyfile')
++
++    def clean(self):
++        cleaned = super().clean()
++        # Everything below reaches shell/sed/pwsh in the build workflows.
++        for field, message in validate_build_fields(cleaned).items():
++            if field in self.fields and field not in self.errors:
++                self.add_error(field, message)
++        return cleaned
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index a922375..e11be5d 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -242,10 +242,12 @@
+                 </div>
+             </div>
+         </div>
+-        {% if form.iconfile.errors %}
++        {% if form.errors %}
+             <ul class="errorlist">
+-                {% for error in form.iconfile.errors %}
+-                    <li>{{ error }}</li>
++                {% for field, errors in form.errors.items %}
++                    {% for error in errors %}
++                        <li>{% if field != '__all__' %}{{ field }}: {% endif %}{{ error }}</li>
++                    {% endfor %}
+                 {% endfor %}
+             </ul>
+         {% endif %}
+diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
+new file mode 100644
+index 0000000..e81fc9f
+--- /dev/null
++++ b/rdgenerator/validation.py
+@@ -0,0 +1,89 @@
++"""Server-side validation of every value that ends up in a build script.
++
++The generator workflows interpolate these values into bash/pwsh/sed/perl
++commands (`${{ env.appname }}`, `${{ env.urlLink }}`, ...). Only the
++characters listed here are accepted; the decrypt step in the workflow
++re-checks the same rules (.github/actions/decrypt-secrets/validate.py), so
++a value that slips past one layer is still stopped by the other.
++"""
++import re
++
++_LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
++HOST = rf'(?:{_LABEL}(?:\.{_LABEL})*|\[[0-9A-Fa-f:.]{{2,45}}\])'
++_PORT = r'(?::[0-9]{1,5})?'
++_PATH = r'(?:/[A-Za-z0-9._~/-]*)?'
++
++NAME_CHARS = 'letters, digits, space and . _ ( ) + , -'
++
++RULES = {
++    'appname': (re.compile(r'[A-Za-z0-9][A-Za-z0-9 ._()+,-]{0,63}'),
++                f'1-64 characters: {NAME_CHARS}; must start with a letter or digit'),
++    'compname': (re.compile(r'[A-Za-z0-9 ._()+,-]{1,64}'),
++                 f'1-64 characters: {NAME_CHARS}'),
++    'serverIP': (re.compile(HOST),
++                 'a host name or IP address only (no scheme, no port, no path)'),
++    'serverPort': (re.compile(r'[0-9]{1,5}'), 'a port number'),
++    'key': (re.compile(r'[A-Za-z0-9+/]{43}='),
++            'the 44-character public key from id_ed25519.pub'),
++    'apiServer': (re.compile(rf'(?:https?://)?{HOST}{_PORT}{_PATH}'),
++                  'http(s)://host[:port][/path]'),
++    'urlLink': (re.compile(rf'https?://{HOST}{_PORT}{_PATH}'),
++                'http(s)://host[:port][/path] (no query string)'),
++    'downloadLink': (re.compile(rf'https?://{HOST}{_PORT}{_PATH}'),
++                     'http(s)://host[:port][/path] (no query string)'),
++    'androidappid': (re.compile(r'[A-Za-z][A-Za-z0-9_]{0,40}(?:\.[A-Za-z][A-Za-z0-9_]{0,40}){1,6}'),
++                     'a Java package name such as com.example.remote'),
++}
++
++MANUAL_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
++MAX_MANUAL_CHARS = 8000
++MAX_PASSWORD_CHARS = 128
++MAX_DATA_URI_CHARS = 6 * 1024 * 1024
++
++
++def sanitize_filename(value):
++    """Upstream's rule, minus the \\s hole that let tabs/newlines through."""
++    value = (value or '').strip()
++    if not value or not value.isascii():
++        return 'rustdesk'
++    value = re.sub(r'[^A-Za-z0-9_-]', '_', value)[:64]
++    return value or 'rustdesk'
++
++
++def validate_build_fields(data):
++    """Return {field: message} for every invalid field in `data`."""
++    errors = {}
++    for field, (rx, allowed) in RULES.items():
++        value = data.get(field) or ''
++        if not isinstance(value, str):
++            errors[field] = 'Must be a string.'
++        elif value and not rx.fullmatch(value):
++            errors[field] = f'Unsupported value. Allowed: {allowed}.'
++    port = data.get('serverPort') or ''
++    if isinstance(port, str) and port.isdigit() and not 1 <= int(port) <= 65532:
++        # relay/websocket ports are derived as port+1..port+3
++        errors['serverPort'] = 'Port must be between 1 and 65532.'
++    password = data.get('permanentPassword') or ''
++    if isinstance(password, str) and len(password) > MAX_PASSWORD_CHARS:
++        errors['permanentPassword'] = f'At most {MAX_PASSWORD_CHARS} characters.'
++    for field in ('defaultManual', 'overrideManual'):
++        text = data.get(field) or ''
++        if not isinstance(text, str):
++            errors[field] = 'Must be a string.'
++            continue
++        if len(text) > MAX_MANUAL_CHARS:
++            errors[field] = f'At most {MAX_MANUAL_CHARS} characters.'
++            continue
++        for line in text.splitlines():
++            if '=' in line:
++                key = line.split('=', 1)[0].strip()
++                if not MANUAL_KEY.fullmatch(key):
++                    errors[field] = f'Invalid option name {key[:40]!r}.'
++                    break
++    for field in ('iconbase64', 'logobase64', 'privacybase64'):
++        value = data.get(field) or ''
++        if not isinstance(value, str):
++            errors[field] = 'Must be a data:image/png;base64 string.'
++        elif value and (not value.startswith('data:image/png;base64,') or len(value) > MAX_DATA_URI_CHARS):
++            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
++    return errors
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 03b1ac9..0f76da5 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -14,6 +14,7 @@ import pyzipper
+ from django.conf import settings as _settings
+ from django.db.models import Q
+ from .forms import GenerateForm
++from .validation import sanitize_filename
+ from .models import GithubRun
+ from PIL import Image
+ from urllib.parse import quote
+@@ -118,11 +119,7 @@ def generate_custom_client(params, full_url):
+     enableCamera = params.get('enableCamera', True)
+     enableTerminal = params.get('enableTerminal', True)
+ 
+-    if all(char.isascii() for char in filename):
+-        filename = re.sub(r'[^\w\s-]', '_', filename).strip()
+-        filename = filename.replace(" ","_")
+-    else:
+-        filename = "rustdesk"
++    filename = sanitize_filename(filename)
+     if not all(char.isascii() for char in appname):
+         appname = "rustdesk"
+     myuuid = str(uuid.uuid4())
