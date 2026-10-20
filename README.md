@@ -16,6 +16,10 @@ Download the repo and run the ct script from it:
 curl -fsSL https://github.com/rob-paprocki/rustdesk-cortendesk-pve/archive/refs/heads/stable.tar.gz | tar -xz
 bash rustdesk-cortendesk-pve-stable/ct/rustdesk-cortendesk.sh
 ```
+Or as a one-liner, which fetches the same files from this repository:
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/rob-paprocki/rustdesk-cortendesk-pve/stable/ct/rustdesk-cortendesk.sh)"
+```
 1. Choose Alpine or Debian. Advanced mode lets you set the CT ID, a static IP and the root password (for console/SSH login).
 2. When the install is done, the script asks for:
    - The console admin: username, email and a password of at least 12 characters. The rdgen login uses the same credentials.
