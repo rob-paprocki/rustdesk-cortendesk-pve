@@ -1,4 +1,4 @@
-From c47b79b510fd006669aa79a62a5defb00204b926 Mon Sep 17 00:00:00 2001
+From 4956abb6d1538d7ef4c5464422e531df06444d2a Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Tue, 20 Oct 2026 08:48:57 +0000
 Subject: [PATCH 27/28] builds: slug_appname (upstream's new config key) passes

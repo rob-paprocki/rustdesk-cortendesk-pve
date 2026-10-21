@@ -1,4 +1,4 @@
-From 5f51fbd5a44b177b96aebbf6c897733301779f9c Mon Sep 17 00:00:00 2001
+From 3db3b08ce62223fe434ff022c07096ac767a0186 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 20:09:22 -0400
 Subject: [PATCH 23/28] validation: Windows app names that RustDesk 1.5.0 can

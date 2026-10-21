@@ -1,3 +1,3 @@
 upstream: https://github.com/bryangerlach/rdgen
-base-commit: f1dcd1c421f76b3653857b72e8243bb2637195c7 (master, 2026-10-19, "support 1.5.0 and newer only")
+base-commit: efa1ad40886ca1f06ea26323058e063dd055ab73 (master, 2026-10-20, "use appnam instead of slug_appname for msi")
 patches: 28 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)

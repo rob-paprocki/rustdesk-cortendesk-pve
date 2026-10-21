@@ -1,4 +1,4 @@
-From 10b83981801e446bc761d85318f5f94c2883e9e7 Mon Sep 17 00:00:00 2001
+From 68499fc8bf795f783e57706d8164970d65e67aa3 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/28] workflows: apply tools/pullify.py (pull model, pinned
@@ -2599,7 +2599,7 @@ index c6057f7..e2039ba 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-windows.yml b/.github/workflows/generator-windows.yml
-index 1c9d2cb..963c8b7 100644
+index 8cd127f..ab70280 100644
 --- a/.github/workflows/generator-windows.yml
 +++ b/.github/workflows/generator-windows.yml
 @@ -1,5 +1,5 @@

@@ -1,4 +1,4 @@
-From 44be2cc4e836556fb220218006e179cab5d732f9 Mon Sep 17 00:00:00 2001
+From 06a1fe586f5849d3a0c668164b9b24ce93205cce Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:11:23 -0400
 Subject: [PATCH 12/28] tests: hardening and pull-model test suite with a local

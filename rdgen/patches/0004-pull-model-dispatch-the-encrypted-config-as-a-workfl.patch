@@ -1,4 +1,4 @@
-From 884c29dc63cc6e120f65e73ef4ef6adebd3330f8 Mon Sep 17 00:00:00 2001
+From 947c94ce847fe065421799198b41f52e5873f5ba Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
 Subject: [PATCH 04/28] pull model: dispatch the encrypted config as a workflow

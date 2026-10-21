@@ -1,4 +1,4 @@
-From c18406db95039ea013a643be2b2b32b37e66a00d Mon Sep 17 00:00:00 2001
+From d8f76d5a95fb9e613aaafbbcd8469a197d1698c8 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
 Subject: [PATCH 16/28] linux: build Linux clients under a Linux-safe app name
