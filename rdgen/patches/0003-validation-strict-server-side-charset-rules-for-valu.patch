@@ -1,7 +1,7 @@
-From 700ef2f619c84241efd363115badb4b83298debf Mon Sep 17 00:00:00 2001
+From 2002b894d32b1c3cb1ba52f979dbd72cf70c0faf Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
-Subject: [PATCH 03/26] validation: strict server-side charset rules for values
+Subject: [PATCH 03/28] validation: strict server-side charset rules for values
  that reach build scripts
 
 The generator workflows paste appname, compname, server, key, apiServer,
@@ -40,7 +40,7 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  create mode 100644 rdgenerator/validation.py
 
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 24208b6..7dbbc37 100644
+index 24b759d..cf4553c 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -8,6 +8,8 @@ from django.http import JsonResponse
@@ -118,7 +118,7 @@ index 24208b6..7dbbc37 100644
      # File fields are not used in API mode (base64 fields are used instead)
      cleaned['iconfile'] = None
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 8b7415c..c67203d 100644
+index 68fd407..66566c7 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -3,10 +3,9 @@ import re
@@ -322,10 +322,10 @@ index 0000000..e81fc9f
 +            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
 +    return errors
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 03b1ac9..0f76da5 100644
+index 76082c7..4a9d51d 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -14,6 +14,7 @@ import pyzipper
+@@ -15,6 +15,7 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm
@@ -333,7 +333,7 @@ index 03b1ac9..0f76da5 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -118,11 +119,7 @@ def generate_custom_client(params, full_url):
+@@ -120,11 +121,7 @@ def generate_custom_client(params, full_url):
      enableCamera = params.get('enableCamera', True)
      enableTerminal = params.get('enableTerminal', True)
  

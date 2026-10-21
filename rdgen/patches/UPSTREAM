@@ -1,3 +1,3 @@
 upstream: https://github.com/bryangerlach/rdgen
-base-commit: e8ea259e9b13dbfdfd8062d4d0848db2cb0bf28c (master, 2026-10-18, "cargo lock")
-patches: 26 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)
+base-commit: f1dcd1c421f76b3653857b72e8243bb2637195c7 (master, 2026-10-19, "support 1.5.0 and newer only")
+patches: 28 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)

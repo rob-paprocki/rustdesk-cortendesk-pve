@@ -1,7 +1,7 @@
-From c774622b9497f86a6628f644bafe2a5850fe3ec6 Mon Sep 17 00:00:00 2001
+From c021b3398f1843f5b058d977682e3a2bdd20646a Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 19:11:10 -0400
-Subject: [PATCH 18/26] builds: delete a finished build from Recent builds
+Subject: [PATCH 18/28] builds: delete a finished build from Recent builds
 
 rdgen keeps its own copy of every build for RDGEN_RETENTION_DAYS, apart
 from any copy a console imported, so deleting a client in the console
@@ -334,10 +334,10 @@ index 0000000..26eda3f
 +        discard_build(run)
 +        self.assertEqual(self.c.get(f'/api/status?uuid={run.uuid}', **h).status_code, 404)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 80a7aed..956248c 100644
+index 36a89bc..54207ca 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -21,7 +21,7 @@ from django.views.decorators.http import require_http_methods, require_safe
+@@ -22,7 +22,7 @@ from django.views.decorators.http import require_http_methods, require_safe
  from . import buildcfg, github
  from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun, ShareLink
@@ -346,7 +346,7 @@ index 80a7aed..956248c 100644
  from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
  
  log = logging.getLogger(__name__)
-@@ -363,7 +363,7 @@ def _get_run_status(uuid_val):
+@@ -366,7 +366,7 @@ def _get_run_status(uuid_val):
      """
      if not valid_uuid(uuid_val):
          return {"found": False}
@@ -355,7 +355,7 @@ index 80a7aed..956248c 100644
      if gh_run is None:
          return {"found": False}
      return {
-@@ -447,7 +447,7 @@ def stored_file(gh_run, filename):
+@@ -450,7 +450,7 @@ def stored_file(gh_run, filename):
      filename must be a plain name listed in the build's manifest, and the
      resolved path must stay inside the build directory.
      """
@@ -364,7 +364,7 @@ index 80a7aed..956248c 100644
          return None
      if filename not in {f['name'] for f in build_files(gh_run)}:
          return None
-@@ -532,6 +532,14 @@ def builds_view(request):
+@@ -546,6 +546,14 @@ def builds_view(request):
              link = ShareLink.objects.create(build=gh_run, token=secrets.token_urlsafe(32), expires_at=expires,
                                              created_by=request.user.get_username())
              return _builds_redirect(gh_run, link.id)
@@ -379,7 +379,7 @@ index 80a7aed..956248c 100644
          if action == 'delete_link':
              link_id = request.POST.get('link', '')
              link = ShareLink.objects.select_related('build').filter(pk=int(link_id)).first() if link_id.isdigit() else None
-@@ -548,7 +556,7 @@ def builds_view(request):
+@@ -562,7 +570,7 @@ def builds_view(request):
          new = None
      since = now - timedelta(days=_settings.RDGEN_RETENTION_DAYS)
      rows = []
@@ -388,7 +388,7 @@ index 80a7aed..956248c 100644
          state = 'ready' if gh_run.status == 'success' else ('failed' if gh_run.is_terminal else 'building')
          links = [{'id': link.id, 'url': share_url(request, link), 'expires_at': link.expires_at,
                    'downloads': link.downloads, 'last_download_at': link.last_download_at,
-@@ -579,7 +587,7 @@ def _active_link(token):
+@@ -593,7 +601,7 @@ def _active_link(token):
      if not TOKEN_RE.fullmatch(token or ''):
          return None
      link = ShareLink.objects.select_related('build').filter(token=token).first()

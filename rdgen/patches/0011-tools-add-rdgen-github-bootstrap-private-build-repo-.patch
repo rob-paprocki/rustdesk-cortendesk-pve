@@ -1,7 +1,7 @@
-From e5a9a85e774fc612c7cff44f001285fa17b98f87 Mon Sep 17 00:00:00 2001
+From ed8db4dbe56aa814ee82ca545d29640b0d64204b Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:05:56 -0400
-Subject: [PATCH 11/26] tools: add rdgen-github-bootstrap (private build repo
+Subject: [PATCH 11/28] tools: add rdgen-github-bootstrap (private build repo
  setup and upstream updates)
 
 Python (stdlib + requests + PyNaCl; py3-pynacl 1.6.2 on Alpine 3.24,

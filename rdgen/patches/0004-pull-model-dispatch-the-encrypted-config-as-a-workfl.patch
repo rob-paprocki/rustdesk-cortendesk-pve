@@ -1,7 +1,7 @@
-From 223553bb814e25d1296bd4a92379b0f479934f0c Mon Sep 17 00:00:00 2001
+From 884c29dc63cc6e120f65e73ef4ef6adebd3330f8 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
-Subject: [PATCH 04/26] pull model: dispatch the encrypted config as a workflow
+Subject: [PATCH 04/28] pull model: dispatch the encrypted config as a workflow
  input
 
 Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back
@@ -99,7 +99,7 @@ index f7c3100..4e90663 100644
  MEDIA_URL = '/media/'
  MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 7dbbc37..7276f75 100644
+index cf4553c..6d0a4ad 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -4,6 +4,7 @@ import re
@@ -286,7 +286,7 @@ index 0000000..75a5fe8
 +        'Use simpler PNGs (flat colours, no photos), drop the privacy image, '
 +        'or shorten the default/override settings.')
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index c67203d..ff31fa2 100644
+index 66566c7..b54e793 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -8,7 +8,6 @@ from .validation import validate_build_fields
@@ -296,7 +296,7 @@ index c67203d..ff31fa2 100644
 -    sh_secret_field = forms.CharField(required=False)
      #Platform
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0'),('1.4.9','1.4.9'),('1.4.8','1.4.8'),('1.4.7','1.4.7'),('1.4.6','1.4.6'),('1.4.5','1.4.5'),('1.4.4','1.4.4'),('1.4.3','1.4.3'),('1.4.2','1.4.2'),('1.4.1','1.4.1'),('1.4.0','1.4.0')], initial='1.5.0')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0')], initial='1.5.0')
 diff --git a/rdgenerator/github.py b/rdgenerator/github.py
 new file mode 100644
 index 0000000..acf114e
@@ -529,10 +529,10 @@ index e81fc9f..6154f0b 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 0f76da5..0c1e55d 100644
+index 4a9d51d..81748f2 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -14,7 +14,35 @@ import pyzipper
+@@ -15,7 +15,35 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm
@@ -569,7 +569,7 @@ index 0f76da5..0c1e55d 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -32,20 +60,19 @@ def _safe_parts(uuid_val, filename):
+@@ -33,20 +61,19 @@ def _safe_parts(uuid_val, filename):
      return True
  
  
@@ -591,9 +591,9 @@ index 0f76da5..0c1e55d 100644
 -    user_secret = params.get('sh_secret_field', '')
 -    selfhosted = (_settings.SH_SECRET == user_secret)
      platform = params.get('platform', 'windows')
-     version = params.get('version', '1.4.9')
+     version = params.get('version', '1.5.0')
      app_version = params.get('app_version', '')
-@@ -68,14 +95,15 @@ def generate_custom_client(params, full_url):
+@@ -69,14 +96,15 @@ def generate_custom_client(params, full_url):
      apiServer = params.get('apiServer', '')
      urlLink = params.get('urlLink', '')
      downloadLink = params.get('downloadLink', '')
@@ -612,7 +612,7 @@ index 0f76da5..0c1e55d 100644
      if not urlLink:
          urlLink = "https://rustdesk.com"
      if not downloadLink:
-@@ -124,36 +152,22 @@ def generate_custom_client(params, full_url):
+@@ -126,36 +154,22 @@ def generate_custom_client(params, full_url):
          appname = "rustdesk"
      myuuid = str(uuid.uuid4())
  
@@ -664,7 +664,7 @@ index 0f76da5..0c1e55d 100644
  
      ###create the custom.txt json here and send in as inputs below
      decodedCustom = {}
-@@ -246,24 +260,6 @@ def generate_custom_client(params, full_url):
+@@ -248,24 +262,6 @@ def generate_custom_client(params, full_url):
      base64_bytes = base64.b64encode(string_bytes)
      encodedCustom = base64_bytes.decode("ascii")
  
@@ -689,7 +689,7 @@ index 0f76da5..0c1e55d 100644
      inputs_raw = {
          "server":server,
          "serverPort":serverPort,
-@@ -272,16 +268,9 @@ def generate_custom_client(params, full_url):
+@@ -274,17 +270,10 @@ def generate_custom_client(params, full_url):
          "custom":encodedCustom,
          "uuid":myuuid,
          "iconlink_url":iconlink_url,
@@ -702,11 +702,12 @@ index 0f76da5..0c1e55d 100644
 -        "privacylink_uuid":privacylink_uuid,
 -        "privacylink_file":privacylink_file,
          "appname":appname,
+         "slug_appname":slug_appname,
 -        "genurl":_settings.GENURL,
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -294,74 +283,57 @@ def generate_custom_client(params, full_url):
+@@ -297,74 +286,57 @@ def generate_custom_client(params, full_url):
          "filename":filename
      }
  
@@ -717,17 +718,17 @@ index 0f76da5..0c1e55d 100644
 -
 -    with open(temp_json_path, "w") as f:
 -        json.dump(inputs_raw, f)
-+    if not github.configured():
-+        return {"success": False, "status_code": 503,
-+                "error": "The GitHub build repository is not configured (GHUSER/REPONAME/GHBEARER)."}
- 
+-
 -    with pyzipper.AESZipFile(zip_path, 'w', compression=pyzipper.ZIP_LZMA, encryption=pyzipper.WZ_AES) as zf:
 -        zf.setpassword(_settings.ZIP_PASSWORD.encode())
 -        zf.write(temp_json_path, arcname="secrets.json")
 -
 -    if os.path.exists(temp_json_path):
 -        os.remove(temp_json_path)
--
++    if not github.configured():
++        return {"success": False, "status_code": 503,
++                "error": "The GitHub build repository is not configured (GHUSER/REPONAME/GHBEARER)."}
+ 
 -    zipJson = {}
 -    zipJson['url'] = full_url
 -    zipJson['file'] = zip_filename
@@ -826,7 +827,7 @@ index 0f76da5..0c1e55d 100644
  
  
  def _get_run_status(uuid_val):
-@@ -413,8 +385,7 @@ def generator_view(request):
+@@ -416,8 +388,7 @@ def generator_view(request):
          form = GenerateForm(request.POST, request.FILES)
          if form.is_valid():
              params = form.cleaned_data
@@ -836,7 +837,7 @@ index 0f76da5..0c1e55d 100644
              if result['success']:
                  return render(request, 'waiting.html', {
                      'filename': result['filename'],
-@@ -423,10 +394,9 @@ def generator_view(request):
+@@ -426,10 +397,9 @@ def generator_view(request):
                      'platform': result['platform'],
                      'log_url': result['log_url']
                  })

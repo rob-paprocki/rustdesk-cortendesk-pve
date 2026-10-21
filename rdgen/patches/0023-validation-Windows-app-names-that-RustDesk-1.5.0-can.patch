@@ -1,7 +1,7 @@
-From d68afdba821128ef4031859d69a6c88730379b78 Mon Sep 17 00:00:00 2001
+From 5f51fbd5a44b177b96aebbf6c897733301779f9c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 20:09:22 -0400
-Subject: [PATCH 23/26] validation: Windows app names that RustDesk 1.5.0 can
+Subject: [PATCH 23/28] validation: Windows app names that RustDesk 1.5.0 can
  install
 
 From 1.5.0 on, RustDesk's Windows installer refuses to install unless the

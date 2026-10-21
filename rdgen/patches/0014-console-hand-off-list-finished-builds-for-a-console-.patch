@@ -1,7 +1,7 @@
-From 4c6eac1d8d38ab3d352ee777370872f56f9f9d70 Mon Sep 17 00:00:00 2001
+From 2cd1e2328c9e794fabb77a66e47d853c728d0767 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
-Subject: [PATCH 14/26] console hand-off: list finished builds for a console's
+Subject: [PATCH 14/28] console hand-off: list finished builds for a console's
  client downloads
 
 A per-build choice (no / hidden / published, default RDGEN_PUBLISH_DEFAULT;
@@ -102,7 +102,7 @@ index 4e90663..2df970c 100644
  # Empty disables token auth; the API then only accepts a logged-in session.
  RDGEN_API_TOKEN = env('RDGEN_API_TOKEN', '')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index fafa7fa..f0832ea 100644
+index 3d6cbe0..9a9ade0 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -6,7 +6,7 @@ from django.core.exceptions import RequestDataTooBig
@@ -128,7 +128,7 @@ index fafa7fa..f0832ea 100644
      for field, message in validate_build_fields(cleaned).items():
          errors.setdefault(field, message)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index a00ba49..6433816 100644
+index 3c313b1..2dd1740 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -1,4 +1,5 @@
@@ -573,10 +573,10 @@ index 0000000..0fcd342
 +        from django.contrib.auth import get_user_model
 +        return get_user_model().objects.create_user('tester', password='x' * 16)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 2c6d664..e976f5a 100644
+index df6cadd..a79c7a0 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -12,7 +12,7 @@ from django.urls import reverse
+@@ -14,7 +14,7 @@ from django.urls import reverse
  from django.utils import timezone
  
  from . import buildcfg, github
@@ -585,7 +585,7 @@ index 2c6d664..e976f5a 100644
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
  from .validation import sanitize_filename, validate_build_fields
-@@ -133,6 +133,12 @@ def generate_custom_client(params, full_url=None):
+@@ -136,6 +136,12 @@ def generate_custom_client(params, full_url=None):
      filename = sanitize_filename(filename)
      if not all(char.isascii() for char in appname):
          appname = "rustdesk"
@@ -598,7 +598,7 @@ index 2c6d664..e976f5a 100644
      myuuid = str(uuid.uuid4())
  
      # Images travel inside the encrypted cfg input (pull model): no /get_png
-@@ -294,6 +300,9 @@ def generate_custom_client(params, full_url=None):
+@@ -298,6 +304,9 @@ def generate_custom_client(params, full_url=None):
          platform=platform,
          filename=filename,
          version=version,
@@ -608,7 +608,7 @@ index 2c6d664..e976f5a 100644
      )
      try:
          run_id, html_url = github.GitHub().dispatch(platform, inputs)
-@@ -370,7 +379,7 @@ def generator_view(request):
+@@ -374,7 +383,7 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')
@@ -617,7 +617,7 @@ index 2c6d664..e976f5a 100644
  
  
  def check_for_file(request):
-@@ -386,6 +395,10 @@ def check_for_file(request):
+@@ -390,6 +399,10 @@ def check_for_file(request):
          'log_url': result['github_log_url'],
          'files': build_files(gh_run),
          'last_error': gh_run.last_error,

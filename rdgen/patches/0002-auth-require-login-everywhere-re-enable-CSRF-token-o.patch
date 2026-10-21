@@ -1,7 +1,7 @@
-From 319c6d369fcfb2fc2c8ee5be5e5a9f5954cc68fd Mon Sep 17 00:00:00 2001
+From a3d19e5d9e33c790864dcd0802490bc8f5d74c3c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
-Subject: [PATCH 02/26] auth: require login everywhere, re-enable CSRF, token
+Subject: [PATCH 02/28] auth: require login everywhere, re-enable CSRF, token
  or session for /api
 
 - Add LoginRequiredMiddleware (Django >= 5.1; Alpine 3.24 ships 5.2.17).
@@ -148,7 +148,7 @@ index d28debe..5aa8265 100644
 +    path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
  ]
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 0fc1348..24208b6 100644
+index a68e56f..24b759d 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,7 +1,12 @@

@@ -1,7 +1,7 @@
-From 3ab060e98ac62e935eb89957ac6f9000d42bc2a5 Mon Sep 17 00:00:00 2001
+From 228a8f36110b41187ab2441353bc4b57808cff73 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:03:12 -0400
-Subject: [PATCH 08/26] tools: add pullify.py, a rewriter that turns upstream
+Subject: [PATCH 08/28] tools: add pullify.py, a rewriter that turns upstream
  workflows into pull-model ones
 
 The generator workflows are ~5,000 lines of YAML that upstream changes
@@ -52,16 +52,16 @@ tree. --check only reports (exit 1 when a rewrite is pending).
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
- tools/pullify.py | 1115 ++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 1115 insertions(+)
+ tools/pullify.py | 1116 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 1116 insertions(+)
  create mode 100755 tools/pullify.py
 
 diff --git a/tools/pullify.py b/tools/pullify.py
 new file mode 100755
-index 0000000..ea9a9a6
+index 0000000..6867d5d
 --- /dev/null
 +++ b/tools/pullify.py
-@@ -0,0 +1,1115 @@
+@@ -0,0 +1,1116 @@
 +#!/usr/bin/env python3
 +"""Rewrite upstream rdgen generator workflows for the pull model.
 +
@@ -146,6 +146,7 @@ index 0000000..ea9a9a6
 +# release; other branch refs are pinned to the branch head of that day.
 +PINS = {
 +    'actions/cache@v4': ('0057852bfaa89a56745cba8c7296529d2fc39830', 'v4'),
++    'actions/cache/save@v4': ('0057852bfaa89a56745cba8c7296529d2fc39830', 'v4'),
 +    'actions/checkout@v4': ('11d5960a326750d5838078e36cf38b85af677262', 'v4'),
 +    'actions/checkout@v5': ('fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09', 'v5'),
 +    'actions/download-artifact@master': ('3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c', 'v8.0.1 (was @master)'),
@@ -356,8 +357,8 @@ index 0000000..ea9a9a6
 +                    'cp ./custom_.txt ./flutter/tmpdeb/usr/share/rustdesk/custom_.txt\n')
 +LINUX_CUSTOM_NEW = ('mkdir -p "flutter/tmpdeb/usr/share/${{ env.appname }}"\n',
 +                    'cp ./custom_.txt "./flutter/tmpdeb/usr/share/${{ env.appname }}/custom_.txt"\n')
-+FLATPAK_ID_OLD = 'FLAT="$(echo "${{ env.appname }}" | tr -d \' \')"\n'
-+FLATPAK_ID_NEW = ('FLAT="$(printf \'%s\' "${{ env.appname }}" | tr -cd \'A-Za-z0-9\')"; '
++FLATPAK_ID_OLD = 'FLAT="$(echo "${{ env.slug_appname }}" | tr -d \' \')"\n'
++FLATPAK_ID_NEW = ('FLAT="$(printf \'%s\' "${{ env.slug_appname }}" | tr -cd \'A-Za-z0-9\')"; '
 +                  'case "$FLAT" in \'\'|[0-9]*) FLAT="app$FLAT";; esac\n')
 +# the metainfo's launchable names the exported desktop file, which flatpak renames to <app id>.desktop
 +FLATPAK_METAINFO_ID = 'sed -ie "s|<id>com[^<]*</id>|<id>${BUNDLE_ID}</id>|" flatpak/*.metainfo.xml\n'

@@ -1,7 +1,7 @@
-From 8dab3bf79fa35d1c6a63d24a5b25e350d888ba2b Mon Sep 17 00:00:00 2001
+From 965072886e752a477d902af585698ff76222fd86 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
-Subject: [PATCH 21/26] builds on machines of your own: Linux and Windows
+Subject: [PATCH 21/28] builds on machines of your own: Linux and Windows
  runners, Linux choices
 
 Self-hosted runners cost no Actions minutes. The workflow side
@@ -82,7 +82,7 @@ index e6c7e5d..bc25a2b 100644
  ## 2. Native install (Alpine 3.24, or Debian 13)
  
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 2510fca..695d729 100644
+index 803cd3e..7364735 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -23,6 +23,7 @@ PASS_APPROVE_MODE_CHOICES = ['password', 'click', 'password-click']
@@ -103,7 +103,7 @@ index 2510fca..695d729 100644
      for field, (choices, default) in choice_validations.items():
          value = data.get(field, default)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 068606b..efcb5ba 100644
+index b2bf94b..8e3bad5 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -11,6 +11,11 @@ class GenerateForm(forms.Form):
@@ -116,7 +116,7 @@ index 068606b..efcb5ba 100644
 +    linuxFormats = forms.ChoiceField(choices=[('all', '.deb, .rpm, AppImage and Flatpak'), ('deb', '.deb and .rpm only')],
 +                                     initial='all', required=False)
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0'),('1.4.9','1.4.9'),('1.4.8','1.4.8'),('1.4.7','1.4.7'),('1.4.6','1.4.6'),('1.4.5','1.4.5'),('1.4.4','1.4.4'),('1.4.3','1.4.3'),('1.4.2','1.4.2'),('1.4.1','1.4.1'),('1.4.0','1.4.0')], initial='1.5.0')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0')], initial='1.5.0')
      help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
 diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
 index 2cc7ece..1e7d6cd 100644
@@ -211,10 +211,10 @@ index ecb02b1..7beb1e9 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 2a88f63..4b64264 100644
+index 889598c..8f1259e 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -74,8 +74,12 @@ def generate_custom_client(params, full_url=None):
+@@ -75,8 +75,12 @@ def generate_custom_client(params, full_url=None):
      # without changing the git tag that version selects. If left empty, the
      # RustDesk build's own version (from the checked-out tag) is used.
      mac_arch = params.get('macArch') or 'both'
@@ -229,7 +229,7 @@ index 2a88f63..4b64264 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -318,6 +322,10 @@ def generate_custom_client(params, full_url=None):
+@@ -321,6 +325,10 @@ def generate_custom_client(params, full_url=None):
          # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
          if platform == 'macos' and mac_arch != 'both':
              result["mac_arch"] = mac_arch

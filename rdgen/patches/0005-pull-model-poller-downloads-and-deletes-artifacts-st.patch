@@ -1,7 +1,7 @@
-From 42dd7c1c731f9acf9ca7f4170dacbcc41e8a30d7 Mon Sep 17 00:00:00 2001
+From 05ac522d3b9d60a196b362460f024e76c6848cdc Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
-Subject: [PATCH 05/26] pull model: poller downloads and deletes artifacts;
+Subject: [PATCH 05/28] pull model: poller downloads and deletes artifacts;
  status and downloads from the DB
 
 New `manage.py rdgen_poll` (run as a supervised service) and
@@ -63,10 +63,10 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  rdgenerator/poller.py                         | 367 ++++++++++++++++++
  rdgenerator/templates/_files.html             |   8 +
  rdgenerator/templates/failure.html            |  34 +-
- rdgenerator/templates/generated.html          |  30 +-
+ rdgenerator/templates/generated.html          |  21 +-
  rdgenerator/templates/waiting.html            |   6 +-
- rdgenerator/views.py                          | 146 ++++---
- 10 files changed, 547 insertions(+), 166 deletions(-)
+ rdgenerator/views.py                          | 195 ++++------
+ 10 files changed, 547 insertions(+), 206 deletions(-)
  create mode 100644 rdgenerator/management/commands/rdgen_poll.py
  create mode 100644 rdgenerator/management/commands/rdgen_prune.py
  create mode 100644 rdgenerator/poller.py
@@ -85,7 +85,7 @@ index 5aa8265..274bbfd 100644
      path('accounts/login/', auth_views.LoginView.as_view(redirect_authenticated_user=True), name='login'),
      path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 7276f75..f5d0254 100644
+index 6d0a4ad..73ca85a 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,5 +1,4 @@
@@ -692,46 +692,38 @@ index 40482d2..223d31c 100644
          <div id="platformNote" class="platform-note"></div>
          <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
 diff --git a/rdgenerator/templates/generated.html b/rdgenerator/templates/generated.html
-index 067d495..2afcd43 100644
+index e2104c0..2afcd43 100644
 --- a/rdgenerator/templates/generated.html
 +++ b/rdgenerator/templates/generated.html
-@@ -126,35 +126,7 @@
+@@ -126,27 +126,8 @@
      <div>
          <h2 class="success-text">Build Generated Successfully</h2>
          <div class="download-section">
--            {% if platform == 'windows' %}
--                <a href='/download?filename={{filename}}.exe&uuid={{uuid}}' class="download-link">Download {{filename}}.exe</a>
--                <a href='/download?filename={{filename}}.msi&uuid={{uuid}}' class="download-link">Download {{filename}}.msi</a>
--            {% elif platform == 'windows-x86' %}
--                <a href='/download?filename={{filename}}.exe&uuid={{uuid}}' class="download-link">Download {{filename}}.exe</a>
--            {% elif platform == 'linux' %}
--                <a href='/download?filename={{filename}}-x86_64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.deb</a>
--                <a href='/download?filename={{filename}}-unattended-wayland-x86_64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-unattended-wayland-x86_64.deb</a>
--                <a href='/download?filename={{filename}}-x86_64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.rpm</a>
--                <a href='/download?filename={{filename}}-suse-x86_64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-suse-x86_64.rpm</a>
--                <a href='/download?filename={{filename}}-x86_64.pkg.tar.zst&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.pkg.tar.zst</a>
--                <a href='/download?filename={{filename}}-aarch64.deb&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.deb</a>
--                <a href='/download?filename={{filename}}-aarch64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.rpm</a>
--                <a href='/download?filename={{filename}}-suse-aarch64.rpm&uuid={{uuid}}' class="download-link">Download {{filename}}-suse-aarch64.rpm</a>
--                <a href='/download?filename={{filename}}-aarch64.pkg.tar.zst&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.pkg.tar.zst</a>
--                <a href='/download?filename={{filename}}-x86_64.AppImage&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.AppImage</a>
--                <a href='/download?filename={{filename}}-aarch64.AppImage&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.AppImage</a>
--                <a href='/download?filename={{filename}}-x86_64.flatpak&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.flatpak</a>
--                <a href='/download?filename={{filename}}-aarch64.flatpak&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.flatpak</a>
--            {% elif platform == 'android' %}
--                <a href='/download?filename={{filename}}-aarch64.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.apk</a>
--                <a href='/download?filename={{filename}}-x86_64.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.apk</a>
--                <a href='/download?filename={{filename}}-armv7.apk&uuid={{uuid}}' class="download-link">Download {{filename}}-armv7.apk</a>
--            {% elif platform == 'macos' %}
--                <a href='/download?filename={{filename}}-x86_64.dmg&uuid={{uuid}}' class="download-link">Download {{filename}}-x86_64.dmg</a>
--                <a href='/download?filename={{filename}}-aarch64.dmg&uuid={{uuid}}' class="download-link">Download {{filename}}-aarch64.dmg</a>
+-            {% if existing_files %}
+-                {% for f in existing_files %}
+-                    <a href='/download?filename={{ f }}&uuid={{ uuid }}' class="download-link">Download {{ f }}</a>
+-                {% endfor %}
 -            {% else %}
--                <p>Error: No file generated</p>
+-                <p>No files available for download.</p>
 -            {% endif %}
 +            {% include '_files.html' %}
          </div>
+-
+-        {% if missing_files %}
+-        <div class="failed-section">
+-            <h3 style="color: #d32f2f; margin-top: 20px;">Failed Builds</h3>
+-            <p>The following files were not generated (the build for these may have failed):</p>
+-            <ul style="text-align: left; display: inline-block; margin: 0 auto;">
+-                {% for f in missing_files %}
+-                    <li style="color: #d32f2f;">{{ f }}</li>
+-                {% endfor %}
+-            </ul>
+-            <p>View full build log: <a href="{{ github_log_url }}" target="_blank" style="color: #3498db;">GitHub Actions Run</a></p>
+-        </div>
+-        {% endif %}
      </div>
  
+     <div id="platformNote" class="platform-note"></div>
 diff --git a/rdgenerator/templates/waiting.html b/rdgenerator/templates/waiting.html
 index 726451a..eb1f801 100644
 --- a/rdgenerator/templates/waiting.html
@@ -760,7 +752,7 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 0c1e55d..5af49c6 100644
+index 81748f2..b88db66 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,6 +1,8 @@
@@ -773,7 +765,7 @@ index 0c1e55d..5af49c6 100644
  from django.shortcuts import render, get_object_or_404
  from django.core.files.base import ContentFile
  import os
-@@ -16,6 +18,7 @@ from django.db.models import Q
+@@ -17,6 +19,7 @@ from django.db.models import Q
  from .forms import GenerateForm
  from .validation import sanitize_filename, validate_build_fields
  from . import buildcfg, github
@@ -781,7 +773,7 @@ index 0c1e55d..5af49c6 100644
  from django.utils import timezone
  import logging
  
-@@ -338,48 +341,37 @@ def generate_custom_client(params, full_url=None):
+@@ -341,48 +344,37 @@ def generate_custom_client(params, full_url=None):
  
  def _get_run_status(uuid_val):
      """
@@ -852,9 +844,46 @@ index 0c1e55d..5af49c6 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -402,56 +394,54 @@ def generator_view(request):
+@@ -404,106 +396,55 @@ def generator_view(request):
+     return render(request, 'generator.html', {'form': form})
  
  
+-def _expected_files_for_platform(filename, platform):
+-    """Return the list of expected output filenames for a given platform."""
+-    if platform == 'windows':
+-        return [f"{filename}.exe", f"{filename}.msi"]
+-    elif platform == 'windows-x86':
+-        return [f"{filename}.exe"]
+-    elif platform == 'linux':
+-        return [
+-            f"{filename}-x86_64.deb",
+-            f"{filename}-unattended-wayland-x86_64.deb",
+-            f"{filename}-x86_64.rpm",
+-            f"{filename}-suse-x86_64.rpm",
+-            f"{filename}-x86_64.pkg.tar.zst",
+-            f"{filename}-aarch64.deb",
+-            f"{filename}-aarch64.rpm",
+-            f"{filename}-suse-aarch64.rpm",
+-            f"{filename}-aarch64.pkg.tar.zst",
+-            f"{filename}-x86_64.AppImage",
+-            f"{filename}-aarch64.AppImage",
+-            f"{filename}-x86_64.flatpak",
+-            f"{filename}-aarch64.flatpak",
+-        ]
+-    elif platform == 'android':
+-        return [
+-            f"{filename}-aarch64.apk",
+-            f"{filename}-x86_64.apk",
+-            f"{filename}-armv7.apk",
+-        ]
+-    elif platform == 'macos':
+-        return [
+-            f"{filename}-x86_64.dmg",
+-            f"{filename}-aarch64.dmg",
+-        ]
+-    return []
+-
+-
  def check_for_file(request):
 -    filename = request.GET.get('filename')
 -    uuid = request.GET.get('uuid')
@@ -879,10 +908,23 @@ index 0c1e55d..5af49c6 100644
 +        'last_error': gh_run.last_error,
 +    }
      if gh_run.status == "success":
+-        expected = _expected_files_for_platform(filename, platform)
+-        existing_files = []
+-        missing_files = []
+-        for f in expected:
+-            file_path = os.path.join('exe', uuid, f)
+-            if os.path.isfile(file_path):
+-                existing_files.append(f)
+-            else:
+-                missing_files.append(f)
+-
 -        return render(request, 'generated.html', {
--            'filename': filename, 
--            'uuid': uuid, 
--            'platform': platform
+-            'filename': filename,
+-            'uuid': uuid,
+-            'platform': platform,
+-            'existing_files': existing_files,
+-            'missing_files': missing_files,
+-            'github_log_url': github_log_url,
 -        })
 -        
 -    elif gh_run.status in ['failure', 'cancelled', 'timed_out', 'skipped', 'action_required']:

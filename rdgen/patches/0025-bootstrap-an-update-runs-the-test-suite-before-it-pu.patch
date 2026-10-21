@@ -1,7 +1,7 @@
-From 8578bd2b3ada165768de0d7b0bad132bdb3db119 Mon Sep 17 00:00:00 2001
+From 025508672c9408fa2979647a5839375825fab88f Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sun, 18 Oct 2026 16:17:48 -0400
-Subject: [PATCH 25/26] bootstrap: an update runs the test suite before it
+Subject: [PATCH 25/28] bootstrap: an update runs the test suite before it
  pushes
 
 verify_tree (init and the daily update) ran compileall, pullify --check,

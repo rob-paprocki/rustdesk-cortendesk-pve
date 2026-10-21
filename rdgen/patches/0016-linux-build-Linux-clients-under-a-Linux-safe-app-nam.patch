@@ -1,7 +1,7 @@
-From 863d251976967232c1d67b39aa7bf0255d8fb48c Mon Sep 17 00:00:00 2001
+From c18406db95039ea013a643be2b2b32b37e66a00d Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
-Subject: [PATCH 16/26] linux: build Linux clients under a Linux-safe app name
+Subject: [PATCH 16/28] linux: build Linux clients under a Linux-safe app name
 
 A Linux build with the app name "Rescue Client (Rob Paprocki)" failed in
 build.py: the workflow writes the name into unquoted shell commands
@@ -8315,10 +8315,10 @@ index 6154f0b..7833032 100644
      """Upstream's rule, minus the \\s hole that let tabs/newlines through."""
      value = (value or '').strip()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 10a396f..20bd9ca 100644
+index 0752d14..797e37a 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -16,7 +16,7 @@ from . import buildcfg, github
+@@ -18,7 +18,7 @@ from . import buildcfg, github
  from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
@@ -8327,7 +8327,7 @@ index 10a396f..20bd9ca 100644
  
  log = logging.getLogger(__name__)
  
-@@ -138,6 +138,12 @@ def generate_custom_client(params, full_url=None):
+@@ -141,6 +141,12 @@ def generate_custom_client(params, full_url=None):
      filename = sanitize_filename(filename)
      if not all(char.isascii() for char in appname):
          appname = "rustdesk"

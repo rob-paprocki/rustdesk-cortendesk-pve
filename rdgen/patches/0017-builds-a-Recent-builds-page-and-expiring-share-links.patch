@@ -1,7 +1,7 @@
-From 6a4cc83804aba2c151d544b084ad1f9137584ecf Mon Sep 17 00:00:00 2001
+From b78e86e396b15daa7f4e9ad46e665cbcd70d9a51 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 16:17:32 -0400
-Subject: [PATCH 17/26] builds: a Recent builds page and expiring share links
+Subject: [PATCH 17/28] builds: a Recent builds page and expiring share links
 
 Once you left a build's result page there was no way back to it, so a
 build that should not go on a public download page (a client with a
@@ -40,8 +40,8 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  rdgenerator/templates/generator.html     |   1 +
  rdgenerator/templates/share.html         |  46 ++++++
  rdgenerator/tests/test_share.py          | 166 +++++++++++++++++++++
- rdgenerator/views.py                     | 179 +++++++++++++++++++++--
- 13 files changed, 611 insertions(+), 12 deletions(-)
+ rdgenerator/views.py                     | 178 +++++++++++++++++++++--
+ 13 files changed, 610 insertions(+), 12 deletions(-)
  create mode 100644 rdgenerator/migrations/0005_sharelink.py
  create mode 100644 rdgenerator/templates/builds.html
  create mode 100644 rdgenerator/templates/share.html
@@ -624,14 +624,13 @@ index 0000000..4ebf0ea
 +        prune_local()
 +        self.assertFalse(ShareLink.objects.exists())
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 20bd9ca..80a7aed 100644
+index 797e37a..36a89bc 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -3,18 +3,24 @@ import functools
- import json
- import logging
+@@ -5,18 +5,23 @@ import logging
  import os
-+import re
+ import re
+ import unicodedata
 +import secrets
  import uuid
 +from datetime import timedelta
@@ -654,7 +653,7 @@ index 20bd9ca..80a7aed 100644
  from .poller import allowed_output_name, valid_uuid
  from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
  
-@@ -435,6 +441,23 @@ def check_for_file(request):
+@@ -439,6 +444,23 @@ def check_for_file(request):
      return render(request, 'waiting.html', context)
  
  
@@ -678,7 +677,7 @@ index 20bd9ca..80a7aed 100644
  def serve_build_file(request):
      """Stream one stored build output.
  
-@@ -447,14 +470,10 @@ def serve_build_file(request):
+@@ -451,14 +473,10 @@ def serve_build_file(request):
      """
      uuid_val = request.GET.get('uuid', '')
      filename = request.GET.get('filename', '')
@@ -696,10 +695,10 @@ index 20bd9ca..80a7aed 100644
          raise Http404("Not found")
      return FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
                          content_type='application/octet-stream')
-@@ -462,3 +481,145 @@ def serve_build_file(request):
- 
- def download(request):
-     return serve_build_file(request)
+@@ -477,3 +495,145 @@ def slugify(text):
+     text = re.sub(r"[^\w\s-]", "", text.lower()).strip()
+     # Replace whitespace and hyphens with a single hyphen
+     return re.sub(r"[-\s]+", "-", text)
 +
 +
 +# --- recent builds and share links ---------------------------------------------------------------

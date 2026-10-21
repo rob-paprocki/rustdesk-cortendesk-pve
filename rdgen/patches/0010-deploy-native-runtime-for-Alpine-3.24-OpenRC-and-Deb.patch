@@ -1,7 +1,7 @@
-From 3ecc6da4a453d5b44f10f43b10a9064b3c87265e Mon Sep 17 00:00:00 2001
+From 566f9d23f83c1ad99c0232b681b6c7954339752d Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:01:25 -0400
-Subject: [PATCH 10/26] deploy: native runtime for Alpine 3.24 (OpenRC) and
+Subject: [PATCH 10/28] deploy: native runtime for Alpine 3.24 (OpenRC) and
  Debian 13 (systemd), no Docker
 
 - deploy/gunicorn.conf.py: 1 worker, 2 gthreads, on 127.0.0.1:8000

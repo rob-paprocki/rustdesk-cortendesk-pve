@@ -1,0 +1,82 @@
+From 47b3e4d61233511273428c477e36ca86f575ccc0 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Tue, 20 Oct 2026 08:52:53 +0000
+Subject: [PATCH 28/28] tests: follow upstream's 1.5.0-only form (Windows names
+ with spaces are refused on 1.5.0) and the slug_appname key
+
+---
+ rdgenerator/tests/test_publish.py   | 6 +++---
+ rdgenerator/tests/test_ui.py        | 8 ++++----
+ rdgenerator/tests/test_workflows.py | 3 ++-
+ 3 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/rdgenerator/tests/test_publish.py b/rdgenerator/tests/test_publish.py
+index 0fcd342..8f74e46 100644
+--- a/rdgenerator/tests/test_publish.py
++++ b/rdgenerator/tests/test_publish.py
+@@ -41,15 +41,15 @@ class PublishTests(StubTestCase):
+         return self.poll_until_terminal(r.json()['uuid'])
+ 
+     def test_default_choice_is_recorded_and_flagged(self):
+-        build = self.build(appname='Acme Support')
++        build = self.build(appname='Acme-Support')
+         self.assertEqual((build.status, build.publish, build.label, build.has_password),
+-                         ('success', 'hidden', 'Acme Support', False))
++                         ('success', 'hidden', 'Acme-Support', False))
+         self.assertTrue(self.flag.exists())
+         pending = json.loads(publish_cmd('pending'))
+         self.assertEqual(len(pending), 1)
+         entry = pending[0]
+         self.assertEqual((entry['uuid'], entry['publish'], entry['label'], entry['platform']),
+-                         (build.uuid, 'hidden', 'Acme Support', 'windows'))
++                         (build.uuid, 'hidden', 'Acme-Support', 'windows'))
+         self.assertEqual([f['name'] for f in entry['files']], ['acme_client.exe', 'acme_client.msi'])
+         self.assertEqual(entry['files'][0]['size'], 102)
+         self.assertEqual(len(entry['files'][0]['sha256']), 64)
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index b6484bf..47bfccd 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -157,7 +157,7 @@ class LinuxAppNameTests(StubTestCase):
+         self.assertEqual(GithubRun.objects.latest('id').label, 'Rescue Client (Rob Paprocki)')
+ 
+     def test_other_platforms_keep_the_name(self):
+-        s = self.secrets(platform='windows', appname='Rescue Client (Rob Paprocki)')
++        s = self.secrets(platform='macos', appname='Rescue Client (Rob Paprocki)')
+         self.assertEqual(s['appname'], 'Rescue Client (Rob Paprocki)')
+ 
+     def test_default_and_already_safe_names_unchanged(self):
+@@ -171,11 +171,11 @@ class LinuxAppNameTests(StubTestCase):
+             r = self.generate(platform='linux', appname=name)
+             self.assertEqual(r.status_code, 400, name)
+             self.assertIn(why, r.json()['error'], name)
+-            self.assertEqual(self.generate(platform='windows', appname=name).status_code, 200, name)
++            self.assertEqual(self.generate(platform='macos', appname=name).status_code, 200, name)
+ 
+     def test_refused_linux_build_keeps_the_platform(self):
+         self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
+-        page = self.c.post('/', {'platform': 'linux', 'version': '1.4.9', 'exename': 'acme', 'appname': 'SSH',
++        page = self.c.post('/', {'platform': 'linux', 'version': '1.5.0', 'exename': 'acme', 'appname': 'SSH',
+                                  'direction': 'both', 'installation': 'installationY', 'settings': 'settingsY',
+                                  'theme': 'system', 'themeDorO': 'default', 'passApproveMode': 'password-click',
+                                  'permissionsDorO': 'default', 'permissionsType': 'custom'}).content.decode()
+@@ -187,4 +187,4 @@ class LinuxAppNameTests(StubTestCase):
+         r = self.generate(platform='linux', appname='RustDesk Pro')
+         self.assertEqual(r.status_code, 400)
+         self.assertIn('rustdesk', r.json()['error'])
+-        self.assertEqual(self.generate(platform='windows', appname='RustDesk Pro').status_code, 200)
++        self.assertEqual(self.generate(platform='macos', appname='RustDesk Pro').status_code, 200)
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index 5d8b0dd..15ab20e 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -295,7 +295,8 @@ class RunnerStepsTests(SimpleTestCase):
+         pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
+         self.assertEqual(pairs['appname'], 'Acme Remote')
+         self.assertEqual(pairs['uuid'], u)
+-        self.assertEqual(len(pairs), 20)
++        self.assertEqual(len(pairs), 21)
++        self.assertEqual(pairs['slug_appname'], 'acme-remote')
+         self.assertEqual(pairs['update_public_key'], '')
+         self.assertIn('::add-mask::rd.example.com', r2.stdout)
+         self.assertNotIn(f'::add-mask::{u}', r2.stdout)
