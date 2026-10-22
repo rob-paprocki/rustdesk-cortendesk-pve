@@ -1,4 +1,4 @@
-# rustdesk-server-pve: self-hosted RustDesk in a Proxmox LXC (community-scripts style)
+# Self-hosted RustDesk in one Proxmox LXC
 
 This installs a self-hosted RustDesk stack in one unprivileged LXC, natively (no Docker), on Alpine 3.24 or Debian 13:
 
@@ -85,7 +85,7 @@ The console's *Client Downloads* page can host installers, and rdgen builds them
 3. Answer the rdgen prompt, or run `rdgen-setup` in the CT.
 4. Open `http://<lxc-ip>:8190/`. CortenDesk's Build Installers link points there.
 
-rdgen's form comes filled in with this server's host, port, key and API address, and each Custom Server field explains what it changes in the client. The *Other* section explains the `key=value` format and the difference between default and override settings. It also has a **Browse client options** dialog listing the 120 documented RustDesk options the form has no control for (a toggle adds the 20 it does set), with a filter and buttons that add a line to either box, and it checks both boxes as you type.
+rdgen's form comes filled in with this server's host, port, key and API address, and each Custom Server field explains what it changes in the client. The *Other* section explains the `key=value` format and the difference between default and override settings. Its **Browse client options** dialog lists the 120 documented RustDesk options the form has no control for (a toggle adds the 20 it does set). You can filter them and add one to either box with a click. Both boxes are checked as you type.
 
 ### App names on Linux
 RustDesk on Linux names its package, folders and systemd service after the app name, so Linux builds use it lowercased, with spaces and other characters turned into hyphens: "Rescue Client (Acme IT)" becomes `rescue-client-acme-it`. Other platforms and CortenDesk's labels keep the full name.
@@ -163,7 +163,7 @@ Each setup asks for a **registration token**, which you get on GitHub from your 
 
 **Linux.** `runner-lxc.sh` creates an unprivileged LXC (4 cores, 8 GB RAM, 100 GB disk by default; `var_cores`, `var_ram`, `var_disk`, `var_ctid`, `var_net` change that) with Docker, which the Linux build runs in, and registers the runner. Use the CT for nothing else, because every Linux build clears its Docker images. In rdgen's form choose **Linux builds: x86_64 only**, because an x86_64 machine can't build the ARM clients, and preferably **Linux packages: .deb and .rpm only**. RustDesk 1.5.0's extra DRM build (an unattended .deb for Wayland desktops) runs on this runner only when you add the repository variable `RDGEN_LINUX_DRM` = `true`, because it occupies the runner for most of an hour.
 
-**Windows.** Copy `tools/runner-windows.ps1` into the VM and run, in an administrator PowerShell, `powershell -ExecutionPolicy Bypass -File runner-windows.ps1 -Repo <owner>/<build repo>`. It installs what GitHub's Windows machines bring: Visual Studio 2022 Build Tools, Git, PowerShell 7, Python, .NET, NuGet and a few small tools, through Chocolatey. It creates a local administrator `rdgen-runner` for the runner service and registers the runner. Reboot if it asks to. Builds run upstream code as an administrator, so use a VM that does nothing else; it refuses to run on a domain controller. Plan for about 60 GB free.
+**Windows.** Copy `tools/runner-windows.ps1` into the VM and run, in an administrator PowerShell, `powershell -ExecutionPolicy Bypass -File runner-windows.ps1 -Repo <owner>/<build repo>`. It installs what GitHub's Windows machines bring: Visual Studio 2022 Build Tools, Git, PowerShell 7, Python, .NET, NuGet, ImageMagick and jq, through Chocolatey. It creates a local administrator `rdgen-runner` for the runner service and registers the runner. Reboot if it asks to. Builds run upstream code as an administrator, so use a VM that does nothing else; it refuses to run on a domain controller. Plan for about 60 GB free.
 
 **Mac.** On the Mac, under the account that will run the builds:
 1. Install Xcode 16.4, the version GitHub's Mac machines build with. Download it from [developer.apple.com/download/all](https://developer.apple.com/download/all/) with your Apple ID (or take it from the App Store if it offers 16.x), put it in Applications and open it once. Then run `sudo xcode-select -s /Applications/Xcode.app` and `sudo xcodebuild -license accept`.
@@ -184,12 +184,14 @@ On every self-hosted runner, the workflows first check the machine's prerequisit
 
 ## Unattended access
 For a computer you want to reach without anyone there, build its client with Connection Type *Incoming Only* (or *Bidirectional*) and approve mode *Accept sessions via password*, then give it a permanent password in one of two ways:
-- **In the build**: fill in *Set Permanent Password*. Every computer that installs it gets that password, so the installer stays off the public downloads page.
-- **On each computer**: leave the password empty, and under Other add `allow-command-line-settings-when-settings-disabled=Y` to the override settings (it lets an administrator change settings from the command line even with *Disable Settings* on). After installing, set that computer's own password as root or administrator: on Linux `read -rs -p 'Password: ' PW; echo; sudo <client> --password "$PW"; unset PW`, on Windows `"C:\Program Files\<client>\<client>.exe" --password <password>` in an administrator prompt. The installer holds no password, so it can go on the public downloads page.
+- In the build: fill in *Set Permanent Password*. Every computer that installs it gets that password, so the installer stays off the public downloads page.
+- On each computer: leave the password empty, and under Other add `allow-command-line-settings-when-settings-disabled=Y` to the override settings (it lets an administrator change settings from the command line even with *Disable Settings* on). After installing, set that computer's own password as root or administrator: on Linux `read -rs -p 'Password: ' PW; echo; sudo <client> --password "$PW"; unset PW`, on Windows `"C:\Program Files\<client>\<client>.exe" --password <password>` in an administrator prompt. The installer holds no password, so it can go on the public downloads page.
 
 Whoever connects types that password instead of the one-time password, and nobody has to click Accept.
 
-Hiding or encrypting the password inside the installer can't make a password build safe to publish. The client has to read the password on its own, with nobody typing anything. So whatever it needs to read it ships in the same file, and anyone with the file can do the same. RustDesk's login check also works with a hash of the password, so storing a hash would be just as good as the password itself. That's why the password has to come from somewhere other than the file, as in the per-computer option above. A password in the build for the computer you connect *from* does nothing for this. RustDesk never shows the permanent password in its window; it's stored readably in the client's settings file, which is why such builds stay off the public downloads page. On a Linux or Windows client that's already installed, an administrator can also set one with `<client> --password` (Linux: `sudo`), unless the build has *Disable Settings* on: then RustDesk answers "Settings are disabled!" and only a rebuild helps.
+Hiding or encrypting the password inside the installer can't make a password build safe to publish. The client has to read the password on its own, with nobody typing anything. So whatever it needs to read it ships in the same file, and anyone with the file can do the same. RustDesk's login check also works with a hash of the password, so storing a hash would be just as good as the password itself. That's why the password has to come from somewhere other than the file, as in the per-computer option above.
+
+A password in the build for the computer you connect *from* does nothing for this. RustDesk never shows the permanent password in its window, but stores it readably in the client's settings file. On a Linux or Windows client that's already installed, an administrator can also set one with `<client> --password` (Linux: `sudo`), unless the build has *Disable Settings* on: then RustDesk answers "Settings are disabled!" and only a rebuild helps.
 
 ## Updates
 `rustdesk-update` checks all three components, and each has its own backup, health check and automatic rollback.
@@ -205,21 +207,23 @@ Backups go to `/var/backups/rustdesk` (root-only), which keeps the last 7. Notif
 The daily job does not upgrade OS packages; run `update` for those.
 
 ### Keeping the rdgen patches current
-Upstream rdgen changes often, and now and then a change stops the patches from applying (the daily update then keeps the current version and warns you). If this repository lives on GitHub, `.github/workflows/rdgen-upstream.yml` fixes that for you:
-- The CT starts it when its daily update finds that the patches stop applying (or fail the tests), see below; you can also start it with "Run workflow". It moves `rdgen/patches` to the newest upstream rdgen with `tools/rdgen-rebase.py` and checks the result the way a CT would: the patches apply, the CT's update path passes, the test suite passes, and actionlint finds nothing new. (It has no schedule: GitHub skipped the cron runs of this private repository.)
-- When everything passes, it opens a pull request and merges it right away: nothing in it was edited by a person or by Claude, and the CT already runs the newest upstream with these patches. When a patch conflicts or a check fails, Claude Code repairs the series in a read-only job, the tool checks the repair again on its own, and you get a **draft** pull request that explains every decision. Repairs never merge by themselves; review them with care, they touch rdgen's hardening.
-- One-time setup in the repository: add the secret `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token` on any machine with Claude Code; runs count against your Claude plan), and enable Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests". A clean run takes about 3 minutes of Actions time, a repair about 6 to 10. Optionally add the secret `RDGEN_DISCORD_WEBHOOK` (a Discord webhook URL): the workflow then posts its outcome there (merged, ready for review with the link, incomplete, or failed).
-- A CT that follows the repository also starts the workflow after a successful update to a newer upstream, so the repository's base keeps up with what runs (it merges by itself).
-- `.github/workflows/publish-public.yml` can mirror the repository to a public copy: one new commit there per change here, without this repository's history. It needs the secret `PUBLIC_DEPLOY_KEY` (a write deploy key of the public repository); set `PUBLIC_REPO` in the workflow to yours.
+Upstream rdgen changes often, and now and then a change stops the patches from applying. The daily update then keeps the current version and warns you. If this repository lives on GitHub, `.github/workflows/rdgen-upstream.yml` repairs the series:
+- It moves `rdgen/patches` to the newest upstream rdgen with `tools/rdgen-rebase.py` and checks the result the way a CT would: the patches apply, the CT's update path passes, the test suite passes, and actionlint finds nothing new.
+- When everything passes, it opens a pull request and merges it right away, because nothing in it was edited by a person or by Claude. When a patch conflicts or a check fails, Claude Code repairs the series in a read-only job, the tool checks the repair again on its own, and you get a **draft** pull request that explains every decision. Repairs never merge by themselves. Review them carefully, because they touch rdgen's hardening.
+- A CT that follows the repository (below) starts it in two cases: when its daily update finds that the patches stop applying or fail the tests, and after a successful update to an upstream newer than the series, so the repository keeps up with what runs. You can also start it with "Run workflow". There is no schedule: GitHub never ran this workflow's schedule in the private repository it was built in.
+- One-time setup in the repository: add the secret `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token` on any machine with Claude Code; runs count against your Claude plan), and enable Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests". With the optional secret `RDGEN_DISCORD_WEBHOOK` (a Discord webhook URL), the workflow posts its outcome there: merged, ready for review with the link, incomplete, or failed. A clean run takes about 3 minutes of Actions time, a repair 6 to 10.
 
-A CT can follow the merged patches by itself:
+To have a CT follow the repository:
 ```bash
-rdgen-setup --patch-source <owner>/<repo>      # prints a deploy key: add it to the repository READ-ONLY
-rdgen-setup --patch-source dispatch-token       # lets the CT start the repair workflow (token below, on stdin)
-rdgen-setup --patch-source status               # or: off
+rdgen-setup --patch-source <owner>/<repo> [branch]   # prints a deploy key: add it to the repository READ-ONLY
+rdgen-setup --patch-source dispatch-token           # lets the CT start the workflow (token on stdin, see below)
+rdgen-setup --patch-source status                   # or: off
 ```
-The dispatch token is a fine-grained token for that repository only with Actions: Read and write; it is stored root-only in the CT and only ever used to start `rdgen-upstream.yml` once per upstream commit that breaks the patches. The update notification then says "repair requested" (or why not).
-Its daily update then fetches `rdgen/patches` from the default branch over SSH (`github.com`, pinned host keys). A new series is checked (only patch files, a matching MANIFEST), built, tested and pushed like an upstream update, and replaces the installed patches only after that worked. The version in notifications then reads `<upstream>+<series commit>`. Changes to the tools themselves (`src/files`) still need `tools/refresh-ct.sh`.
+Its daily update then fetches `rdgen/patches` from that branch (default `main`) over SSH, trusting only GitHub's pinned host keys. A new series is checked (only patch files, a matching MANIFEST), built, tested and pushed like an upstream update, and it replaces the installed patches only after that worked. Notifications then show the version as `<upstream>+<series commit>`. Changes to the tools themselves (`src/files`) still need `tools/refresh-ct.sh`.
+
+The dispatch token is a fine-grained token for that repository only, with Actions: Read and write. The CT stores it root-only and uses it for nothing but starting `rdgen-upstream.yml`. When it asks for a repair, the update notification says "repair requested", or why it couldn't.
+
+`.github/workflows/publish-public.yml` can mirror the repository to a public copy: one new commit there per change here, without this repository's history. It needs the secret `PUBLIC_DEPLOY_KEY` (a write deploy key of the public repository); set `PUBLIC_REPO` in the workflow to yours.
 
 ## Notifications
 `rustdesk-notify` sends the updater's messages and rdgen's results. It runs as root, and its settings (`/etc/rustdesk-update.env`, `/etc/rustdesk-apprise.conf`) are root-only, so the console never sees your webhook. Change them with `rustdesk-notify setup`.
