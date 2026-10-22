@@ -13,6 +13,8 @@
 #                                              workflow (fine-grained, that repository only, Actions: Read and write)
 #   patch-source request-repair <upstream>     start .github/workflows/rdgen-upstream.yml there (rdgen-update calls it
 #                                              when the patches stop applying); the outcome goes into the notification
+#   patch-source request-sync <upstream>       start it after a successful update when the series' base is older than
+#                                              <upstream>, so the repository (and its public copy) follow what runs
 # Installed by the ct script and tools/refresh-ct.sh next to the patches (/usr/local/share/rustdesk-cortendesk/rdgen).
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
@@ -118,12 +120,24 @@ request_repair() {  # once per failing upstream (rustdesk-update does not rerun 
   cat "$REPAIRF"
 }
 
+request_sync() {  # quietly: the clean path merges by itself; nothing to report unless it fails (Discord, workflow)
+  conf 2>/dev/null || return 0
+  [ -s "$TOKEN" ] || return 0
+  local base code
+  base=$(sed -n 's/^base-commit: \([0-9a-f]\{40\}\).*/\1/p' "$RDGEN_PATCHES/UPSTREAM" 2>/dev/null)
+  [[ "${1:-}" =~ ^[0-9a-f]{7,40}$ ]] || return 0
+  case "$base" in "$1"*) return 0 ;; esac
+  code=$(gh_api POST "/actions/workflows/$WORKFLOW/dispatches" "{\"ref\":\"$BRANCH\",\"inputs\":{\"onto\":\"\"}}")
+  echo "rdgen: asked $REPO to move its series to upstream $1 (GitHub answered $code)"
+}
+
 case "${1:-status}" in
   setup) shift; setup "$@" ;;
   off) rm -f "$CONF" "$TOKEN" "$REPAIRF"; rm -rf "$CACHE" "$NEXT"
        echo "rdgen no longer follows a patch source (the key stays: $KEY)" ;;
   dispatch-token) dispatch_token ;;
   request-repair) request_repair "${2:-}" ;;
+  request-sync) request_sync "${2:-}" ;;
   enabled) conf 2>/dev/null ;;
   remote) conf 2>/dev/null || exit 1; c=$(remote_commit); echo "${c:0:7}" | grep . || echo "?" ;;
   stage) stage ;;
@@ -137,6 +151,7 @@ case "${1:-status}" in
       else echo "repair requests: off (rdgen-setup --patch-source dispatch-token)"; fi
       [ -n "$c" ] || cat "$KEY.pub"
     else echo "no patch source: rdgen uses the patches copied in by the installer or tools/refresh-ct.sh"; fi ;;
-  *) echo "usage: $0 setup <owner/repo> [branch] | off | status | dispatch-token | enabled | remote | stage | request-repair" >&2
+  *) echo "usage: $0 setup <owner/repo> [branch] | off | status | dispatch-token | enabled | remote | stage | request-repair |" \
+          "request-sync" >&2
      exit 2 ;;
 esac

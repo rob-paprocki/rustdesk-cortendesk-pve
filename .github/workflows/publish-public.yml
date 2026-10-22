@@ -1,0 +1,70 @@
+# Publishes this repository's tree to its public copy as one new commit on top of the copy's history (the private
+# history, with its working notes, stays here). Runs on every push to the working branch (merges in the web UI, pushes)
+# and when rdgen-upstream.yml has merged a clean update (a merge by its token starts no push workflow, so it starts
+# this one). Without the secret PUBLIC_DEPLOY_KEY (private key of a write deploy key of the public repository) it does
+# nothing, so forks and the public copy itself are unaffected.
+#   PUBLIC_DENY_REGEX (optional secret): an extended regex; a tree that matches it (outside rdgen/patches) is not
+#   published. Everything committed here is meant to be public: see CLAUDE.md.
+name: publish public copy
+
+on:
+  push:
+    branches: [initial-script]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-public
+  cancel-in-progress: false
+
+env:
+  PUBLIC_REPO: rob-paprocki/rustdesk-cortendesk-pve
+  PUBLIC_BRANCH: stable
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Push a snapshot of this tree to the public copy
+        id: publish
+        env:
+          KEY: ${{ secrets.PUBLIC_DEPLOY_KEY }}
+          DENY: ${{ secrets.PUBLIC_DENY_REGEX }}
+        run: |
+          [ -n "$KEY" ] || { echo "no PUBLIC_DEPLOY_KEY secret: nothing published"; exit 0; }
+          (umask 077; printf '%s\n' "$KEY" > "$RUNNER_TEMP/deploy_key")
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_WORKSPACE/rdgen/github_known_hosts"
+          url="git@github.com:$PUBLIC_REPO.git"
+          git fetch -q "$url" "$PUBLIC_BRANCH"
+          if [ "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+            echo "the public copy already has this tree"; exit 0
+          fi
+          if [ -n "$DENY" ] && git grep -q -I -E "$DENY" -- . ':!rdgen/patches'; then
+            echo "::error::the tree matches PUBLIC_DENY_REGEX: not published"; exit 1
+          fi
+          export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+          GIT_AUTHOR_NAME=$(git log -1 --format=%an) GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae)
+          GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
+          snap=$(git commit-tree 'HEAD^{tree}' -p FETCH_HEAD -m "$(git log -1 --format=%s)")
+          git push -q "$url" "$snap:refs/heads/$PUBLIC_BRANCH"
+          echo "published ${snap:0:12} to $PUBLIC_REPO ($PUBLIC_BRANCH)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Tell Discord it failed
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.RDGEN_DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "$WEBHOOK" ] || exit 0
+          jq -n --arg c "❌ publishing the public copy failed: $RUN_URL" '{content: $c, allowed_mentions: {parse: []}}' \
+            > "$RUNNER_TEMP/discord.json"
+          printf 'url = "%s"\n' "$WEBHOOK" | curl -sS -m 30 -o /dev/null -K - -H 'Content-Type: application/json' \
+            --data-binary @"$RUNNER_TEMP/discord.json"

@@ -226,6 +226,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write   # starts publish-public.yml: a merge by this token starts no push-triggered workflow
     outputs:
       url: ${{ steps.pr.outputs.url }}
     steps:
@@ -272,6 +273,7 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
           if [ "$STATUS" = clean ]; then   # only the unedited, fully verified kind; repairs wait for a review
             gh pr merge "$BRANCH" --squash --delete-branch
+            gh workflow run publish-public.yml --ref "$GITHUB_REF_NAME" || echo "::warning::publish-public.yml not started"
           fi
 
   notify:

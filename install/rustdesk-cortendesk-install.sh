@@ -828,6 +828,7 @@ if [ -z "$retry_deploy" ]; then
     rm -rf "$RDGEN_PATCHES.prev"; mv "$RDGEN_PATCHES" "$RDGEN_PATCHES.prev"; mv "$patches" "$RDGEN_PATCHES"
     echo "${st#new }" >"$SERIESF"
   fi
+  [ -z "$PS" ] || "$PS" request-sync "$(built_upstream)" || true
   if [ "$(src_head)" != "$(pushed)" ] || [ "$(deployed)" = "$(pushed)" ]; then   # nothing new to deploy
     echo "$(built_upstream)" >"$STATEF"; echo "rdgen: nothing to deploy"; exit 0
   fi

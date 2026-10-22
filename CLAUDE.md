@@ -155,6 +155,12 @@ introduce Docker.
   A CT-started run took the clean path and opened its pull request. Clean PRs (status clean: rebase without conflicts,
   every check passed, nothing edited) are squash-merged by open-pr (gh pr merge --squash --delete-branch, since
   2026-10-19); repaired or failed ones stay drafts for review.
+- Keeping the repository current (2026-10-21): after a successful update whose upstream is newer than the series'
+  base, rdgen-update calls `patch-source request-sync <upstream>`, which starts rdgen-upstream.yml (clean path ->
+  auto-merge); so the base follows what the CTs run, once per upstream move (the CT rebuilds once more for the
+  re-exported series). publish-public.yml pushes the tree to the public copy as one commit on top of its history
+  (secret PUBLIC_DEPLOY_KEY = a write deploy key of the public repo; optional secret PUBLIC_DENY_REGEX blocks a
+  matching tree); open-pr starts it after an auto-merge (GITHUB_TOKEN merges start no push workflows).
 - Patch source (rdgen/patch-source, payload, not embedded): rdgen-setup --patch-source <owner/repo> makes
   /etc/rdgen/patch-source.key (ed25519, read-only deploy key) and patch-source.env (root 0600); ssh uses only
   rdgen/github_known_hosts (api.github.com/meta = ssh-keyscan, 2026-10-18). rdgen-update: labels <upstream>+<series7>
@@ -292,6 +298,9 @@ introduce Docker.
   --system-site-packages, so it has no bin/gunicorn; run `.venv/bin/python3 -m gunicorn`.
 
 ## Rules
+- Everything committed to this repository is published to its public copy (.github/workflows/publish-public.yml, on
+  every push to the working branch): no personal infrastructure details (domains, IPs, CT/VM ids, user or account
+  names, tokens, run ids, billing). Keep such notes outside the repository.
 - The repo is GPL-3.0-or-later (LICENSE). Keep the community-scripts MIT notice in NOTICE and in the ct/install
   file headers, and credit upstream projects in the README.
 - Secrets never go on argv or into logs. Use stdin, root-only files, `curl -K` or `-H @file`, and jq `env.X`.
