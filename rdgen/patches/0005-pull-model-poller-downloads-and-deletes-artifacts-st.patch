@@ -1,4 +1,4 @@
-From a6cb28c0bc6fc40ce26638bc1699eef98ca6cb95 Mon Sep 17 00:00:00 2001
+From 50440e743f43d26e1569388e0d7c3d26009a3004 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
 Subject: [PATCH 05/28] pull model: poller downloads and deletes artifacts;

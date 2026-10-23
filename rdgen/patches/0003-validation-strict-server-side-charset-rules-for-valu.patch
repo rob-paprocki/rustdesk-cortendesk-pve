@@ -1,4 +1,4 @@
-From 9e9db9eb1e4caf1ba1bbb6f9198747bac047cbc0 Mon Sep 17 00:00:00 2001
+From f8ddc5f6450c19bf2a2698c4c746139fdb71c1c2 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
 Subject: [PATCH 03/28] validation: strict server-side charset rules for values

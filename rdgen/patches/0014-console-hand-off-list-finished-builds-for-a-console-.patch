@@ -1,4 +1,4 @@
-From cd9721e1a9fb6ab883979e19693cae85bd06ed02 Mon Sep 17 00:00:00 2001
+From a2ec38a5e9b6058b302e3b8503f6123f8902773c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
 Subject: [PATCH 14/28] console hand-off: list finished builds for a console's

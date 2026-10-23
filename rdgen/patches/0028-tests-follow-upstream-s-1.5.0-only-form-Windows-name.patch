@@ -1,4 +1,4 @@
-From 5edeb37e692d64738842bd05108451e36330c79b Mon Sep 17 00:00:00 2001
+From a01e5353551fff80bd332e509d54402340e4c612 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Tue, 20 Oct 2026 08:52:53 +0000
 Subject: [PATCH 28/28] tests: follow upstream's 1.5.0-only form (Windows names
