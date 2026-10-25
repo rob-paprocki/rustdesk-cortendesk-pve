@@ -1,4 +1,4 @@
-From f8ddc5f6450c19bf2a2698c4c746139fdb71c1c2 Mon Sep 17 00:00:00 2001
+From 62cc6c1ae14afd32ef5108389da045b278a264de Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
 Subject: [PATCH 03/28] validation: strict server-side charset rules for values
@@ -322,10 +322,10 @@ index 0000000..e81fc9f
 +            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
 +    return errors
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 76082c7..4a9d51d 100644
+index 2a7bb17..1020def 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -15,6 +15,7 @@ import pyzipper
+@@ -14,6 +14,7 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm
@@ -333,7 +333,7 @@ index 76082c7..4a9d51d 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -120,11 +121,7 @@ def generate_custom_client(params, full_url):
+@@ -122,11 +123,7 @@ def generate_custom_client(params, full_url):
      enableCamera = params.get('enableCamera', True)
      enableTerminal = params.get('enableTerminal', True)
  

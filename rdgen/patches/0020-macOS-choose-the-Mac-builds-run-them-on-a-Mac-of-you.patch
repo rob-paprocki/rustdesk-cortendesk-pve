@@ -1,4 +1,4 @@
-From 480c1c9981cd18868e5e2897f72ee7ce587bd3c6 Mon Sep 17 00:00:00 2001
+From 9812facdaeddbae3b56afaeb073b692834bd21b7 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
 Subject: [PATCH 20/28] macOS: choose the Mac builds; run them on a Mac of your
@@ -225,10 +225,10 @@ index bd34d35..ecb02b1 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 54207ca..889598c 100644
+index d9fa01a..c5866ce 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -74,6 +74,9 @@ def generate_custom_client(params, full_url=None):
+@@ -73,6 +73,9 @@ def generate_custom_client(params, full_url=None):
      # app_version overrides the version string embedded in the built client
      # without changing the git tag that version selects. If left empty, the
      # RustDesk build's own version (from the checked-out tag) is used.
@@ -238,7 +238,7 @@ index 54207ca..889598c 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -315,6 +318,9 @@ def generate_custom_client(params, full_url=None):
+@@ -316,6 +319,9 @@ def generate_custom_client(params, full_url=None):
              # validated by validation.py (digits and dots only): the
              # workflows paste this input into a sed command
              result["app_version"] = app_version

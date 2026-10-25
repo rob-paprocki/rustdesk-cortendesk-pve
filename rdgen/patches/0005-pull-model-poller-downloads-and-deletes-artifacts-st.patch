@@ -1,4 +1,4 @@
-From 50440e743f43d26e1569388e0d7c3d26009a3004 Mon Sep 17 00:00:00 2001
+From 3066fa98fe2bae7bd082ad28907bc97afbc91d74 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
 Subject: [PATCH 05/28] pull model: poller downloads and deletes artifacts;
@@ -752,7 +752,7 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 81748f2..b88db66 100644
+index 72ac3cc..2e9a789 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,6 +1,8 @@
@@ -765,7 +765,7 @@ index 81748f2..b88db66 100644
  from django.shortcuts import render, get_object_or_404
  from django.core.files.base import ContentFile
  import os
-@@ -17,6 +19,7 @@ from django.db.models import Q
+@@ -16,6 +18,7 @@ from django.db.models import Q
  from .forms import GenerateForm
  from .validation import sanitize_filename, validate_build_fields
  from . import buildcfg, github
@@ -773,7 +773,7 @@ index 81748f2..b88db66 100644
  from django.utils import timezone
  import logging
  
-@@ -341,48 +344,37 @@ def generate_custom_client(params, full_url=None):
+@@ -342,48 +345,37 @@ def generate_custom_client(params, full_url=None):
  
  def _get_run_status(uuid_val):
      """
@@ -844,7 +844,7 @@ index 81748f2..b88db66 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -404,106 +396,55 @@ def generator_view(request):
+@@ -405,106 +397,55 @@ def generator_view(request):
      return render(request, 'generator.html', {'form': form})
  
  

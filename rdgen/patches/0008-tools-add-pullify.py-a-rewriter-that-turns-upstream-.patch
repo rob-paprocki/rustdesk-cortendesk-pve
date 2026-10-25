@@ -1,4 +1,4 @@
-From 69fa7891ab162734e26e6d43561f8167fdbf74a2 Mon Sep 17 00:00:00 2001
+From f6c4a554e4faecdf8fdb74b8e21ee55c27291f9c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:03:12 -0400
 Subject: [PATCH 08/28] tools: add pullify.py, a rewriter that turns upstream
@@ -52,16 +52,16 @@ tree. --check only reports (exit 1 when a rewrite is pending).
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
- tools/pullify.py | 1116 ++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 1116 insertions(+)
+ tools/pullify.py | 1113 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 1113 insertions(+)
  create mode 100755 tools/pullify.py
 
 diff --git a/tools/pullify.py b/tools/pullify.py
 new file mode 100755
-index 0000000..6867d5d
+index 0000000..bf743cc
 --- /dev/null
 +++ b/tools/pullify.py
-@@ -0,0 +1,1116 @@
+@@ -0,0 +1,1113 @@
 +#!/usr/bin/env python3
 +"""Rewrite upstream rdgen generator workflows for the pull model.
 +
@@ -357,9 +357,6 @@ index 0000000..6867d5d
 +                    'cp ./custom_.txt ./flutter/tmpdeb/usr/share/rustdesk/custom_.txt\n')
 +LINUX_CUSTOM_NEW = ('mkdir -p "flutter/tmpdeb/usr/share/${{ env.appname }}"\n',
 +                    'cp ./custom_.txt "./flutter/tmpdeb/usr/share/${{ env.appname }}/custom_.txt"\n')
-+FLATPAK_ID_OLD = 'FLAT="$(echo "${{ env.slug_appname }}" | tr -d \' \')"\n'
-+FLATPAK_ID_NEW = ('FLAT="$(printf \'%s\' "${{ env.slug_appname }}" | tr -cd \'A-Za-z0-9\')"; '
-+                  'case "$FLAT" in \'\'|[0-9]*) FLAT="app$FLAT";; esac\n')
 +# the metainfo's launchable names the exported desktop file, which flatpak renames to <app id>.desktop
 +FLATPAK_METAINFO_ID = 'sed -ie "s|<id>com[^<]*</id>|<id>${BUNDLE_ID}</id>|" flatpak/*.metainfo.xml\n'
 +FLATPAK_LAUNCHABLE = ('sed -i -e "s|<launchable type=\\"desktop-id\\">[^<]*</launchable>|'
@@ -452,12 +449,12 @@ index 0000000..6867d5d
 +
 +
 +def linux_rewrite(lines):
-+    """custom_.txt next to the renamed program; a valid Flatpak ID for any app name; build options; the DRM job."""
++    """custom_.txt next to the renamed program; the Flatpak launchable; build options; the DRM job."""
 +    changed = linux_options_rewrite(lines)
 +    changed |= linux_drm_rewrite(lines)
 +    for idx, line in enumerate(lines):
 +        body, pad = line.lstrip(' '), line[:len(line) - len(line.lstrip(' '))]
-+        for old, new in zip(LINUX_CUSTOM_OLD + (FLATPAK_ID_OLD,), LINUX_CUSTOM_NEW + (FLATPAK_ID_NEW,)):
++        for old, new in zip(LINUX_CUSTOM_OLD, LINUX_CUSTOM_NEW):
 +            if body == old:
 +                lines[idx] = pad + new
 +                changed = True
@@ -1037,8 +1034,8 @@ index 0000000..6867d5d
 +    if os.path.basename(path) == 'generator-linux.yml':
 +        if 'flutter/tmpdeb/usr/share/rustdesk' in text or text.count(LINUX_CUSTOM_NEW[1].strip()) < 2:
 +            problems.append('generator-linux.yml: custom_.txt is not staged next to the renamed program in both build jobs')
-+        if FLATPAK_ID_OLD.strip() in text or FLATPAK_ID_NEW.strip() not in text:
-+            problems.append('generator-linux.yml: the Flatpak ID is not made of letters and digits only')
++        if 'slug_appname' in text:
++            problems.append('generator-linux.yml: still uses slug_appname, which upstream removed')
 +        if FLATPAK_LAUNCHABLE.strip() not in text:
 +            problems.append('generator-linux.yml: the Flatpak metainfo launchable is not set to the app ID')
 +    if os.path.basename(path) == 'generator-macos.yml':

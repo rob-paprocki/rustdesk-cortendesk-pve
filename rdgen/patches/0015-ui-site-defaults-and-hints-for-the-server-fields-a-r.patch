@@ -1,4 +1,4 @@
-From c18354465c99842d8bc07a9a3da5769d05ec0916 Mon Sep 17 00:00:00 2001
+From 776c902f011fde6d736d647f912962a52e9612aa Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
 Subject: [PATCH 15/28] ui: site defaults and hints for the server fields, a
@@ -2575,7 +2575,7 @@ index 0000000..97bc1ce
 +            self.assertNotIn('enable-lan-discovery', custom[section])
 +            self.assertNotIn('allow-auto-disconnect', custom[section])
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index a79c7a0..0752d14 100644
+index 18c4136..dea3724 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,4 +1,5 @@
@@ -2584,7 +2584,7 @@ index a79c7a0..0752d14 100644
  import json
  import logging
  import os
-@@ -31,8 +32,12 @@ def site_defaults():
+@@ -30,8 +31,12 @@ def site_defaults():
      """
      values = {
          'serverIP': _settings.RDGEN_DEFAULTS.get('server', ''),
@@ -2597,7 +2597,7 @@ index a79c7a0..0752d14 100644
      }
      key_file = _settings.RDGEN_DEFAULTS.get('key_file', '')
      if not values['key'] and key_file:
-@@ -84,15 +89,15 @@ def generate_custom_client(params, full_url=None):
+@@ -83,15 +88,15 @@ def generate_custom_client(params, full_url=None):
      if not server:
          server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
      if not serverPort:
@@ -2616,7 +2616,7 @@ index a79c7a0..0752d14 100644
      direction = params.get('direction', 'both')
      installation = params.get('installation', 'installationY')
      settings = params.get('settings', 'settingsY')
-@@ -103,7 +108,7 @@ def generate_custom_client(params, full_url=None):
+@@ -105,7 +110,7 @@ def generate_custom_client(params, full_url=None):
      filename = params.get('exename', 'rustdesk')
      compname = params.get('compname', '')
      if not compname:
@@ -2625,7 +2625,7 @@ index a79c7a0..0752d14 100644
      androidappid = params.get('androidappid', '')
      if not androidappid:
          androidappid = "com.carriez.flutter_hbb"
-@@ -233,6 +238,14 @@ def generate_custom_client(params, full_url=None):
+@@ -235,6 +240,14 @@ def generate_custom_client(params, full_url=None):
          if direction == 'incoming':
              decodedCustom['override-settings']['custom-rendezvous-server'] = server
              decodedCustom['override-settings']['api-server'] = apiServer
@@ -2640,7 +2640,7 @@ index a79c7a0..0752d14 100644
  
      if defaultManual:
          for line in defaultManual.splitlines():
-@@ -365,6 +378,13 @@ def build_files(gh_run, url_name='download'):
+@@ -366,6 +379,13 @@ def build_files(gh_run, url_name='download'):
      return files
  
  
@@ -2654,7 +2654,7 @@ index a79c7a0..0752d14 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -383,7 +403,9 @@ def generator_view(request):
+@@ -384,7 +404,9 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')

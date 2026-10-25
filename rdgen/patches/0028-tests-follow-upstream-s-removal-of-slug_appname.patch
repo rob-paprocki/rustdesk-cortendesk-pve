@@ -1,0 +1,50 @@
+From 46c4a71d8b2dbbc27e64a5fcbbc2f78fbe7b015e Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Sat, 24 Oct 2026 08:49:30 +0000
+Subject: [PATCH 28/28] tests: follow upstream's removal of slug_appname
+
+---
+ rdgenerator/tests/test_ui.py        | 3 ++-
+ rdgenerator/tests/test_workflows.py | 8 +++++---
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index 47bfccd..4e08699 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -158,7 +158,8 @@ class LinuxAppNameTests(StubTestCase):
+ 
+     def test_other_platforms_keep_the_name(self):
+         s = self.secrets(platform='macos', appname='Rescue Client (Rob Paprocki)')
+-        self.assertEqual(s['appname'], 'Rescue Client (Rob Paprocki)')
++        # upstream (70a628c) builds with the name itself: spaces become hyphens, : | \ / are dropped
++        self.assertEqual(s['appname'], 'Rescue-Client-(Rob-Paprocki)')
+ 
+     def test_default_and_already_safe_names_unchanged(self):
+         self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index 89398d0..c9c52d9 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -88,7 +88,9 @@ class PullifyTests(SimpleTestCase):
+             text = fh.read()
+         self.assertNotIn('flutter/tmpdeb/usr/share/rustdesk', text)
+         self.assertEqual(text.count('cp ./custom_.txt "./flutter/tmpdeb/usr/share/${{ env.appname }}/custom_.txt"'), 2)
+-        self.assertIn("tr -cd 'A-Za-z0-9'", text)
++        # upstream's Flatpak ID is the fixed com.rustdesk.RustDesk, never built from the app name
++        self.assertNotIn('slug_appname', text)
++        self.assertIn('BUNDLE_ID="com.rustdesk.RustDesk"', text)
+ 
+     def test_only_expected_workflows_remain(self):
+         self.assertEqual(sorted(os.listdir(WORKFLOWS)), sorted([
+@@ -294,8 +296,8 @@ class RunnerStepsTests(SimpleTestCase):
+         pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
+         self.assertEqual(pairs['appname'], 'Acme Remote')
+         self.assertEqual(pairs['uuid'], u)
+-        self.assertEqual(len(pairs), 21)
+-        self.assertEqual(pairs['slug_appname'], 'acme-remote')
++        self.assertEqual(len(pairs), 20)
++        self.assertNotIn('slug_appname', pairs)
+         self.assertEqual(pairs['update_public_key'], '')
+         self.assertIn('::add-mask::rd.example.com', r2.stdout)
+         self.assertNotIn(f'::add-mask::{u}', r2.stdout)

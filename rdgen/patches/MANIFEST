@@ -24,6 +24,6 @@
 0024-builds-upstream-s-self-hosted-update-key-passes-both.patch
 0025-bootstrap-an-update-runs-the-test-suite-before-it-pu.patch
 0026-workflows-the-setup-job-checks-app_version-tests-for.patch
-0027-builds-slug_appname-upstream-s-new-config-key-passes.patch
-0028-tests-follow-upstream-s-1.5.0-only-form-Windows-name.patch
+0027-tests-follow-upstream-s-1.5.0-only-form-Windows-name.patch
+0028-tests-follow-upstream-s-removal-of-slug_appname.patch
 UPSTREAM

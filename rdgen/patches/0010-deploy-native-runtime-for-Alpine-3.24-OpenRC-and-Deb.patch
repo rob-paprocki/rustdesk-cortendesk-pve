@@ -1,4 +1,4 @@
-From f382828647a58a40905b7946914b4fb14ef22dc5 Mon Sep 17 00:00:00 2001
+From c516a0dee01bba5d71e6988b9821c1b00db08f29 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:01:25 -0400
 Subject: [PATCH 10/28] deploy: native runtime for Alpine 3.24 (OpenRC) and

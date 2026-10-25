@@ -1,4 +1,4 @@
-From 05fefe40471b17bd4a927ccbf49daeea5d63779f Mon Sep 17 00:00:00 2001
+From e1054cf4bd184c88055e6f10453aaeecfeaffbd4 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/28] workflows: apply tools/pullify.py (pull model, pinned
@@ -44,14 +44,14 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  .github/workflows/docker-build.yml            |  46 --
  .github/workflows/fetch-encrypted-secrets.yml |   2 +-
  .github/workflows/generator-android.yml       | 151 ++--
- .github/workflows/generator-linux.yml         | 452 +++++------
+ .github/workflows/generator-linux.yml         | 450 +++++------
  .github/workflows/generator-macos.yml         | 325 ++++----
  .github/workflows/generator-windows-x86.yml   | 117 +--
  .github/workflows/generator-windows.yml       | 158 ++--
  .github/workflows/sh-generator-windows.yml    | 701 ------------------
  .../third-party-RustDeskTempTopMostWindow.yml |  25 +-
  .github/workflows/vcpkg.yml                   |  67 --
- 13 files changed, 585 insertions(+), 1589 deletions(-)
+ 13 files changed, 584 insertions(+), 1588 deletions(-)
  delete mode 100644 .github/workflows/build-web.yml
  delete mode 100644 .github/workflows/clear-cache.yml
  delete mode 100644 .github/workflows/docker-build.yml
@@ -342,7 +342,7 @@ index 1f0989d..8ef3eef 100644
        - name: Decode cfg input
          shell: bash
 diff --git a/.github/workflows/generator-android.yml b/.github/workflows/generator-android.yml
-index 27aedc5..4416f9c 100644
+index 5a4c06a..ad0d467 100644
 --- a/.github/workflows/generator-android.yml
 +++ b/.github/workflows/generator-android.yml
 @@ -1,5 +1,5 @@
@@ -725,7 +725,7 @@ index 27aedc5..4416f9c 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-linux.yml b/.github/workflows/generator-linux.yml
-index 03de326..b6b4194 100644
+index 04142dd..a207c0b 100644
 --- a/.github/workflows/generator-linux.yml
 +++ b/.github/workflows/generator-linux.yml
 @@ -1,5 +1,5 @@
@@ -1636,13 +1636,7 @@ index 03de326..b6b4194 100644
          with:
            name: ${{ env.filename }}-${{ matrix.job.arch }}.deb
            path: .
-@@ -1604,11 +1580,12 @@ jobs:
-               # The manifest's other source is the metainfo file. Those same seds rewrote
-               # the REFERENCE to it without renaming the file on disk, so only the name
-               # is left to fix; its contents are already rewritten.
--              FLAT="$(echo "${{ env.slug_appname }}" | tr -d ' ')"
-+              FLAT="$(printf '%s' "${{ env.slug_appname }}" | tr -cd 'A-Za-z0-9')"; case "$FLAT" in ''|[0-9]*) FLAT="app$FLAT";; esac
-               BUNDLE_ID="com.${FLAT}.${FLAT}"
+@@ -1609,6 +1585,7 @@ jobs:
                sed -ie "s|\"id\": \"com[^\"]*\"|\"id\": \"${BUNDLE_ID}\"|" flatpak/rustdesk.json
                sed -ie "s|\"path\": \"com[^\"]*\.metainfo\.xml\"|\"path\": \"${BUNDLE_ID}.metainfo.xml\"|" flatpak/rustdesk.json
                sed -ie "s|<id>com[^<]*</id>|<id>${BUNDLE_ID}</id>|" flatpak/*.metainfo.xml
@@ -2599,7 +2593,7 @@ index c6057f7..e2039ba 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-windows.yml b/.github/workflows/generator-windows.yml
-index 45e43f2..37df39b 100644
+index f9ccae9..08f7691 100644
 --- a/.github/workflows/generator-windows.yml
 +++ b/.github/workflows/generator-windows.yml
 @@ -1,5 +1,5 @@

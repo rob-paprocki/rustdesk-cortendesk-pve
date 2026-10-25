@@ -63,10 +63,10 @@ The later patches, newest last:
 0026 has the setup job refuse an app_version that is not x.y.z or x.y.z.w (a dispatch input outside the encrypted
      config, pasted into sed by upstream's "Set custom app version" step), and makes ghstub accept only the inputs
      the workflows declare.
-0027 gives upstream's build-config key slug_appname (the app name as a slug, pasted into the workflows' sed commands) a
-     rule in both validation.py and validate.py, computed from the name the build really gets.
-0028 adjusts the tests to upstream's 1.5.0-only form. Windows names with spaces are refused on 1.5.0, so the tests that
-     need such a name use macOS. It also counts the new key.
+0027 adjusts the tests to upstream's 1.5.0-only form. Windows names with spaces are refused on 1.5.0, so the tests that
+     need such a name use macOS.
+0028 adjusts the tests to upstream's removal of slug_appname (70a628c): the build config has one key less, the Flatpak ID
+     is the fixed com.rustdesk.RustDesk, and the app name is used directly (spaces become hyphens, : | \ / are dropped).
 
 tools/rdgen-rebase.py moves the series to a newer upstream: it rebases, regenerates 0009, exports and verifies.
 .github/workflows/rdgen-upstream.yml runs it when a CT asks, or by hand. patch-source, installed next to the patches in

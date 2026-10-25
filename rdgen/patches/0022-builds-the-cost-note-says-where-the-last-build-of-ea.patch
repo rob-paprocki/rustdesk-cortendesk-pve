@@ -1,4 +1,4 @@
-From ab9ffb288e3d941c5010d6a17cfeabc68b600dac Mon Sep 17 00:00:00 2001
+From 754f35cee245c0c9965a7bb827c07d18fd5c3a06 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
 Subject: [PATCH 22/28] builds: the cost note says where the last build of each
@@ -308,10 +308,10 @@ index 7beb1e9..b6484bf 100644
      def test_reference_data_is_consistent(self):
          data = views.client_settings()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 8f1259e..a776ed3 100644
+index 7879023..060c3c2 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -410,6 +410,35 @@ def client_settings():
+@@ -411,6 +411,35 @@ def client_settings():
          return json.load(fh)
  
  
@@ -347,7 +347,7 @@ index 8f1259e..a776ed3 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -430,7 +459,8 @@ def generator_view(request):
+@@ -431,7 +460,8 @@ def generator_view(request):
      #return render(request, 'maintenance.html')
      return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
                                                'client_settings': client_settings(),

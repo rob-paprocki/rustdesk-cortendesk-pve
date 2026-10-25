@@ -115,8 +115,8 @@ introduce Docker.
 - The daily update applies the patches with `git am -3` on upstream master; a patch whose context upstream changed
   (0020 on a8cd6ea: the version line in forms.py) stops it ("update NOT applied, keeping the current version"):
   rebase the series locally (`git rebase --onto <new> <old base>`, regenerate 0009 from the 0008 tree with pullify),
-  move UPSTREAM's base-commit, re-export, re-verify (tools/rdgen-rebase.py does all of it). Base since 2026-10-20:
-  f1dcd1c (2026-10-19 "support 1.5.0 and newer only"; 1ba8738, cdb79ac, 234c0f8 before). /api/status keeps our "files" from the
+  move UPSTREAM's base-commit, re-export, re-verify (tools/rdgen-rebase.py does all of it). Base since 2026-10-24:
+  70a628c (2026-10-23 "remove slug_appname since it was causing issues"; 0aa18fc, f1dcd1c, 1ba8738, cdb79ac, 234c0f8 before). /api/status keeps our "files" from the
   database (name, size, sha256, /api/download url): upstream's version listed exe/<uuid>, which the pull model never
   fills (builds live in ARTIFACT_ROOT/<uuid>), and ignored
   deleted builds. The platform override, "on" booleans and 1.5.0 in the API are upstream's; validation runs after
@@ -154,7 +154,10 @@ introduce Docker.
   Tested against a local stub (RDGEN_PATCH_SOURCE_API). Install script: 119,752 bytes after this.
   A CT-started run took the clean path and opened its pull request. Clean PRs (status clean: rebase without conflicts,
   every check passed, nothing edited) are squash-merged by open-pr (gh pr merge --squash --delete-branch, since
-  2026-10-19); repaired or failed ones stay drafts for review.
+  2026-10-19). Since 2026-10-24 verified repairs merge the same way: the owner asked for no review step, which
+  only delayed fixes (PR #10 sat as a draft overnight). A repair stays a draft when the independent
+  finish fails, when Claude writes hold.md (the only fix would weaken the hardening, or it is unsure), or when the
+  repository variable RDGEN_REPAIR_REVIEW is true. Review the merged repairs yourself when you work here.
 - Keeping the repository current (2026-10-21): after a successful update whose upstream is newer than the series'
   base, rdgen-update calls `patch-source request-sync <upstream>`, which starts rdgen-upstream.yml (clean path ->
   auto-merge); so the base follows what the CTs run, once per upstream move (the CT rebuilds once more for the

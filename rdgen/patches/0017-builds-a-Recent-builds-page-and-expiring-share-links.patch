@@ -1,4 +1,4 @@
-From fcbbde122ff015bf8d61e45dfff68d533fa1eb73 Mon Sep 17 00:00:00 2001
+From b986e127e14493bd53c16d8f1df57ad5f558003e Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 16:17:32 -0400
 Subject: [PATCH 17/28] builds: a Recent builds page and expiring share links
@@ -624,13 +624,13 @@ index 0000000..4ebf0ea
 +        prune_local()
 +        self.assertFalse(ShareLink.objects.exists())
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 797e37a..36a89bc 100644
+index 8bc455c..9e59edc 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -5,18 +5,23 @@ import logging
+@@ -4,18 +4,23 @@ import json
+ import logging
  import os
  import re
- import unicodedata
 +import secrets
  import uuid
 +from datetime import timedelta
@@ -653,7 +653,7 @@ index 797e37a..36a89bc 100644
  from .poller import allowed_output_name, valid_uuid
  from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
  
-@@ -439,6 +444,23 @@ def check_for_file(request):
+@@ -440,6 +445,23 @@ def check_for_file(request):
      return render(request, 'waiting.html', context)
  
  
@@ -677,7 +677,7 @@ index 797e37a..36a89bc 100644
  def serve_build_file(request):
      """Stream one stored build output.
  
-@@ -451,14 +473,10 @@ def serve_build_file(request):
+@@ -452,14 +474,10 @@ def serve_build_file(request):
      """
      uuid_val = request.GET.get('uuid', '')
      filename = request.GET.get('filename', '')
@@ -695,10 +695,10 @@ index 797e37a..36a89bc 100644
          raise Http404("Not found")
      return FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
                          content_type='application/octet-stream')
-@@ -477,3 +495,145 @@ def slugify(text):
-     text = re.sub(r"[^\w\s-]", "", text.lower()).strip()
-     # Replace whitespace and hyphens with a single hyphen
-     return re.sub(r"[-\s]+", "-", text)
+@@ -467,3 +485,145 @@ def serve_build_file(request):
+ 
+ def download(request):
+     return serve_build_file(request)
 +
 +
 +# --- recent builds and share links ---------------------------------------------------------------
