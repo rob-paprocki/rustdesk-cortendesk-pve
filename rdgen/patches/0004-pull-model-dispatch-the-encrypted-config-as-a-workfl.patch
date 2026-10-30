@@ -1,7 +1,7 @@
-From 3a2d4c686e014faae892df21ce2e858ce58ee79f Mon Sep 17 00:00:00 2001
+From 04910a8d7d97c81def5ef86f31efa86c296a7781 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
-Subject: [PATCH 04/28] pull model: dispatch the encrypted config as a workflow
+Subject: [PATCH 04/29] pull model: dispatch the encrypted config as a workflow
  input
 
 Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back
@@ -529,7 +529,7 @@ index e81fc9f..6154f0b 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 1020def..72ac3cc 100644
+index 33da449..d7a6fa9 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -14,7 +14,35 @@ import pyzipper
@@ -612,7 +612,7 @@ index 1020def..72ac3cc 100644
      if not urlLink:
          urlLink = "https://rustdesk.com"
      if not downloadLink:
-@@ -128,36 +156,22 @@ def generate_custom_client(params, full_url):
+@@ -125,36 +153,22 @@ def generate_custom_client(params, full_url):
          appname = "rustdesk"
      myuuid = str(uuid.uuid4())
  
@@ -664,7 +664,7 @@ index 1020def..72ac3cc 100644
  
      ###create the custom.txt json here and send in as inputs below
      decodedCustom = {}
-@@ -250,24 +264,6 @@ def generate_custom_client(params, full_url):
+@@ -247,24 +261,6 @@ def generate_custom_client(params, full_url):
      base64_bytes = base64.b64encode(string_bytes)
      encodedCustom = base64_bytes.decode("ascii")
  
@@ -689,7 +689,7 @@ index 1020def..72ac3cc 100644
      inputs_raw = {
          "server":server,
          "serverPort":serverPort,
-@@ -276,16 +272,9 @@ def generate_custom_client(params, full_url):
+@@ -273,16 +269,9 @@ def generate_custom_client(params, full_url):
          "custom":encodedCustom,
          "uuid":myuuid,
          "iconlink_url":iconlink_url,
@@ -706,7 +706,7 @@ index 1020def..72ac3cc 100644
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -298,74 +287,57 @@ def generate_custom_client(params, full_url):
+@@ -295,74 +284,57 @@ def generate_custom_client(params, full_url):
          "filename":filename
      }
  
@@ -826,7 +826,7 @@ index 1020def..72ac3cc 100644
  
  
  def _get_run_status(uuid_val):
-@@ -417,8 +389,7 @@ def generator_view(request):
+@@ -414,8 +386,7 @@ def generator_view(request):
          form = GenerateForm(request.POST, request.FILES)
          if form.is_valid():
              params = form.cleaned_data
@@ -836,7 +836,7 @@ index 1020def..72ac3cc 100644
              if result['success']:
                  return render(request, 'waiting.html', {
                      'filename': result['filename'],
-@@ -427,10 +398,9 @@ def generator_view(request):
+@@ -424,10 +395,9 @@ def generator_view(request):
                      'platform': result['platform'],
                      'log_url': result['log_url']
                  })

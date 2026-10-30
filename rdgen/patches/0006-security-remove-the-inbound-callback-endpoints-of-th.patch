@@ -1,7 +1,7 @@
-From beada528431304e70d1e73acc5d45fcf26f1b6ca Mon Sep 17 00:00:00 2001
+From d6d3fe2f9dfa6410aab468cb30ba20f3028062c1 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
-Subject: [PATCH 06/28] security: remove the inbound callback endpoints of the
+Subject: [PATCH 06/29] security: remove the inbound callback endpoints of the
  push model
 
 GitHub runners no longer call back into rdgen, so these are gone:
@@ -92,7 +92,7 @@ index b54e793..3c313b1 100644
  from PIL import Image
  
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 2e9a789..1d76be0 100644
+index 3e5dda6..1609e94 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,26 +1,22 @@
@@ -157,7 +157,7 @@ index 2e9a789..1d76be0 100644
  
  
  def generate_custom_client(params, full_url=None):
-@@ -445,180 +426,3 @@ def serve_build_file(request):
+@@ -442,180 +423,3 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)

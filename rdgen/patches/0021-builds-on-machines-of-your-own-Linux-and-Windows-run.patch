@@ -1,7 +1,7 @@
-From 2dc0abe8c4d0cf81be069e15516e38d1e1ab7d3d Mon Sep 17 00:00:00 2001
+From 1a27cf3ec4e63cdb551f0c629bacea6cac055427 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
-Subject: [PATCH 21/28] builds on machines of your own: Linux and Windows
+Subject: [PATCH 21/29] builds on machines of your own: Linux and Windows
  runners, Linux choices
 
 Self-hosted runners cost no Actions minutes. The workflow side
@@ -211,7 +211,7 @@ index ecb02b1..7beb1e9 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index c5866ce..7879023 100644
+index 4bc2c68..d12009c 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -74,8 +74,12 @@ def generate_custom_client(params, full_url=None):
@@ -229,7 +229,7 @@ index c5866ce..7879023 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -322,6 +326,10 @@ def generate_custom_client(params, full_url=None):
+@@ -319,6 +323,10 @@ def generate_custom_client(params, full_url=None):
          # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
          if platform == 'macos' and mac_arch != 'both':
              result["mac_arch"] = mac_arch

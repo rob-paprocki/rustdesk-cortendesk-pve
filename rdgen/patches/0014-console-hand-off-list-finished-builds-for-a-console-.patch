@@ -1,7 +1,7 @@
-From 828b4ce9ded2d0b6e55034f910a49394f138bc49 Mon Sep 17 00:00:00 2001
+From ad05281488257a75c285eb9718feadb0e4c5c4b5 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
-Subject: [PATCH 14/28] console hand-off: list finished builds for a console's
+Subject: [PATCH 14/29] console hand-off: list finished builds for a console's
  client downloads
 
 A per-build choice (no / hidden / published, default RDGEN_PUBLISH_DEFAULT;
@@ -573,7 +573,7 @@ index 0000000..0fcd342
 +        from django.contrib.auth import get_user_model
 +        return get_user_model().objects.create_user('tester', password='x' * 16)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 1d76be0..18c4136 100644
+index 1609e94..cb55633 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -13,7 +13,7 @@ from django.urls import reverse
@@ -585,7 +585,7 @@ index 1d76be0..18c4136 100644
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
  from .validation import sanitize_filename, validate_build_fields
-@@ -138,6 +138,12 @@ def generate_custom_client(params, full_url=None):
+@@ -135,6 +135,12 @@ def generate_custom_client(params, full_url=None):
      filename = sanitize_filename(filename)
      if not all(char.isascii() for char in appname):
          appname = "rustdesk"
@@ -598,7 +598,7 @@ index 1d76be0..18c4136 100644
      myuuid = str(uuid.uuid4())
  
      # Images travel inside the encrypted cfg input (pull model): no /get_png
-@@ -299,6 +305,9 @@ def generate_custom_client(params, full_url=None):
+@@ -296,6 +302,9 @@ def generate_custom_client(params, full_url=None):
          platform=platform,
          filename=filename,
          version=version,
@@ -608,7 +608,7 @@ index 1d76be0..18c4136 100644
      )
      try:
          run_id, html_url = github.GitHub().dispatch(platform, inputs)
-@@ -375,7 +384,7 @@ def generator_view(request):
+@@ -372,7 +381,7 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')
@@ -617,7 +617,7 @@ index 1d76be0..18c4136 100644
  
  
  def check_for_file(request):
-@@ -391,6 +400,10 @@ def check_for_file(request):
+@@ -388,6 +397,10 @@ def check_for_file(request):
          'log_url': result['github_log_url'],
          'files': build_files(gh_run),
          'last_error': gh_run.last_error,

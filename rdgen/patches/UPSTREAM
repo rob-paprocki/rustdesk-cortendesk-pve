@@ -1,3 +1,3 @@
 upstream: https://github.com/bryangerlach/rdgen
-base-commit: 70a628c5d84d3afa8b3bb64744a15cbf8249279a (master, 2026-10-23, "remove slug_appname since it was causing issues")
-patches: 28 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)
+base-commit: 073447b88aeeac20ef1811af539b9ed181e1d9cf (master, 2026-10-28, "spaces.")
+patches: 29 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)

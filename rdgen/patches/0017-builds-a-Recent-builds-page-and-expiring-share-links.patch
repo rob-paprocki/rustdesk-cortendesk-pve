@@ -1,7 +1,7 @@
-From b986e127e14493bd53c16d8f1df57ad5f558003e Mon Sep 17 00:00:00 2001
+From dd8fd4235d37d1178bfd7c3b33a34dad675736b6 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 16:17:32 -0400
-Subject: [PATCH 17/28] builds: a Recent builds page and expiring share links
+Subject: [PATCH 17/29] builds: a Recent builds page and expiring share links
 
 Once you left a build's result page there was no way back to it, so a
 build that should not go on a public download page (a client with a
@@ -624,7 +624,7 @@ index 0000000..4ebf0ea
 +        prune_local()
 +        self.assertFalse(ShareLink.objects.exists())
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 8bc455c..9e59edc 100644
+index b69263d..24f2fb2 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -4,18 +4,23 @@ import json
@@ -653,7 +653,7 @@ index 8bc455c..9e59edc 100644
  from .poller import allowed_output_name, valid_uuid
  from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
  
-@@ -440,6 +445,23 @@ def check_for_file(request):
+@@ -437,6 +442,23 @@ def check_for_file(request):
      return render(request, 'waiting.html', context)
  
  
@@ -677,7 +677,7 @@ index 8bc455c..9e59edc 100644
  def serve_build_file(request):
      """Stream one stored build output.
  
-@@ -452,14 +474,10 @@ def serve_build_file(request):
+@@ -449,14 +471,10 @@ def serve_build_file(request):
      """
      uuid_val = request.GET.get('uuid', '')
      filename = request.GET.get('filename', '')
@@ -695,7 +695,7 @@ index 8bc455c..9e59edc 100644
          raise Http404("Not found")
      return FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
                          content_type='application/octet-stream')
-@@ -467,3 +485,145 @@ def serve_build_file(request):
+@@ -464,3 +482,145 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)

@@ -1,0 +1,46 @@
+From 758bfe737fa374286fe379a8bd6266ac251b9a9a Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Fri, 30 Oct 2026 08:56:56 +0000
+Subject: [PATCH 29/29] linux: build the Linux-safe name from the name as typed
+ (upstream strips spaces first)
+
+---
+ rdgenerator/tests/test_ui.py | 6 ++++--
+ rdgenerator/views.py         | 5 +++--
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index 4e08699..d5b9292 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -158,8 +158,10 @@ class LinuxAppNameTests(StubTestCase):
+ 
+     def test_other_platforms_keep_the_name(self):
+         s = self.secrets(platform='macos', appname='Rescue Client (Rob Paprocki)')
+-        # upstream (70a628c) builds with the name itself: spaces become hyphens, : | \ / are dropped
+-        self.assertEqual(s['appname'], 'Rescue-Client-(Rob-Paprocki)')
++        # upstream (073447b) builds with the name itself: spaces and : | \ / are dropped, the custom
++        # app-name keeps the name as typed
++        self.assertEqual(s['appname'], 'RescueClient(RobPaprocki)')
++        self.assertEqual(json.loads(base64.b64decode(s['custom']))['app-name'], 'Rescue Client (Rob Paprocki)')
+ 
+     def test_default_and_already_safe_names_unchanged(self):
+         self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 104d069..c97c4b6 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -154,10 +154,11 @@ def generate_custom_client(params, full_url=None):
+         appname = "rustdesk"
+     if platform == 'linux' and appname != 'rustdesk':
+         # one name for the package, folders, service and the client's own config (see linux_app_name)
+-        problem = linux_app_name_problem(appname)
++        # upstream strips the spaces first; the slug is built from the name as typed
++        problem = linux_app_name_problem(appname_display)
+         if problem:
+             return {"success": False, "error": problem, "status_code": 400}
+-        appname = linux_app_name(appname)
++        appname = appname_display = linux_app_name(appname_display)
+     publish = publish_choice(params.get('publish'))
+     secret_fields = {'permanentPassword': permPass, 'defaultManual': defaultManual, 'overrideManual': overrideManual}
+     problem = publish_problem(dict(secret_fields, publish=publish))

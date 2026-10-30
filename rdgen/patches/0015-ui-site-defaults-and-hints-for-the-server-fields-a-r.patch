@@ -1,7 +1,7 @@
-From 776c902f011fde6d736d647f912962a52e9612aa Mon Sep 17 00:00:00 2001
+From eedf3cf2676b065be3b3fcdbb28312fcf2350564 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
-Subject: [PATCH 15/28] ui: site defaults and hints for the server fields, a
+Subject: [PATCH 15/29] ui: site defaults and hints for the server fields, a
  reference for the Other section
 
 Custom Server: RDGEN_DEFAULT_PORT, RDGEN_DEFAULT_URL_LINK,
@@ -2575,7 +2575,7 @@ index 0000000..97bc1ce
 +            self.assertNotIn('enable-lan-discovery', custom[section])
 +            self.assertNotIn('allow-auto-disconnect', custom[section])
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 18c4136..dea3724 100644
+index cb55633..be84d0e 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,4 +1,5 @@
@@ -2616,7 +2616,7 @@ index 18c4136..dea3724 100644
      direction = params.get('direction', 'both')
      installation = params.get('installation', 'installationY')
      settings = params.get('settings', 'settingsY')
-@@ -105,7 +110,7 @@ def generate_custom_client(params, full_url=None):
+@@ -102,7 +107,7 @@ def generate_custom_client(params, full_url=None):
      filename = params.get('exename', 'rustdesk')
      compname = params.get('compname', '')
      if not compname:
@@ -2625,7 +2625,7 @@ index 18c4136..dea3724 100644
      androidappid = params.get('androidappid', '')
      if not androidappid:
          androidappid = "com.carriez.flutter_hbb"
-@@ -235,6 +240,14 @@ def generate_custom_client(params, full_url=None):
+@@ -232,6 +237,14 @@ def generate_custom_client(params, full_url=None):
          if direction == 'incoming':
              decodedCustom['override-settings']['custom-rendezvous-server'] = server
              decodedCustom['override-settings']['api-server'] = apiServer
@@ -2640,7 +2640,7 @@ index 18c4136..dea3724 100644
  
      if defaultManual:
          for line in defaultManual.splitlines():
-@@ -366,6 +379,13 @@ def build_files(gh_run, url_name='download'):
+@@ -363,6 +376,13 @@ def build_files(gh_run, url_name='download'):
      return files
  
  
@@ -2654,7 +2654,7 @@ index 18c4136..dea3724 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -384,7 +404,9 @@ def generator_view(request):
+@@ -381,7 +401,9 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')

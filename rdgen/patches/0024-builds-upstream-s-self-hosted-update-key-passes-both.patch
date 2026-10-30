@@ -1,7 +1,7 @@
-From aa032b0c69c6ccd6dce62678bc402c2134eead59 Mon Sep 17 00:00:00 2001
+From 59fd58893e96c67bc3a97b9b725958cad39b7c75 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sun, 18 Oct 2026 07:49:21 -0400
-Subject: [PATCH 24/28] builds: upstream's self-hosted update key passes both
+Subject: [PATCH 24/29] builds: upstream's self-hosted update key passes both
  checks
 
 Upstream (2026-10-17, "auto update with rustdesk-api") puts

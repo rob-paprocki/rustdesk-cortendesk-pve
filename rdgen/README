@@ -67,6 +67,8 @@ The later patches, newest last:
      need such a name use macOS.
 0028 adjusts the tests to upstream's removal of slug_appname (70a628c): the build config has one key less, the Flatpak ID
      is the fixed com.rustdesk.RustDesk, and the app name is used directly (spaces become hyphens, : | \ / are dropped).
+0029 builds the Linux-safe app name from the name as typed: upstream (073447b) now strips spaces from the build name and
+     keeps the typed name for custom.txt, so Linux builds take the slug from the typed name and send it as both.
 
 tools/rdgen-rebase.py moves the series to a newer upstream: it rebases, regenerates 0009, exports and verifies.
 .github/workflows/rdgen-upstream.yml runs it when a CT asks, or by hand. patch-source, installed next to the patches in

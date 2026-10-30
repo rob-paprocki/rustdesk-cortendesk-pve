@@ -1,7 +1,7 @@
-From 3066fa98fe2bae7bd082ad28907bc97afbc91d74 Mon Sep 17 00:00:00 2001
+From 7fee74f06cadfddf7b487a8d9f09c15ff7d798ae Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
-Subject: [PATCH 05/28] pull model: poller downloads and deletes artifacts;
+Subject: [PATCH 05/29] pull model: poller downloads and deletes artifacts;
  status and downloads from the DB
 
 New `manage.py rdgen_poll` (run as a supervised service) and
@@ -752,7 +752,7 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 72ac3cc..2e9a789 100644
+index d7a6fa9..3e5dda6 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,6 +1,8 @@
@@ -773,7 +773,7 @@ index 72ac3cc..2e9a789 100644
  from django.utils import timezone
  import logging
  
-@@ -342,48 +345,37 @@ def generate_custom_client(params, full_url=None):
+@@ -339,48 +342,37 @@ def generate_custom_client(params, full_url=None):
  
  def _get_run_status(uuid_val):
      """
@@ -844,7 +844,7 @@ index 72ac3cc..2e9a789 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -405,106 +397,55 @@ def generator_view(request):
+@@ -402,106 +394,55 @@ def generator_view(request):
      return render(request, 'generator.html', {'form': form})
  
  

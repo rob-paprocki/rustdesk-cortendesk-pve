@@ -26,4 +26,5 @@
 0026-workflows-the-setup-job-checks-app_version-tests-for.patch
 0027-tests-follow-upstream-s-1.5.0-only-form-Windows-name.patch
 0028-tests-follow-upstream-s-removal-of-slug_appname.patch
+0029-linux-build-the-Linux-safe-name-from-the-name-as-typ.patch
 UPSTREAM
