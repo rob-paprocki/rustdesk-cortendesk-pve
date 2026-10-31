@@ -1,7 +1,7 @@
-From 7b491b4be6407c16f12a7d3f03f4876ff675bb3a Mon Sep 17 00:00:00 2001
+From 80175bae19a0492d78fd8c2a9577638469a64172 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sat, 24 Oct 2026 08:49:30 +0000
-Subject: [PATCH 28/29] tests: follow upstream's removal of slug_appname
+Subject: [PATCH 28/30] tests: follow upstream's removal of slug_appname
 
 ---
  rdgenerator/tests/test_ui.py        | 3 ++-

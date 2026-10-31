@@ -1,7 +1,7 @@
-From ad05281488257a75c285eb9718feadb0e4c5c4b5 Mon Sep 17 00:00:00 2001
+From 362f9bd21010238806c87c275d750ada10c091e3 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
-Subject: [PATCH 14/29] console hand-off: list finished builds for a console's
+Subject: [PATCH 14/30] console hand-off: list finished builds for a console's
  client downloads
 
 A per-build choice (no / hidden / published, default RDGEN_PUBLISH_DEFAULT;

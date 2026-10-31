@@ -1,7 +1,7 @@
-From f80693bf7a44d13f278ad39d088b2d08e8522290 Mon Sep 17 00:00:00 2001
+From fed9545b079dc27d7edaf716783093088291ce5f Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 22:46:40 -0400
-Subject: [PATCH 19/29] ui: say what the API server, the connection type and
+Subject: [PATCH 19/30] ui: say what the API server, the connection type and
  the password are for
 
 A user's clients never appeared in the console: the form's API server

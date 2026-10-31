@@ -1,7 +1,7 @@
-From 04910a8d7d97c81def5ef86f31efa86c296a7781 Mon Sep 17 00:00:00 2001
+From 75bf0deb599afccd9945ca28009463e3300e6ff9 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
-Subject: [PATCH 04/29] pull model: dispatch the encrypted config as a workflow
+Subject: [PATCH 04/30] pull model: dispatch the encrypted config as a workflow
  input
 
 Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back

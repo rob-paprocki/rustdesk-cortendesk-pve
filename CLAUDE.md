@@ -164,6 +164,8 @@ introduce Docker.
   re-exported series). publish-public.yml pushes the tree to the public copy as one commit on top of its history
   (secret PUBLIC_DEPLOY_KEY = a write deploy key of the public repo; optional secret PUBLIC_DENY_REGEX blocks a
   matching tree); open-pr starts it after an auto-merge (GITHUB_TOKEN merges start no push workflows).
+  request-sync is quiet on failure: an expired dispatch token (401) first showed when a repair request failed
+  (2026-10-30, the sync for the previous upstream move had failed unseen). Fine-grained tokens expire.
 - Patch source (rdgen/patch-source, payload, not embedded): rdgen-setup --patch-source <owner/repo> makes
   /etc/rdgen/patch-source.key (ed25519, read-only deploy key) and patch-source.env (root 0600); ssh uses only
   rdgen/github_known_hosts (api.github.com/meta = ssh-keyscan, 2026-10-18). rdgen-update: labels <upstream>+<series7>
@@ -228,8 +230,13 @@ introduce Docker.
   rdgen's allowCustom.py renames it custom_.txt). Upstream rdgen wrote Contents/MacOS/custom_.txt: unread, and
   rcodesign/codesign treat files there as Mach-O ("Invalid magic number" in upstream's "Sign macOS app bundle", which
   pullify now drops; it also pasted the p12 secrets into the script). Server, key and API server are compiled in by
-  sed, so a wrong custom_.txt location only loses password, permissions and options. Signing is verified against
-  Apple only by real builds: one signed the app and the DMG with a Developer ID certificate.
+  sed, so a wrong custom_.txt location loses password, permissions, options and the app-name. Signing is verified
+  against Apple only by real builds: one signed the app and the DMG with a Developer ID certificate. RustDesk on macOS
+  runs under custom.txt's app-name (read_custom_client), expects /Applications/<app-name>.app/Contents/MacOS/<app-name>
+  (is_installed, service, updater), pastes it unquoted into /bin/sh (daemon plist, install.scpt) and updates only
+  [A-Za-z0-9._-] names, while the workflow names the bundle after env.appname: the two must match and be shell-safe.
+  Upstream 073447b sends the typed name (spaces) as app-name and strips spaces from the build name, so patch 0030
+  sends mac_app_name() (other characters become hyphens; "Acme Support" stays Acme-Support, as before) as both.
 - rcodesign's "unified" API key JSON wants private_key = base64 DER (the .p8 body without BEGIN/END lines or line
   breaks), as `rcodesign encode-app-store-connect-api-key` writes it. The full PEM gives "invalid unified api key".
   Checked locally with rcodesign 0.22.0 for Linux: a key that parses gets as far as "do not know how to notarize"

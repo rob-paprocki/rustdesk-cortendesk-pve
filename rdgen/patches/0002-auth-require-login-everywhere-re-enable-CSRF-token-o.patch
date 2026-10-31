@@ -1,7 +1,7 @@
-From d74996855d13364cb0b3ab2dd36630565da6c2dc Mon Sep 17 00:00:00 2001
+From 2f1c5f4e391981988e856a44cb759dbc57db41e0 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
-Subject: [PATCH 02/29] auth: require login everywhere, re-enable CSRF, token
+Subject: [PATCH 02/30] auth: require login everywhere, re-enable CSRF, token
  or session for /api
 
 - Add LoginRequiredMiddleware (Django >= 5.1; Alpine 3.24 ships 5.2.17).

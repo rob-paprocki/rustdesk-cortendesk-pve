@@ -69,6 +69,9 @@ The later patches, newest last:
      is the fixed com.rustdesk.RustDesk, and the app name is used directly (spaces become hyphens, : | \ / are dropped).
 0029 builds the Linux-safe app name from the name as typed: upstream (073447b) now strips spaces from the build name and
      keeps the typed name for custom.txt, so Linux builds take the slug from the typed name and send it as both.
+0030 gives macOS builds one shell-safe name (letters, digits, . _ -; anything else becomes a hyphen, so "Acme Support"
+     stays Acme-Support as before 073447b) as both the build name and custom.txt app-name: RustDesk on macOS runs under
+     that app-name, looks for /Applications/<app-name>.app/Contents/MacOS/<app-name> and pastes it unquoted into /bin/sh.
 
 tools/rdgen-rebase.py moves the series to a newer upstream: it rebases, regenerates 0009, exports and verifies.
 .github/workflows/rdgen-upstream.yml runs it when a CT asks, or by hand. patch-source, installed next to the patches in

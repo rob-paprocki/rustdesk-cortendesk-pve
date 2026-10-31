@@ -1,7 +1,7 @@
-From 758bfe737fa374286fe379a8bd6266ac251b9a9a Mon Sep 17 00:00:00 2001
+From 556e9a761dcd5f394e4cc2b7a9a51f32538ef94c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 08:56:56 +0000
-Subject: [PATCH 29/29] linux: build the Linux-safe name from the name as typed
+Subject: [PATCH 29/30] linux: build the Linux-safe name from the name as typed
  (upstream strips spaces first)
 
 ---

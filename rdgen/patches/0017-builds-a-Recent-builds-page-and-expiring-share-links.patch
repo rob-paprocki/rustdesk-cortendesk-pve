@@ -1,7 +1,7 @@
-From dd8fd4235d37d1178bfd7c3b33a34dad675736b6 Mon Sep 17 00:00:00 2001
+From 66cd7f62f820702ae5ee1318c17940be41f31252 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 16:17:32 -0400
-Subject: [PATCH 17/29] builds: a Recent builds page and expiring share links
+Subject: [PATCH 17/30] builds: a Recent builds page and expiring share links
 
 Once you left a build's result page there was no way back to it, so a
 build that should not go on a public download page (a client with a

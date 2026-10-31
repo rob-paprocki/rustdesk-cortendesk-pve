@@ -1,0 +1,109 @@
+From ced4abe5c517ca0454f694f7847a1c8172eb7f8b Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Fri, 30 Oct 2026 09:04:15 +0000
+Subject: [PATCH 30/30] macos: one shell-safe name for the bundle and
+ custom.txt app-name
+
+Upstream (073447b) builds with the typed name stripped of spaces and puts the
+typed name into custom.txt as app-name. RustDesk on macOS takes its runtime
+name from that app-name, looks for itself at
+/Applications/<app-name>.app/Contents/MacOS/<app-name> (is_installed, the
+service it installs, the updater), pastes the name unquoted into /bin/sh (the
+daemon plist, the install script) and updates only [A-Za-z0-9._-] names,
+while the workflow names the bundle and its executable after the build name.
+"Acme Support (Mac)" was built as AcmeSupport(Mac).app but ran as
+"Acme Support (Mac)": never installed, and with brackets the daemon is a shell
+syntax error even when the names match.
+
+macOS builds now send one name as both, mac_app_name(): letters, digits and
+. _ -, anything else becomes a hyphen. Spaces become hyphens as before 073447b
+("Acme Support" -> Acme-Support), so a rebuilt client replaces the installed
+one instead of landing next to it with a new ID. Android keeps upstream's
+typed name; Windows 1.5.0 names are [A-Za-z0-9-] already (0023).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018q7YLzF19Xf3Dte2Jtftzy
+---
+ rdgenerator/tests/test_ui.py | 16 +++++++++++++---
+ rdgenerator/validation.py    | 14 ++++++++++++++
+ rdgenerator/views.py         |  5 ++++-
+ 3 files changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index d5b9292..c82b5f0 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -157,12 +157,22 @@ class LinuxAppNameTests(StubTestCase):
+         self.assertEqual(GithubRun.objects.latest('id').label, 'Rescue Client (Rob Paprocki)')
+ 
+     def test_other_platforms_keep_the_name(self):
+-        s = self.secrets(platform='macos', appname='Rescue Client (Rob Paprocki)')
+-        # upstream (073447b) builds with the name itself: spaces and : | \ / are dropped, the custom
+-        # app-name keeps the name as typed
++        s = self.secrets(platform='android', appname='Rescue Client (Rob Paprocki)')
++        # upstream (073447b) builds with the name itself: spaces and : | \ / are dropped; custom.txt shows it as typed
+         self.assertEqual(s['appname'], 'RescueClient(RobPaprocki)')
+         self.assertEqual(json.loads(base64.b64decode(s['custom']))['app-name'], 'Rescue Client (Rob Paprocki)')
+ 
++    def test_macos_build_runs_under_its_bundle_name(self):
++        # the bundle is <appname>.app; RustDesk on macOS looks for /Applications/<app-name>.app and pastes the name
++        # into /bin/sh: one shell-safe name, spaces as hyphens as before 073447b (a rebuild replaces the installed app)
++        for typed, name in (('Acme Support (Mac)', 'Acme-Support-Mac'), ('Acme Support', 'Acme-Support'),
++                            ('Acme_Remote.v2', 'Acme_Remote.v2'), ('Acme+Co, Ltd', 'Acme-Co-Ltd')):
++            s = self.secrets(platform='macos', appname=typed)
++            custom = json.loads(base64.b64decode(s['custom']))
++            self.assertEqual((s['appname'], custom['app-name']), (name, name), typed)
++        from rdgenerator.models import GithubRun
++        self.assertEqual(GithubRun.objects.latest('id').label, 'Acme+Co, Ltd')
++
+     def test_default_and_already_safe_names_unchanged(self):
+         self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
+         self.assertEqual(self.secrets(platform='linux', appname='acme-remote')['appname'], 'acme-remote')
+diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
+index 1057daf..416011e 100644
+--- a/rdgenerator/validation.py
++++ b/rdgenerator/validation.py
+@@ -72,6 +72,20 @@ def linux_reserved_names():
+         return frozenset(line.strip() for line in fh if line.strip() and not line.startswith('#'))
+ 
+ 
++def mac_app_name(name):
++    """The app name a macOS build gets: letters, digits and . _ -, other characters become hyphens.
++
++    RustDesk on macOS runs under custom.txt's app-name, looks for itself at
++    /Applications/<name>.app/Contents/MacOS/<name> (is_installed, its service,
++    its updater), pastes the name unquoted into /bin/sh (daemon plist, install
++    script) and updates only [A-Za-z0-9._-] names; the workflow names the bundle
++    after the build name. Spaces become hyphens as before upstream 073447b, so a
++    rebuilt client replaces the installed one: "Acme Support (Mac)" becomes
++    "Acme-Support-Mac".
++    """
++    return re.sub(r'[^A-Za-z0-9._-]+', '-', name or '').strip('-') or 'rustdesk'
++
++
+ def linux_app_name_problem(name):
+     """Why a Linux build cannot use this app name, or ''. A blank name means the default (rustdesk)."""
+     if not (name or '').strip():
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index c97c4b6..ae8b50f 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -22,7 +22,7 @@ from . import buildcfg, github
+ from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
+ from .models import GithubRun, ShareLink
+ from .poller import allowed_output_name, discard_build, valid_uuid
+-from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
++from .validation import linux_app_name, linux_app_name_problem, mac_app_name, sanitize_filename, validate_build_fields
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -159,6 +159,9 @@ def generate_custom_client(params, full_url=None):
+         if problem:
+             return {"success": False, "error": problem, "status_code": 400}
+         appname = appname_display = linux_app_name(appname_display)
++    if platform == 'macos' and appname != 'rustdesk':
++        # one shell-safe name for the bundle and the client's runtime name (see mac_app_name)
++        appname = appname_display = mac_app_name(appname_display)
+     publish = publish_choice(params.get('publish'))
+     secret_fields = {'permanentPassword': permPass, 'defaultManual': defaultManual, 'overrideManual': overrideManual}
+     problem = publish_problem(dict(secret_fields, publish=publish))

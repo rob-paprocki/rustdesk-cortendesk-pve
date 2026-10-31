@@ -1,7 +1,7 @@
-From 7fee74f06cadfddf7b487a8d9f09c15ff7d798ae Mon Sep 17 00:00:00 2001
+From d39b47e6b63d929047fea34166ab88265f1c77ac Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
-Subject: [PATCH 05/29] pull model: poller downloads and deletes artifacts;
+Subject: [PATCH 05/30] pull model: poller downloads and deletes artifacts;
  status and downloads from the DB
 
 New `manage.py rdgen_poll` (run as a supervised service) and

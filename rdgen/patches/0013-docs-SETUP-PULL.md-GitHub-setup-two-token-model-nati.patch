@@ -1,7 +1,7 @@
-From 92a6dd3f8537014b55461a45ec4e8ace606b8bcc Mon Sep 17 00:00:00 2001
+From 9359d119228c46523c41e81d59440f967a3c01be Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:12:31 -0400
-Subject: [PATCH 13/29] docs: SETUP-PULL.md (GitHub setup, two-token model,
+Subject: [PATCH 13/30] docs: SETUP-PULL.md (GitHub setup, two-token model,
  native install, updates)
 
 - How the pull model works, and why the build repository must be a

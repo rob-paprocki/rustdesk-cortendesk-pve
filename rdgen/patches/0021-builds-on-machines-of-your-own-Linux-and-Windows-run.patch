@@ -1,7 +1,7 @@
-From 1a27cf3ec4e63cdb551f0c629bacea6cac055427 Mon Sep 17 00:00:00 2001
+From 6e0d1ad1200135f21e3f607036064c2dc3a58865 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
-Subject: [PATCH 21/29] builds on machines of your own: Linux and Windows
+Subject: [PATCH 21/30] builds on machines of your own: Linux and Windows
  runners, Linux choices
 
 Self-hosted runners cost no Actions minutes. The workflow side
