@@ -1,4 +1,4 @@
-From 42236d9ae9f468807262b965f79ea25463c0124f Mon Sep 17 00:00:00 2001
+From 260ddfdd74e670da7234fde1736c107de1f20766 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/30] workflows: apply tools/pullify.py (pull model, pinned
@@ -45,13 +45,13 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  .github/workflows/fetch-encrypted-secrets.yml |   2 +-
  .github/workflows/generator-android.yml       | 157 ++--
  .github/workflows/generator-linux.yml         | 450 +++++------
- .github/workflows/generator-macos.yml         | 342 +++++----
+ .github/workflows/generator-macos.yml         | 346 +++++----
  .github/workflows/generator-windows-x86.yml   | 117 +--
  .github/workflows/generator-windows.yml       | 158 ++--
  .github/workflows/sh-generator-windows.yml    | 701 ------------------
  .../third-party-RustDeskTempTopMostWindow.yml |  25 +-
  .github/workflows/vcpkg.yml                   |  67 --
- 13 files changed, 604 insertions(+), 1591 deletions(-)
+ 13 files changed, 608 insertions(+), 1591 deletions(-)
  delete mode 100644 .github/workflows/build-web.yml
  delete mode 100644 .github/workflows/clear-cache.yml
  delete mode 100644 .github/workflows/docker-build.yml
@@ -1756,7 +1756,7 @@ index 9da4583..7741e8b 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-macos.yml b/.github/workflows/generator-macos.yml
-index 4cd1344..6c78533 100644
+index 4cd1344..8a4b718 100644
 --- a/.github/workflows/generator-macos.yml
 +++ b/.github/workflows/generator-macos.yml
 @@ -1,5 +1,5 @@
@@ -1948,7 +1948,7 @@ index 4cd1344..6c78533 100644
          shell: bash
          run: |
            brew install imagemagick potrace nasm cmake gcc wget ninja
-@@ -199,6 +210,23 @@ jobs:
+@@ -199,6 +210,27 @@ jobs:
            sed -i '' -e "s|launchUrlString('https://rustdesk.com/privacy.html')|launchUrlString('${{ env.urlLink }}/privacy.html')|" ./flutter/lib/mobile/pages/settings_page.dart
            sed -i '' -e "s|https://rustdesk.com/privacy.html|${{ env.urlLink }}/privacy.html|" ./flutter/lib/desktop/pages/install_page.dart
  
@@ -1956,15 +1956,19 @@ index 4cd1344..6c78533 100644
 +        # rdgen: the app's own bundle ID: RustDesk's Runner target sets com.carriez.rustdesk, unquoted, over AppInfo.xcconfig
 +        shell: bash
 +        run: |
++          : "${appname:?appname is not set}"
 +          [ "$appname" != rustdesk ] || { echo "default name: RustDesk's bundle ID stays"; exit 0; }
-+          part=$(printf '%s' "$appname" | LC_ALL=C tr -c 'A-Za-z0-9.-' '-' | sed -E 's/-+/-/g; s/[.]+/./g; s/^[.-]+//; s/[.-]+$//')
++          part=$(printf '%s' "$appname" | LC_ALL=C tr -c 'A-Za-z0-9.-' '-' |
++            sed -E 's/-+/-/g; s/[.]+/./g; s/[.]-+|-+[.]/./g; s/^[.-]+//; s/[.-]+$//')
 +          bundle_id="com.${part:-app}.app"
-+          pbx=flutter/macos/Runner.xcodeproj/project.pbxproj
-+          sed -E -i.rdgen "s/PRODUCT_BUNDLE_IDENTIFIER = \"?com[.]carriez[.]rustdesk\"?;/PRODUCT_BUNDLE_IDENTIFIER = $bundle_id;/" "$pbx"
-+          rm -f "$pbx.rdgen"
-+          if grep -Eq 'PRODUCT_BUNDLE_IDENTIFIER = "?com[.]carriez[.]rustdesk"?;' "$pbx" ||
-+              ! grep -qF "PRODUCT_BUNDLE_IDENTIFIER = $bundle_id;" "$pbx"; then
-+            echo "::error::$pbx does not set the bundle ID the way RustDesk 1.5.0 does: $bundle_id is not set"
++          pbx=flutter/macos/Runner.xcodeproj/project.pbxproj xcc=flutter/macos/Runner/Configs/AppInfo.xcconfig
++          # the Runner target's lines win; AppInfo.xcconfig is where upstream's sed leaves the name as it came
++          sed -E -i.rdgen "s/^([[:space:]]*PRODUCT_BUNDLE_IDENTIFIER = )com[.]carriez[.]rustdesk;$/\1$bundle_id;/" "$pbx"
++          [ ! -f "$xcc" ] || sed -E -i.rdgen "s/^PRODUCT_BUNDLE_IDENTIFIER = .*/PRODUCT_BUNDLE_IDENTIFIER = $bundle_id/" "$xcc"
++          rm -f "$pbx.rdgen" "$xcc.rdgen"
++          ids=$(cat "$pbx" "$xcc" 2>/dev/null | sed -nE 's/^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER = (.*[^;]);?$/\1/p' || true)
++          if [ -z "$ids" ] || grep -vqxF "$bundle_id" <<<"$ids"; then
++            echo "::error::the Xcode project sets a bundle ID this step does not replace ($(tr '\n' ' ' <<<"$ids")): $bundle_id is not set"
 +            exit 1
 +          fi
 +          echo "bundle ID: $bundle_id"
@@ -1972,7 +1976,7 @@ index 4cd1344..6c78533 100644
        - name: change download link to custom
          if: env.downloadLink != 'https://rustdesk.com/download'
          continue-on-error: true
-@@ -278,20 +306,21 @@ jobs:
+@@ -278,20 +310,21 @@ jobs:
            grep -nE "RENDEZVOUS_PORT|RELAY_PORT|WS_" ./libs/hbb_common/src/config.rs
  
        - name: allow custom.txt
@@ -1997,7 +2001,7 @@ index 4cd1344..6c78533 100644
          run: |
            brew install llvm create-dmg
            # pkg-config is handled in a separate step, because it may be already installed by `macos-latest`(14.7.1) runner
-@@ -309,11 +338,11 @@ jobs:
+@@ -309,11 +342,11 @@ jobs:
            # aom and other multimedia libraries require NASM 2.x for x86/x86_64 assembly.
            wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
            unzip nasm-2.16.03-macosx.zip
@@ -2011,7 +2015,7 @@ index 4cd1344..6c78533 100644
          with:
            channel: "stable"
            flutter-version: ${{ env.FLUTTER_VERSION }}
-@@ -322,7 +351,7 @@ jobs:
+@@ -322,7 +355,7 @@ jobs:
          continue-on-error: true
          run: |
              cd $(dirname $(dirname $(which flutter)))
@@ -2020,7 +2024,7 @@ index 4cd1344..6c78533 100644
        
        - name: Workaround for flutter issue
          shell: bash
-@@ -333,14 +362,15 @@ jobs:
+@@ -333,14 +366,15 @@ jobs:
            grep -n '_setFramesEnabledState(false);' ../packages/flutter/lib/src/scheduler/binding.dart
          
        - name: Install Rust toolchain
@@ -2038,7 +2042,7 @@ index 4cd1344..6c78533 100644
            prefix-key: ${{ matrix.job.os }}
  
        - name: Magick stuff for macOS
-@@ -356,10 +386,7 @@ jobs:
+@@ -356,10 +390,7 @@ jobs:
            mkdir -p ./rustdesk/data/flutter_assets/assets
  
            # Download icon using curl with additional SSL options
@@ -2050,7 +2054,7 @@ index 4cd1344..6c78533 100644
              
            # Backup existing files (if they exist)
            [ -f "./res/32x32.png" ] && mv ./res/32x32.png ./res/32x32.png.bak
-@@ -504,14 +531,14 @@ jobs:
+@@ -504,14 +535,14 @@ jobs:
          continue-on-error: true
          if: env.xOffline == 'true'
          run: |
@@ -2067,7 +2071,7 @@ index 4cd1344..6c78533 100644
            git apply hidecm.diff
  
        - name: removeNewVersionNotif
-@@ -522,13 +549,13 @@ jobs:
+@@ -522,13 +553,13 @@ jobs:
            sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
  
        - name: Restore bridge files
@@ -2083,7 +2087,7 @@ index 4cd1344..6c78533 100644
          with:
            path: ${{ github.workspace }}/installed
            key: vcpkg-macos-${{ env.VCPKG_COMMIT_ID }}-${{ matrix.job.vcpkg-triplet }}
-@@ -536,7 +563,7 @@ jobs:
+@@ -536,7 +567,7 @@ jobs:
              vcpkg-macos-${{ env.VCPKG_COMMIT_ID }}-
  
        - name: Setup vcpkg
@@ -2092,7 +2096,7 @@ index 4cd1344..6c78533 100644
          with:
            vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
            doNotCache: false
-@@ -558,7 +585,7 @@ jobs:
+@@ -558,7 +589,7 @@ jobs:
            head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-${{ matrix.job.vcpkg-triplet }}-rel-out.log" || true
  
        - name: Save vcpkg installed cache
@@ -2101,7 +2105,7 @@ index 4cd1344..6c78533 100644
          continue-on-error: true
          with:
            path: ${{ github.workspace }}/installed
-@@ -589,8 +616,8 @@ jobs:
+@@ -589,8 +620,8 @@ jobs:
          run: |
            APP=$(find ./flutter/build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
            echo "App bundle: $APP"
@@ -2112,7 +2116,7 @@ index 4cd1344..6c78533 100644
        
        - name: Install rcodesign tool
          if: env.MACOS_P12_BASE64 != null
-@@ -598,11 +625,13 @@ jobs:
+@@ -598,11 +629,13 @@ jobs:
          run: |
            pushd /tmp
            wget https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
@@ -2127,7 +2131,7 @@ index 4cd1344..6c78533 100644
          run: |
            brew install llvm create-dmg nasm cmake gcc wget ninja
            # pkg-config is handled in a separate step, because it may be already installed by `macos-latest`(14.7.1) runner
-@@ -645,71 +674,7 @@ jobs:
+@@ -645,71 +678,7 @@ jobs:
          run: |
            ASSETS_DIR="build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/App.framework/Versions/Current/Resources/flutter_assets/assets"
            mkdir -p "$ASSETS_DIR"
@@ -2200,7 +2204,7 @@ index 4cd1344..6c78533 100644
  
        - name: Ad-hoc Sign macOS app bundle (Fallback)
          if: env.MACOS_P12_BASE64 == '' || env.MACOS_P12_BASE64 == null
-@@ -737,9 +702,49 @@ jobs:
+@@ -737,9 +706,49 @@ jobs:
                exit 1
              fi
  
@@ -2251,7 +2255,7 @@ index 4cd1344..6c78533 100644
            # Print directory contents for debugging
            echo "Directory contents:"
            ls -la
-@@ -753,7 +758,7 @@ jobs:
+@@ -753,7 +762,7 @@ jobs:
              exit 1
            fi
            echo "Creating DMG for ${{ env.appname }}.app"
@@ -2260,7 +2264,7 @@ index 4cd1344..6c78533 100644
              --volname "${{ env.appname }}" \
              --window-pos 200 120 \
              --window-size 800 400 \
-@@ -764,6 +769,49 @@ jobs:
+@@ -764,6 +773,49 @@ jobs:
              "${{ env.appname }}-${{ matrix.job.arch }}.dmg" \
              "${{ env.appname }}.app"
            mv "${{ env.appname }}-${{ matrix.job.arch }}.dmg" $GITHUB_WORKSPACE/
@@ -2310,7 +2314,7 @@ index 4cd1344..6c78533 100644
    
        - name: Rename rustdesk
          if: env.UPLOAD_ARTIFACT == 'true'
-@@ -784,35 +832,25 @@ jobs:
+@@ -784,35 +836,25 @@ jobs:
              exit 1
            fi
  

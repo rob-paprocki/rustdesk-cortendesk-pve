@@ -1,4 +1,4 @@
-From 70918782c5ae960ab550b1ce9fa0e6a65c26b195 Mon Sep 17 00:00:00 2001
+From f24ee316bb6018a472c111775b63ec1dc1c2c30c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sun, 18 Oct 2026 07:49:21 -0400
 Subject: [PATCH 24/30] builds: upstream's self-hosted update key passes both
@@ -82,7 +82,7 @@ index 9f62b66..776a68d 100644
          r = self.generate(iconbase64=png_uri((1024, 1024), noise=True), privacybase64=png_uri((800, 600), noise=True))
          self.assertEqual(r.status_code, 413)
 diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
-index e28bbe9..07243e8 100644
+index 64ae933..f89ff21 100644
 --- a/rdgenerator/tests/test_workflows.py
 +++ b/rdgenerator/tests/test_workflows.py
 @@ -35,7 +35,7 @@ def secrets_json(u, **over):
@@ -114,7 +114,7 @@ index e28bbe9..07243e8 100644
      def test_macos_developer_id_signing_and_notarization(self):
          with open(os.path.join(ROOT, '.github', 'workflows', 'generator-macos.yml'), encoding='utf-8') as fh:
              text = fh.read()
-@@ -266,7 +279,8 @@ class RunnerValidatorParityTests(SimpleTestCase):
+@@ -287,7 +300,8 @@ class RunnerValidatorParityTests(SimpleTestCase):
          u = str(uuid.uuid4())
          for field, value in [('serverIP', 'a.com";id;"'), ('appname', "x'$(id)"), ('compname', 'a|b'),
                               ('apiServer', "https://a/'x"), ('urlLink', 'https://a/?a=1&b'),
@@ -124,7 +124,7 @@ index e28bbe9..07243e8 100644
              self.assertIn(field, validate_build_fields({field: value}), field)
              runner_key = self.FIELD_MAP.get(field, field)
              self.assertTrue(v.validate_secrets(secrets_json(u, **{runner_key: value})), field)
-@@ -317,11 +331,12 @@ class RunnerStepsTests(SimpleTestCase):
+@@ -338,11 +352,12 @@ class RunnerStepsTests(SimpleTestCase):
          pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
          self.assertEqual(pairs['appname'], 'Acme Remote')
          self.assertEqual(pairs['uuid'], u)

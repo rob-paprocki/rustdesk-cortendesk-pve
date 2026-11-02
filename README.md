@@ -142,6 +142,13 @@ Upstream rdgen has its own signing step for these secrets. It signs with rcodesi
 
 Mac clients read their settings file (`custom_.txt`: preset password, permissions, Other settings) from `Contents/Resources`, but upstream rdgen puts it in `Contents/MacOS`. So Mac clients built before this fix used only the compiled-in server, key and API server, and ignored everything else. Rebuild them.
 
+Every Mac client also used to carry official RustDesk's bundle ID, `com.carriez.rustdesk`, so to macOS it was RustDesk itself. A client with its own name now gets its own ID: `com.<name>.app`, for example `com.Acme-Support.app` for "Acme Support". Clients left on the default name keep RustDesk's ID. An installed client moves to the new ID once:
+- Replace it by hand: drag the new app over the old one in Applications. RustDesk's own updater refuses a changed ID.
+- macOS asks again for Screen Recording, Accessibility, Input Monitoring and the microphone, because those permissions belong to the ID. On an unattended Mac, someone has to grant them at the Mac.
+- If you manage Macs with MDM privacy (PPPC) profiles, change their identifier from `com.carriez.rustdesk` to the new ID before rolling the client out.
+
+The RustDesk ID, the settings and the password stay, because those belong to the app's name.
+
 When you start a build, rdgen sends the config (server, key, preset password, branding) to GitHub as an AES-encrypted workflow input. The build runs in your repo's Actions and uploads the clients as artifacts that expire after a day. The poller in the LXC downloads them, then deletes the artifacts and the successful run.
 
 Costs and caveats:

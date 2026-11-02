@@ -1,4 +1,4 @@
-From 468ee4c36f405ad535ee9c1b4bb7d3b5f8b80b11 Mon Sep 17 00:00:00 2001
+From 2cf9f7003f08b0281ddc0d07edc9af2963e7efad Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sat, 24 Oct 2026 08:49:30 +0000
 Subject: [PATCH 28/30] tests: follow upstream's removal of slug_appname
@@ -23,7 +23,7 @@ index 47bfccd..4e08699 100644
      def test_default_and_already_safe_names_unchanged(self):
          self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
 diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
-index c2211ac..a9193db 100644
+index 311d775..43bd9af 100644
 --- a/rdgenerator/tests/test_workflows.py
 +++ b/rdgenerator/tests/test_workflows.py
 @@ -88,7 +88,9 @@ class PullifyTests(SimpleTestCase):
@@ -37,7 +37,7 @@ index c2211ac..a9193db 100644
  
      def test_only_expected_workflows_remain(self):
          self.assertEqual(sorted(os.listdir(WORKFLOWS)), sorted([
-@@ -332,8 +334,8 @@ class RunnerStepsTests(SimpleTestCase):
+@@ -353,8 +355,8 @@ class RunnerStepsTests(SimpleTestCase):
          pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
          self.assertEqual(pairs['appname'], 'Acme Remote')
          self.assertEqual(pairs['uuid'], u)

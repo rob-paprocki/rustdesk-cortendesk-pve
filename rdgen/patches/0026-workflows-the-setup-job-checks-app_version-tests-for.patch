@@ -1,4 +1,4 @@
-From adbd8b58c9eefb687ad5fd3c63e381ff121d1d16 Mon Sep 17 00:00:00 2001
+From 3933d5e1d81db00af2949a150ebd23a40aab32bd Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 19 Oct 2026 00:15:11 -0400
 Subject: [PATCH 26/30] workflows: the setup job checks app_version; tests for
@@ -103,10 +103,10 @@ index 776a68d..7d9c108 100644
          # The runner's decrypt step refuses unknown and missing keys (validate.py), so every key the server
          # puts into secrets.json must be known there. Upstream's update_public_key (2026-10-17) was not: every
 diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
-index 07243e8..ddeb477 100644
+index f89ff21..5543fe8 100644
 --- a/rdgenerator/tests/test_workflows.py
 +++ b/rdgenerator/tests/test_workflows.py
-@@ -297,13 +297,14 @@ class RunnerValidatorParityTests(SimpleTestCase):
+@@ -318,13 +318,14 @@ class RunnerValidatorParityTests(SimpleTestCase):
  class RunnerStepsTests(SimpleTestCase):
      """Run the setup job's decode script and decrypt.py as a runner would."""
  
@@ -123,7 +123,7 @@ index 07243e8..ddeb477 100644
          event = os.path.join(tmp, 'event.json')
          with open(event, 'w') as fh:
              json.dump({'inputs': inputs}, fh)
-@@ -338,6 +339,19 @@ class RunnerStepsTests(SimpleTestCase):
+@@ -359,6 +360,19 @@ class RunnerStepsTests(SimpleTestCase):
          self.assertEqual(os.listdir(os.path.join(tmp, 'rt', 'rdgen-assets')), ['icon.png'])
          self.assertTrue({'allowCustom.py', 'allow_custom_update.py'} <= set(os.listdir(os.path.join(tmp, 'rt', 'rdgen-patches'))))
  

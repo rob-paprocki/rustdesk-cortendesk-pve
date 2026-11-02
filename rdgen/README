@@ -24,7 +24,8 @@ Besides the pull model and actions pinned to commits, pullify:
   "Sign macOS app bundle" step and signs with codesign instead.
 - gives a named Mac client its own bundle ID, com.<name>.app. RustDesk's Xcode project sets com.carriez.rustdesk in
   the Runner target, which upstream's sed misses, so every custom client was official RustDesk to macOS (privacy
-  permissions, Launch Services). The default name keeps RustDesk's ID.
+  permissions, Launch Services). The default name keeps RustDesk's ID. The step also sets AppInfo.xcconfig, and it
+  fails the build when the project sets any other bundle ID.
 - keeps the Linux DRM job (an extra unattended-wayland .deb, RustDesk 1.5.0 and later) from failing builds. It puts
   back upstream's "Detect DRM support" step when nothing sets DRM_SUPPORTED, builds only where RustDesk has --drm,
   skips the job in ARM-only builds and marks it continue-on-error. On a Linux runner of your own it runs only with
