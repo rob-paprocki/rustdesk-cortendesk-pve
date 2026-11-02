@@ -1,4 +1,4 @@
-From 17c7e1b1727f51d8c432234037f04fa792cff734 Mon Sep 17 00:00:00 2001
+From 9be27a386c507d10329ff611914bae931324b83f Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
 Subject: [PATCH 06/30] security: remove the inbound callback endpoints of the

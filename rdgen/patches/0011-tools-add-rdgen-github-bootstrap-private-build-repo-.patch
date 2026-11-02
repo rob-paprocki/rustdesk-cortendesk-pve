@@ -1,4 +1,4 @@
-From 4fd8442af6d1e19ebee7e805f6bd178de20244c2 Mon Sep 17 00:00:00 2001
+From b37142e48b5596eb42d8335aab1295d12610d26f Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:05:56 -0400
 Subject: [PATCH 11/30] tools: add rdgen-github-bootstrap (private build repo

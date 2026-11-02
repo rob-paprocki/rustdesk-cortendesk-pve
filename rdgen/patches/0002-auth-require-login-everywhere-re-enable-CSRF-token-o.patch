@@ -1,4 +1,4 @@
-From 2f1c5f4e391981988e856a44cb759dbc57db41e0 Mon Sep 17 00:00:00 2001
+From 10ec288850db9f96c517829196671ac5726e5598 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
 Subject: [PATCH 02/30] auth: require login everywhere, re-enable CSRF, token

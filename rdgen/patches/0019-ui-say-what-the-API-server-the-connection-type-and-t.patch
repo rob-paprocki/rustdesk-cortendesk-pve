@@ -1,4 +1,4 @@
-From fed9545b079dc27d7edaf716783093088291ce5f Mon Sep 17 00:00:00 2001
+From c4e66fc7aac10ecb0350b6691e63a77f2e06d292 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 22:46:40 -0400
 Subject: [PATCH 19/30] ui: say what the API server, the connection type and

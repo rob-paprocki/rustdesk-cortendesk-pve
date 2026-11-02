@@ -1,4 +1,4 @@
-From 260ddfdd74e670da7234fde1736c107de1f20766 Mon Sep 17 00:00:00 2001
+From 3a1b34fde8fe03652c21133c6819e324e31df749 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/30] workflows: apply tools/pullify.py (pull model, pinned
@@ -745,7 +745,7 @@ index 8bef950..90dad36 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-linux.yml b/.github/workflows/generator-linux.yml
-index 9da4583..7741e8b 100644
+index c5d2c47..992bc42 100644
 --- a/.github/workflows/generator-linux.yml
 +++ b/.github/workflows/generator-linux.yml
 @@ -1,5 +1,5 @@
@@ -1403,7 +1403,7 @@ index 9da4583..7741e8b 100644
              fi
              if [[ "${{ env.iconlink_url }}" != "false" ]]; then
                mv ./flutter/assets/icon.svg ./flutter/assets/icon.svg.bak
-@@ -1307,50 +1315,39 @@ jobs:
+@@ -1308,50 +1316,39 @@ jobs:
                mv "$name" /workspace/output/"${{ env.filename }}-unattended-wayland-x86_64.deb"
              done
  
@@ -1469,7 +1469,7 @@ index 9da4583..7741e8b 100644
          with:
            name: encrypted-secrets-zip
  
-@@ -1361,7 +1358,7 @@ jobs:
+@@ -1362,7 +1359,7 @@ jobs:
  
        - name: Checkout source code
          if: ${{ env.VERSION != 'master' }}
@@ -1478,7 +1478,7 @@ index 9da4583..7741e8b 100644
          with:
            repository: rustdesk/rustdesk
            ref: refs/tags/${{ env.VERSION }}
-@@ -1369,7 +1366,7 @@ jobs:
+@@ -1370,7 +1367,7 @@ jobs:
  
        - name: Checkout source code
          if: ${{ env.VERSION == 'master' }}
@@ -1487,7 +1487,7 @@ index 9da4583..7741e8b 100644
          with:
            repository: rustdesk/rustdesk
            submodules: recursive
-@@ -1378,9 +1375,11 @@ jobs:
+@@ -1379,9 +1376,11 @@ jobs:
          continue-on-error: true
          if: ${{ inputs.app_version != '' }}
          shell: bash
@@ -1501,7 +1501,7 @@ index 9da4583..7741e8b 100644
            grep '^version = ' ./Cargo.toml
  
        - name: Apply allow_custom_update patch
-@@ -1388,14 +1387,14 @@ jobs:
+@@ -1389,14 +1388,14 @@ jobs:
          if: ${{ env.update_public_key != '' }}
          shell: bash
          run: |
@@ -1518,7 +1518,7 @@ index 9da4583..7741e8b 100644
          with:
            name: ${{ env.filename }}-${{ matrix.job.arch }}.deb
            path: .
-@@ -1406,7 +1405,7 @@ jobs:
+@@ -1407,7 +1406,7 @@ jobs:
  
        - name: icon stuff
          if: ${{ env.iconlink_url != 'false' }}
@@ -1527,7 +1527,7 @@ index 9da4583..7741e8b 100644
          with:
            timeout_minutes: 5
            max_attempts: 3
-@@ -1416,7 +1415,7 @@ jobs:
+@@ -1417,7 +1416,7 @@ jobs:
              mv ./res/icon.ico ./res/icon.ico.bak
              mv ./res/icon.png ./res/icon.png.bak
              mv ./res/tray-icon.ico ./res/tray-icon.ico.bak
@@ -1536,7 +1536,7 @@ index 9da4583..7741e8b 100644
              mv ./res/32x32.png ./res/32x32.png.bak
              mv ./res/64x64.png ./res/64x64.png.bak
              mv ./res/128x128.png ./res/128x128.png.bak
-@@ -1476,57 +1475,32 @@ jobs:
+@@ -1477,57 +1476,32 @@ jobs:
            sudo mv "$src" "./$dest"
            popd
  
@@ -1607,7 +1607,7 @@ index 9da4583..7741e8b 100644
          with:
            name: encrypted-secrets-zip
  
-@@ -1537,7 +1511,7 @@ jobs:
+@@ -1538,7 +1512,7 @@ jobs:
  
        - name: Checkout source code
          if: ${{ env.VERSION != 'master' }}
@@ -1616,7 +1616,7 @@ index 9da4583..7741e8b 100644
          with:
            repository: rustdesk/rustdesk
            ref: refs/tags/${{ env.VERSION }}
-@@ -1545,7 +1519,7 @@ jobs:
+@@ -1546,7 +1520,7 @@ jobs:
  
        - name: Checkout source code
          if: ${{ env.VERSION == 'master' }}
@@ -1625,7 +1625,7 @@ index 9da4583..7741e8b 100644
          with:
            repository: rustdesk/rustdesk
            submodules: recursive
-@@ -1554,9 +1528,11 @@ jobs:
+@@ -1555,9 +1529,11 @@ jobs:
          continue-on-error: true
          if: ${{ inputs.app_version != '' }}
          shell: bash
@@ -1639,7 +1639,7 @@ index 9da4583..7741e8b 100644
            grep '^version = ' ./Cargo.toml
  
        - name: Apply allow_custom_update patch
-@@ -1564,14 +1540,14 @@ jobs:
+@@ -1565,14 +1541,14 @@ jobs:
          if: ${{ env.update_public_key != '' }}
          shell: bash
          run: |
@@ -1656,7 +1656,7 @@ index 9da4583..7741e8b 100644
          with:
            name: ${{ env.filename }}-${{ matrix.job.arch }}.deb
            path: .
-@@ -1621,6 +1597,7 @@ jobs:
+@@ -1622,6 +1598,7 @@ jobs:
                sed -ie "s|\"id\": \"com[^\"]*\"|\"id\": \"${BUNDLE_ID}\"|" flatpak/rustdesk.json
                sed -ie "s|\"path\": \"com[^\"]*\.metainfo\.xml\"|\"path\": \"${BUNDLE_ID}.metainfo.xml\"|" flatpak/rustdesk.json
                sed -ie "s|<id>com[^<]*</id>|<id>${BUNDLE_ID}</id>|" flatpak/*.metainfo.xml
@@ -1664,7 +1664,7 @@ index 9da4583..7741e8b 100644
                mv flatpak/com.rustdesk.RustDesk.metainfo.xml \
                   "flatpak/${BUNDLE_ID}.metainfo.xml"
              fi
-@@ -1635,37 +1612,26 @@ jobs:
+@@ -1636,37 +1613,26 @@ jobs:
              flatpak-builder --user --install-deps-from=flathub -y --force-clean --repo=repo ./build ./rustdesk.json
              flatpak build-bundle ./repo ${{ env.filename }}-${{ matrix.job.arch }}.flatpak "$BUNDLE_ID"
  
@@ -1713,7 +1713,7 @@ index 9da4583..7741e8b 100644
          with:
            name: encrypted-secrets-zip
  
-@@ -1674,38 +1640,18 @@ jobs:
+@@ -1675,38 +1641,18 @@ jobs:
          with:
            zip_password: ${{ secrets.ZIP_PASSWORD }}
  

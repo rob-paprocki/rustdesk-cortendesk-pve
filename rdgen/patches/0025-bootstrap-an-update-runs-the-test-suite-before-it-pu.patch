@@ -1,4 +1,4 @@
-From c199a63755103d73b8280ead9b1e9c311cbfa7aa Mon Sep 17 00:00:00 2001
+From 28b6b941f1d6751be39f909aed59ff147e8575c7 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sun, 18 Oct 2026 16:17:48 -0400
 Subject: [PATCH 25/30] bootstrap: an update runs the test suite before it

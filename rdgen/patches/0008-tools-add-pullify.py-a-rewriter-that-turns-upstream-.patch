@@ -1,4 +1,4 @@
-From 63800b624b24059d5f0cc728c2e0c579c8c0b827 Mon Sep 17 00:00:00 2001
+From b52af889b590aa5cd58a6b0f0755e5edd0ca8b4e Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:03:12 -0400
 Subject: [PATCH 08/30] tools: add pullify.py, a rewriter that turns upstream

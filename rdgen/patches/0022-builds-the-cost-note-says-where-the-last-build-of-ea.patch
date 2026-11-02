@@ -1,4 +1,4 @@
-From 81ac11b46fa00687f79e0bfd48215622671a46ef Mon Sep 17 00:00:00 2001
+From 1a3f7c9094a24936489db31d7174981e6fbd6860 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
 Subject: [PATCH 22/30] builds: the cost note says where the last build of each

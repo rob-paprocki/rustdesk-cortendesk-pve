@@ -1,4 +1,4 @@
-From 7dee672e324728ac69cf61fb377959669809def4 Mon Sep 17 00:00:00 2001
+From ae24137c403bbc25fdf23fbd504cee7556fe3196 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
 Subject: [PATCH 15/30] ui: site defaults and hints for the server fields, a
