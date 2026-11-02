@@ -1,4 +1,4 @@
-From 3ee47e55a381120ca5e6f01224863890c4d9bc64 Mon Sep 17 00:00:00 2001
+From 8c5e4bbd169e7290041e902261250a41386da93d Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
 Subject: [PATCH 16/30] linux: build Linux clients under a Linux-safe app name
@@ -8238,7 +8238,7 @@ index 97bc1ce..1d82e70 100644
 +        self.assertIn('rustdesk', r.json()['error'])
 +        self.assertEqual(self.generate(platform='windows', appname='RustDesk Pro').status_code, 200)
 diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
-index 17e5763..2d782c2 100644
+index 5de221a..e28bbe9 100644
 --- a/rdgenerator/tests/test_workflows.py
 +++ b/rdgenerator/tests/test_workflows.py
 @@ -70,6 +70,13 @@ class PullifyTests(SimpleTestCase):

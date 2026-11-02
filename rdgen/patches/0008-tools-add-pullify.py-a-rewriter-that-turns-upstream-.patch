@@ -1,4 +1,4 @@
-From c3089b6d599286d49ae8d75dc9ec697f4bbe9c6b Mon Sep 17 00:00:00 2001
+From e8ae428d1338b6446e60b7db67d5f32c372f0e36 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:03:12 -0400
 Subject: [PATCH 08/30] tools: add pullify.py, a rewriter that turns upstream
@@ -52,16 +52,16 @@ tree. --check only reports (exit 1 when a rewrite is pending).
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
- tools/pullify.py | 1113 ++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 1113 insertions(+)
+ tools/pullify.py | 1148 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 1148 insertions(+)
  create mode 100755 tools/pullify.py
 
 diff --git a/tools/pullify.py b/tools/pullify.py
 new file mode 100755
-index 0000000..bf743cc
+index 0000000..d1a1154
 --- /dev/null
 +++ b/tools/pullify.py
-@@ -0,0 +1,1113 @@
+@@ -0,0 +1,1148 @@
 +#!/usr/bin/env python3
 +"""Rewrite upstream rdgen generator workflows for the pull model.
 +
@@ -119,6 +119,9 @@ index 0000000..bf743cc
 +    /usr/local; Create
 +    DMG uses $GITHUB_WORKSPACE instead of /Users/runner/work and skips the
 +    Finder layout there; the signing keychain is always removed
++  * macOS: a named client gets its own bundle ID, com.<name>.app (RustDesk's
++    Runner target sets com.carriez.rustdesk, which upstream's sed misses, so
++    every client was official RustDesk to macOS); the default name keeps it
 +  * macOS, with a Developer ID .p12 (MACOS_P12_BASE64, MACOS_P12_PASSWORD):
 +    the rcodesign download is checked against a pinned sha256; upstream's
 +    "Sign macOS app bundle" step (rcodesign on every file, secrets pasted
@@ -228,6 +231,30 @@ index 0000000..bf743cc
 +UPSTREAM_MAC_SIGN = re.compile(r'^\s*-\s+name:\s*Sign macOS app bundle\s*$')
 +# Mac jobs: which ones run (input mac_arch), where they run (repository variables naming a runner label), and what a
 +# self-hosted Mac needs that GitHub's images bring along
++# The bundle ID. RustDesk's project.pbxproj sets PRODUCT_BUNDLE_IDENTIFIER = com.carriez.rustdesk; in the Runner
++# target: unquoted, so upstream's sed for a quoted value misses it, and over AppInfo.xcconfig, which upstream does
++# change. Every custom client was official RustDesk to macOS (privacy permissions, Launch Services). A named client
++# gets com.<name>.app, upstream's intended form, in the characters a bundle ID allows (letters, digits, - and .); the
++# default name keeps RustDesk's. RustDesk reads the ID back at runtime (get_bundle_id) for its launchd plists.
++MAC_BUNDLE_MARK = "rdgen: the app's own bundle ID"
++MAC_BUNDLE_AFTER = re.compile(r'^\s*-\s+name:\s*Update macOS Info\.plist\b')
++MAC_BUNDLE_STEP = """{p}- name: Give the app its own bundle ID
++{p}  # {mark}: RustDesk's Runner target sets com.carriez.rustdesk, unquoted, over AppInfo.xcconfig
++{p}  shell: bash
++{p}  run: |
++{p}    [ "$appname" != rustdesk ] || {{ echo "default name: RustDesk's bundle ID stays"; exit 0; }}
++{p}    part=$(printf '%s' "$appname" | LC_ALL=C tr -c 'A-Za-z0-9.-' '-' | sed -E 's/-+/-/g; s/[.]+/./g; s/^[.-]+//; s/[.-]+$//')
++{p}    bundle_id="com.${{part:-app}}.app"
++{p}    pbx=flutter/macos/Runner.xcodeproj/project.pbxproj
++{p}    sed -E -i.rdgen "s/PRODUCT_BUNDLE_IDENTIFIER = \\"?com[.]carriez[.]rustdesk\\"?;/PRODUCT_BUNDLE_IDENTIFIER = $bundle_id;/" "$pbx"
++{p}    rm -f "$pbx.rdgen"
++{p}    if grep -Eq 'PRODUCT_BUNDLE_IDENTIFIER = "?com[.]carriez[.]rustdesk"?;' "$pbx" ||
++{p}        ! grep -qF "PRODUCT_BUNDLE_IDENTIFIER = $bundle_id;" "$pbx"; then
++{p}      echo "::error::$pbx does not set the bundle ID the way RustDesk 1.5.0 does: $bundle_id is not set"
++{p}      exit 1
++{p}    fi
++{p}    echo "bundle ID: $bundle_id"
++"""
 +MAC_ARCH_INPUT = """{i}mac_arch:
 +{i}  description: 'rdgen: Mac builds to make: both, x86_64 (Intel) or aarch64 (Apple Silicon)'
 +{i}  required: false
@@ -742,9 +769,9 @@ index 0000000..bf743cc
 +
 +
 +def macos_rewrite(lines):
-+    """custom_.txt into Resources; pin the rcodesign download; sign the app with codesign before "Create DMG"
-+    instead of upstream's rcodesign step, and notarize the DMG after it. Also macos_matrix_rewrite and
-+    macos_selfhosted_rewrite."""
++    """custom_.txt into Resources; pin the rcodesign download; the app's own bundle ID after upstream's Info.plist
++    step; sign the app with codesign before "Create DMG" instead of upstream's rcodesign step, and notarize the DMG
++    after it. Also macos_matrix_rewrite and macos_selfhosted_rewrite."""
 +    changed = macos_matrix_rewrite(lines)
 +    changed |= macos_selfhosted_rewrite(lines)
 +    for idx, line in enumerate(lines):
@@ -763,6 +790,12 @@ index 0000000..bf743cc
 +        if m and m.group(2) in RCODESIGN_SHA256 and RCODESIGN_SHA256[m.group(2)] not in ''.join(lines[idx + 1:idx + 2]):
 +            lines.insert(idx + 1, f'{m.group(1)}echo "{RCODESIGN_SHA256[m.group(2)]}  {m.group(2)}" | shasum -a 256 -c -\n')
 +            changed = True
++    if MAC_BUNDLE_MARK not in ''.join(lines):
++        for start, end, item_indent in split_steps(lines):
++            if MAC_BUNDLE_AFTER.match(lines[start]):
++                lines[end:end] = ['\n', MAC_BUNDLE_STEP.format(p=' ' * item_indent, mark=MAC_BUNDLE_MARK)]
++                changed = True
++                break
 +    text = ''.join(lines)
 +    if SIGN_MARK in text and NOTARIZE_MARK in text:
 +        return changed
@@ -1055,7 +1088,9 @@ index 0000000..bf743cc
 +                            (MAC_NASM_NEW, 'NASM still needs sudo on a self-hosted Mac'),
 +                            (MAC_RCODESIGN_NEW, 'rcodesign still goes to /usr/local/bin'),
 +                            (MAC_CREATE_DMG, 'create-dmg does not skip the Finder layout on a self-hosted Mac'),
-+                            ('Remove the signing keychain', 'the signing keychain is not always removed')):
++                            ('Remove the signing keychain', 'the signing keychain is not always removed'),
++                            (MAC_BUNDLE_MARK, 'no step gives the app its own bundle ID (no "Update macOS Info.plist" '
++                                              'step to add it after)')):
 +            if needle not in text:
 +                problems.append(f'generator-macos.yml: {why}')
 +        if '/Users/runner/' in text:

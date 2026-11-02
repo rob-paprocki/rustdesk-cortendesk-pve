@@ -1,4 +1,4 @@
-From 47257566aa1e3fbb9f696b9325f8d8875a18ac65 Mon Sep 17 00:00:00 2001
+From 5d451625dececeda7a32fa663548764c48c63a60 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:11:23 -0400
 Subject: [PATCH 12/30] tests: hardening and pull-model test suite with a local
@@ -50,8 +50,8 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  rdgenerator/tests/test_bootstrap.py | 178 ++++++++++++++
  rdgenerator/tests/test_pull.py      | 239 ++++++++++++++++++
  rdgenerator/tests/test_security.py  | 197 +++++++++++++++
- rdgenerator/tests/test_workflows.py | 297 +++++++++++++++++++++++
- 7 files changed, 1271 insertions(+), 3 deletions(-)
+ rdgenerator/tests/test_workflows.py | 335 ++++++++++++++++++++++++++
+ 7 files changed, 1309 insertions(+), 3 deletions(-)
  delete mode 100644 rdgenerator/tests.py
  create mode 100644 rdgenerator/tests/__init__.py
  create mode 100644 rdgenerator/tests/ghstub.py
@@ -1072,10 +1072,10 @@ index 0000000..ba544eb
 +        self.assertEqual(sanitize_filename('Ärger'), 'rustdesk')
 diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
 new file mode 100644
-index 0000000..17e5763
+index 0000000..5de221a
 --- /dev/null
 +++ b/rdgenerator/tests/test_workflows.py
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,335 @@
 +"""Workflow side: pullify invariants, and the runner steps run locally."""
 +import base64
 +import importlib.util
@@ -1248,6 +1248,44 @@ index 0000000..17e5763
 +        self.assertIn('> "$APP/Contents/Resources/custom_.txt"', text)
 +        with open(os.path.join(ROOT, '.github', 'patches', 'allowCustom.py'), encoding='utf-8') as fh:
 +            self.assertIn('line.replace("custom.txt", "custom_.txt")', fh.read())
++
++    def test_macos_app_gets_its_own_bundle_id(self):
++        # RustDesk's Runner target sets PRODUCT_BUNDLE_IDENTIFIER = com.carriez.rustdesk; (unquoted, over
++        # AppInfo.xcconfig, so upstream's sed misses it): run the step on such a project file
++        with open(os.path.join(WORKFLOWS, 'generator-macos.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++        names = re.findall(r'^      - name: (.+)$', text, re.M)
++        self.assertEqual(names[names.index('Give the app its own bundle ID') - 1], 'Update macOS Info.plist and settings')
++        step = text.split('      - name: Give the app its own bundle ID\n', 1)[1].split('\n\n      - ', 1)[0]
++        self.assertNotIn('\n        if:', step)
++        script = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines()) + '\n'
++        pbx = '\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.carriez.rustdesk;\n\t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";\n' * 3
++
++        def run(appname, project=pbx):
++            tmp = tempfile.mkdtemp(prefix='rdgen-bundle-')
++            self.addCleanup(shutil.rmtree, tmp, True)
++            folder = os.path.join(tmp, 'flutter', 'macos', 'Runner.xcodeproj')
++            os.makedirs(folder)
++            with open(os.path.join(folder, 'project.pbxproj'), 'w', encoding='utf-8') as fh:
++                fh.write(project)
++            r = subprocess.run(['bash', '-c', script], cwd=tmp, env=dict(os.environ, appname=appname),
++                               capture_output=True, text=True)
++            with open(os.path.join(folder, 'project.pbxproj'), encoding='utf-8') as fh:
++                return r, fh.read(), os.listdir(folder)
++
++        for appname, bundle_id in (('Acme-Support-Mac', 'com.Acme-Support-Mac.app'), ('Acme Remote', 'com.Acme-Remote.app'),
++                                   ('Acme_Remote.v2', 'com.Acme-Remote.v2.app'), ('Acme..', 'com.Acme.app')):
++            r, project, files = run(appname)
++            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++            self.assertEqual(project, pbx.replace('com.carriez.rustdesk', bundle_id), appname)
++            self.assertEqual(files, ['project.pbxproj'], appname)   # sed's backup is gone
++        r, project, _ = run('Acme', pbx.replace('= com.carriez.rustdesk;', '= "com.carriez.rustdesk";'))
++        self.assertEqual((r.returncode, project.count('= com.Acme.app;')), (0, 3))
++        r, project, _ = run('rustdesk')   # the default name is RustDesk's own
++        self.assertEqual((r.returncode, project), (0, pbx))
++        r, _, _ = run('Acme', pbx.replace('com.carriez.rustdesk', 'com.example.other'))
++        self.assertEqual(r.returncode, 1)
++        self.assertIn('::error::', r.stdout)
 +
 +    def test_rust_cache_leaves_cargo_bin_alone_on_self_hosted_runners(self):
 +        # after a successful job, rust-cache deletes the files that were in $CARGO_HOME/bin at its start: rustup itself

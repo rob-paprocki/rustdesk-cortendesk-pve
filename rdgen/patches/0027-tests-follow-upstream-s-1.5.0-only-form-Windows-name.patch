@@ -1,4 +1,4 @@
-From 1829b73817add762deb99a105f1f8ad7e88819a5 Mon Sep 17 00:00:00 2001
+From 4735e136122ec8c2bb6d1d9ff163f9c6f70906a5 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Tue, 20 Oct 2026 08:52:53 +0000
 Subject: [PATCH 27/30] tests: follow upstream's 1.5.0-only form (Windows names
@@ -67,10 +67,10 @@ index b6484bf..47bfccd 100644
 -        self.assertEqual(self.generate(platform='windows', appname='RustDesk Pro').status_code, 200)
 +        self.assertEqual(self.generate(platform='macos', appname='RustDesk Pro').status_code, 200)
 diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
-index 9dd99ef..89398d0 100644
+index ddeb477..c2211ac 100644
 --- a/rdgenerator/tests/test_workflows.py
 +++ b/rdgenerator/tests/test_workflows.py
-@@ -294,7 +294,8 @@ class RunnerStepsTests(SimpleTestCase):
+@@ -332,7 +332,8 @@ class RunnerStepsTests(SimpleTestCase):
          pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
          self.assertEqual(pairs['appname'], 'Acme Remote')
          self.assertEqual(pairs['uuid'], u)

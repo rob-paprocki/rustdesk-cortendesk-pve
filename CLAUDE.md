@@ -99,6 +99,13 @@ introduce Docker.
   release workflow; Apple's Developer ID intermediates are fetched with pinned sha256), the DMG is signed with the same
   identity, and with an App Store Connect key (APPLE_API_* or MACOS_NOTARIZE_JSON) rcodesign notarizes and staples it.
   The rcodesign download is pinned by sha256 (RCODESIGN_SHA256). Verified against Apple by real builds (see below).
+  Bundle ID (pullify, step "Give the app its own bundle ID" after upstream's Info.plist step): RustDesk's
+  project.pbxproj sets PRODUCT_BUNDLE_IDENTIFIER = com.carriez.rustdesk; in the Runner target (unquoted, over
+  AppInfo.xcconfig; 1.5.0 and master), so upstream's quoted-value sed changed nothing and every client shipped as
+  official RustDesk. A named client gets com.<appname>.app in [A-Za-z0-9.-]; the default name keeps it; the step
+  fails when the line is gone. RustDesk reads the ID back (get_bundle_id) for the launchd plists' associated
+  bundle IDs; LaunchDaemon labels, prefs dirs and paths come from the app name. Changing it costs existing
+  installs their privacy permissions (Screen Recording, Accessibility) once.
 - `pct enter` / `pct exec` shells have PATH /sbin:/bin:/usr/sbin:/usr/bin, so the install (and refresh-ct.sh) links
   every tool from /usr/local/bin into /usr/bin. Inside scripts, common.sh sets a full PATH.
 - `tools/refresh-ct.sh <ctid>` (host) copies src/files and the patches into an existing CT and runs
