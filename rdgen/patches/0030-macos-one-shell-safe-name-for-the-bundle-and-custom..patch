@@ -1,4 +1,4 @@
-From c885214ddfaaa910cbe025a205d1fc04b0561f74 Mon Sep 17 00:00:00 2001
+From bb321fb41631045d071ebd69f727294cafd891cc Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 09:04:15 +0000
 Subject: [PATCH 30/30] macos: one shell-safe name for the bundle and
@@ -85,7 +85,7 @@ index 1057daf..416011e 100644
      """Why a Linux build cannot use this app name, or ''. A blank name means the default (rustdesk)."""
      if not (name or '').strip():
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index c97c4b6..ae8b50f 100644
+index a813710..8726d7e 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -22,7 +22,7 @@ from . import buildcfg, github

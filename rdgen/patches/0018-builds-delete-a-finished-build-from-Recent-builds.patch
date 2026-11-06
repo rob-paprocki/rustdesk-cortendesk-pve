@@ -1,4 +1,4 @@
-From 7844754a6f15510ed90dc2bfd071b67248202c71 Mon Sep 17 00:00:00 2001
+From 09a9a2cdf0a6df973d75eab95a726b9af241a4f7 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 19:11:10 -0400
 Subject: [PATCH 18/30] builds: delete a finished build from Recent builds
@@ -334,7 +334,7 @@ index 0000000..26eda3f
 +        discard_build(run)
 +        self.assertEqual(self.c.get(f'/api/status?uuid={run.uuid}', **h).status_code, 404)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 24f2fb2..2ecce0b 100644
+index d8fe85a..119b148 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -21,7 +21,7 @@ from django.views.decorators.http import require_http_methods, require_safe

@@ -1,4 +1,4 @@
-From 10ec288850db9f96c517829196671ac5726e5598 Mon Sep 17 00:00:00 2001
+From 7a7aa20bb80c8284e54080a80ef666d2d26c58fc Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
 Subject: [PATCH 02/30] auth: require login everywhere, re-enable CSRF, token
@@ -148,7 +148,7 @@ index d28debe..5aa8265 100644
 +    path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
  ]
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index a68e56f..24b759d 100644
+index bb5b2ac..c60a777 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,7 +1,12 @@

@@ -1,4 +1,4 @@
-From dd380b27747c835ba00e636e6d1befd1fb3d637b Mon Sep 17 00:00:00 2001
+From 7bbdf14f49a2f35e4cb7fc12bde1588eacc642f7 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
 Subject: [PATCH 16/30] linux: build Linux clients under a Linux-safe app name
@@ -8315,7 +8315,7 @@ index 6154f0b..7833032 100644
      """Upstream's rule, minus the \\s hole that let tabs/newlines through."""
      value = (value or '').strip()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index be84d0e..b69263d 100644
+index cc58356..86fc5a2 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -17,7 +17,7 @@ from . import buildcfg, github

@@ -1,4 +1,4 @@
-From 3a1b34fde8fe03652c21133c6819e324e31df749 Mon Sep 17 00:00:00 2001
+From f20614b148763741f035ee2177a5b65c25b0bbeb Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/30] workflows: apply tools/pullify.py (pull model, pinned
@@ -342,7 +342,7 @@ index 1f0989d..8ef3eef 100644
        - name: Decode cfg input
          shell: bash
 diff --git a/.github/workflows/generator-android.yml b/.github/workflows/generator-android.yml
-index 8bef950..90dad36 100644
+index a01af4a..6933e7b 100644
 --- a/.github/workflows/generator-android.yml
 +++ b/.github/workflows/generator-android.yml
 @@ -1,5 +1,5 @@
@@ -745,7 +745,7 @@ index 8bef950..90dad36 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-linux.yml b/.github/workflows/generator-linux.yml
-index c5d2c47..992bc42 100644
+index ebe923f..edded34 100644
 --- a/.github/workflows/generator-linux.yml
 +++ b/.github/workflows/generator-linux.yml
 @@ -1,5 +1,5 @@
@@ -1375,7 +1375,7 @@ index c5d2c47..992bc42 100644
          
        - name: removeNewVersionNotif
 @@ -1126,12 +1133,13 @@ jobs:
-           sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
+           #sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
  
        - name: Restore bridge files
 -        uses: actions/download-artifact@master
@@ -1756,7 +1756,7 @@ index c5d2c47..992bc42 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-macos.yml b/.github/workflows/generator-macos.yml
-index 4cd1344..8a4b718 100644
+index c703333..b9b6fc3 100644
 --- a/.github/workflows/generator-macos.yml
 +++ b/.github/workflows/generator-macos.yml
 @@ -1,5 +1,5 @@
@@ -2072,7 +2072,7 @@ index 4cd1344..8a4b718 100644
  
        - name: removeNewVersionNotif
 @@ -522,13 +553,13 @@ jobs:
-           sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
+           #sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
  
        - name: Restore bridge files
 -        uses: actions/download-artifact@master
@@ -2362,7 +2362,7 @@ index 4cd1344..8a4b718 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-windows-x86.yml b/.github/workflows/generator-windows-x86.yml
-index c6057f7..e2039ba 100644
+index 2898d69..bb44f85 100644
 --- a/.github/workflows/generator-windows-x86.yml
 +++ b/.github/workflows/generator-windows-x86.yml
 @@ -1,5 +1,5 @@
@@ -2641,7 +2641,7 @@ index c6057f7..e2039ba 100644
          with:
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/generator-windows.yml b/.github/workflows/generator-windows.yml
-index f9ccae9..08f7691 100644
+index 1af558f..5f5bbad 100644
 --- a/.github/workflows/generator-windows.yml
 +++ b/.github/workflows/generator-windows.yml
 @@ -1,5 +1,5 @@
@@ -3047,7 +3047,7 @@ index f9ccae9..08f7691 100644
            name: encrypted-secrets-zip
 diff --git a/.github/workflows/sh-generator-windows.yml b/.github/workflows/sh-generator-windows.yml
 deleted file mode 100644
-index dbf5f75..0000000
+index 95e332e..0000000
 --- a/.github/workflows/sh-generator-windows.yml
 +++ /dev/null
 @@ -1,701 +0,0 @@
@@ -3510,7 +3510,7 @@ index dbf5f75..0000000
 -        shell: bash
 -        run: | 
 -          sed -i -e 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
--          sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
+-          #sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
 -
 -      - name: replace flutter icons
 -        if: ${{ env.iconlink_url != 'false' }}

@@ -1,4 +1,4 @@
-From 1a3f7c9094a24936489db31d7174981e6fbd6860 Mon Sep 17 00:00:00 2001
+From 8d2fe7fe3ca574809b1ce971cffd40901971ba71 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
 Subject: [PATCH 22/30] builds: the cost note says where the last build of each
@@ -308,7 +308,7 @@ index 7beb1e9..b6484bf 100644
      def test_reference_data_is_consistent(self):
          data = views.client_settings()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index d12009c..104d069 100644
+index 7a291b2..6855e97 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -408,6 +408,35 @@ def client_settings():

@@ -1,4 +1,4 @@
-From 85344b132465ab8698da4dbef594ede48b2815e0 Mon Sep 17 00:00:00 2001
+From 7583e05b97fbf4916f3b0f9200efada3c461323e Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
 Subject: [PATCH 04/30] pull model: dispatch the encrypted config as a workflow
@@ -99,7 +99,7 @@ index f7c3100..4e90663 100644
  MEDIA_URL = '/media/'
  MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index cf4553c..6d0a4ad 100644
+index bdb7b32..7e3ca2d 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -4,6 +4,7 @@ import re
@@ -286,7 +286,7 @@ index 0000000..75a5fe8
 +        'Use simpler PNGs (flat colours, no photos), drop the privacy image, '
 +        'or shorten the default/override settings.')
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 66566c7..b54e793 100644
+index 3d266fa..82ed9cf 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -8,7 +8,6 @@ from .validation import validate_build_fields
@@ -296,7 +296,7 @@ index 66566c7..b54e793 100644
 -    sh_secret_field = forms.CharField(required=False)
      #Platform
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0')], initial='1.5.0')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.1')
 diff --git a/rdgenerator/github.py b/rdgenerator/github.py
 new file mode 100644
 index 0000000..acf114e
@@ -529,7 +529,7 @@ index e81fc9f..6154f0b 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 33da449..d7a6fa9 100644
+index 15e42e6..1d2ca1b 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -14,7 +14,35 @@ import pyzipper
@@ -591,7 +591,7 @@ index 33da449..d7a6fa9 100644
 -    user_secret = params.get('sh_secret_field', '')
 -    selfhosted = (_settings.SH_SECRET == user_secret)
      platform = params.get('platform', 'windows')
-     version = params.get('version', '1.5.0')
+     version = params.get('version', '1.5.1')
      app_version = params.get('app_version', '')
 @@ -68,14 +95,15 @@ def generate_custom_client(params, full_url):
      apiServer = params.get('apiServer', '')

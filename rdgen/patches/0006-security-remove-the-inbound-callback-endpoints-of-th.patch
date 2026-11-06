@@ -1,4 +1,4 @@
-From 9be27a386c507d10329ff611914bae931324b83f Mon Sep 17 00:00:00 2001
+From 2b540049564da4351bcae795e0db0573b21fa468 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
 Subject: [PATCH 06/30] security: remove the inbound callback endpoints of the
@@ -64,7 +64,7 @@ index 274bbfd..e593015 100644
      path('api/generate', api_views.api_generate, name='api_generate'),
      path('api/status', api_views.api_status, name='api_status'),
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 73ca85a..3d6cbe0 100644
+index a2b70be..5bd36b2 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,5 +1,4 @@
@@ -82,7 +82,7 @@ index 73ca85a..3d6cbe0 100644
  from .validation import validate_build_fields
  from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index b54e793..3c313b1 100644
+index 82ed9cf..9d6731a 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -1,5 +1,3 @@
@@ -92,7 +92,7 @@ index b54e793..3c313b1 100644
  from PIL import Image
  
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 3e5dda6..1609e94 100644
+index f8cda0a..48b3421 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,26 +1,22 @@

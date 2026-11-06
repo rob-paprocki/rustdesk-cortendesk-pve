@@ -1,4 +1,4 @@
-From 06a259bbb6e24c6e0fa4a98fcbc06f90ddf8522f Mon Sep 17 00:00:00 2001
+From e1b760cb50c9a7ea16ee8d966c538c4d59a91a60 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
 Subject: [PATCH 20/30] macOS: choose the Mac builds; run them on a Mac of your
@@ -71,7 +71,7 @@ index 2c4068a..e6c7e5d 100644
  
  ```sh
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 9a9ade0..803cd3e 100644
+index ec476b8..b89b29a 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -22,6 +22,7 @@ THEME_DORO_CHOICES = ['default', 'override']
@@ -91,7 +91,7 @@ index 9a9ade0..803cd3e 100644
      for field, (choices, default) in choice_validations.items():
          value = data.get(field, default)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 2dd1740..b2bf94b 100644
+index 1142269..bc7778c 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -8,6 +8,9 @@ MAX_PNG_BYTES = 4 * 1024 * 1024
@@ -102,7 +102,7 @@ index 2dd1740..b2bf94b 100644
 +    macArch = forms.ChoiceField(choices=[('both', 'Intel and Apple Silicon'), ('x86_64', 'Intel only'),
 +                                         ('aarch64', 'Apple Silicon only')], initial='both', required=False)
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0')], initial='1.5.0')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.1')
      help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
 diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
 index 9265a84..2cc7ece 100644
@@ -225,7 +225,7 @@ index bd34d35..ecb02b1 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 2ecce0b..4bc2c68 100644
+index 119b148..e6fc1b6 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -73,6 +73,9 @@ def generate_custom_client(params, full_url=None):

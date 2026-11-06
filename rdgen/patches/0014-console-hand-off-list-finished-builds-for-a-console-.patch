@@ -1,4 +1,4 @@
-From 3301e274e8f1288cd7ca7c696e4a4c2dc0a1bacf Mon Sep 17 00:00:00 2001
+From 51d7fe0c048d330cc0b2223a5f2ba72d68f2c6a8 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
 Subject: [PATCH 14/30] console hand-off: list finished builds for a console's
@@ -102,7 +102,7 @@ index 4e90663..2df970c 100644
  # Empty disables token auth; the API then only accepts a logged-in session.
  RDGEN_API_TOKEN = env('RDGEN_API_TOKEN', '')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 3d6cbe0..9a9ade0 100644
+index 5bd36b2..ec476b8 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -6,7 +6,7 @@ from django.core.exceptions import RequestDataTooBig
@@ -128,7 +128,7 @@ index 3d6cbe0..9a9ade0 100644
      for field, message in validate_build_fields(cleaned).items():
          errors.setdefault(field, message)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 3c313b1..2dd1740 100644
+index 9d6731a..1142269 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -1,4 +1,5 @@
@@ -573,7 +573,7 @@ index 0000000..0fcd342
 +        from django.contrib.auth import get_user_model
 +        return get_user_model().objects.create_user('tester', password='x' * 16)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 1609e94..cb55633 100644
+index 48b3421..dceb6a5 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -13,7 +13,7 @@ from django.urls import reverse

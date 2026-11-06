@@ -1,4 +1,4 @@
-From ae24137c403bbc25fdf23fbd504cee7556fe3196 Mon Sep 17 00:00:00 2001
+From 93d3ba5078d927ad2f45f42373fa59c48cff4ee0 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
 Subject: [PATCH 15/30] ui: site defaults and hints for the server fields, a
@@ -2575,7 +2575,7 @@ index 0000000..97bc1ce
 +            self.assertNotIn('enable-lan-discovery', custom[section])
 +            self.assertNotIn('allow-auto-disconnect', custom[section])
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index cb55633..be84d0e 100644
+index dceb6a5..cc58356 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,4 +1,5 @@

@@ -1,4 +1,4 @@
-From f5428338874066a4c2ccbe0c10a8703bba0bf5ca Mon Sep 17 00:00:00 2001
+From 772a83f718f82032b8f7f6eb84f0c9937fadddef Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
 Subject: [PATCH 05/30] pull model: poller downloads and deletes artifacts;
@@ -85,7 +85,7 @@ index 5aa8265..274bbfd 100644
      path('accounts/login/', auth_views.LoginView.as_view(redirect_authenticated_user=True), name='login'),
      path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 6d0a4ad..73ca85a 100644
+index 7e3ca2d..a2b70be 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,5 +1,4 @@
@@ -752,7 +752,7 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index d7a6fa9..3e5dda6 100644
+index 1d2ca1b..f8cda0a 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,6 +1,8 @@

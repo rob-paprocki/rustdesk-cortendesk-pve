@@ -1,4 +1,4 @@
-From 935ddab0b891a1d8fb5726d64256a668a12240e3 Mon Sep 17 00:00:00 2001
+From 34f88fad983506d61b8ac041bf7a30f9c3da6d74 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 08:56:56 +0000
 Subject: [PATCH 29/30] linux: build the Linux-safe name from the name as typed
@@ -27,7 +27,7 @@ index 4e08699..d5b9292 100644
      def test_default_and_already_safe_names_unchanged(self):
          self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 104d069..c97c4b6 100644
+index 6855e97..a813710 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -154,10 +154,11 @@ def generate_custom_client(params, full_url=None):
