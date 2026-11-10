@@ -1,0 +1,23 @@
+From 0bc129b5e372277271a57c027eef31cd08a22325 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Tue, 10 Nov 2026 09:50:54 +0000
+Subject: [PATCH 31/31] tests: follow upstream's move of the Apple Silicon
+ runner to macos-15
+
+---
+ rdgenerator/tests/test_workflows.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index 43bd9af..e4df239 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -118,7 +118,7 @@ class PullifyTests(SimpleTestCase):
+         self.assertEqual(both, x86 + arm)
+         self.assertEqual((x86[0]['os'], x86[0]['target'], x86[0]['vcpkg-triplet'], x86[0]['extra-build-args']),
+                          ('macos-15-intel', 'x86_64-apple-darwin', 'x64-osx', ''))
+-        self.assertEqual((arm[0]['os'], arm[0]['extra-build-args']), ('macos-14', '--screencapturekit'))
++        self.assertEqual((arm[0]['os'], arm[0]['extra-build-args']), ('macos-15', '--screencapturekit'))
+         self.assertIn("runs-on: ${{ (matrix.job.arch == 'x86_64' && vars.RDGEN_RUNNER_MACOS_X86_64) || "
+                       "(matrix.job.arch == 'aarch64' && vars.RDGEN_RUNNER_MACOS_AARCH64) || matrix.job.os }}", text)
+         # everything a self-hosted Mac needs runs only there; GitHub's machines take the old path

@@ -1,7 +1,7 @@
-From bb321fb41631045d071ebd69f727294cafd891cc Mon Sep 17 00:00:00 2001
+From 37326c673ca3e3c907835864ac2cbb9c72e49eb9 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 09:04:15 +0000
-Subject: [PATCH 30/30] macos: one shell-safe name for the bundle and
+Subject: [PATCH 30/31] macos: one shell-safe name for the bundle and
  custom.txt app-name
 
 Upstream (073447b) builds with the typed name stripped of spaces and puts the

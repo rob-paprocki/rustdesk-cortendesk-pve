@@ -1,7 +1,7 @@
-From f1a96800dbc74f3ce7869ae1d14da4d4120788d0 Mon Sep 17 00:00:00 2001
+From ff34bdaf107a7f567bcf91b5721f9be408395de2 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
-Subject: [PATCH 03/30] validation: strict server-side charset rules for values
+Subject: [PATCH 03/31] validation: strict server-side charset rules for values
  that reach build scripts
 
 The generator workflows paste appname, compname, server, key, apiServer,

@@ -1,7 +1,7 @@
-From e1b760cb50c9a7ea16ee8d966c538c4d59a91a60 Mon Sep 17 00:00:00 2001
+From ac3d632e3285cc07bf18d7b4a0b12245e36f2f69 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
-Subject: [PATCH 20/30] macOS: choose the Mac builds; run them on a Mac of your
+Subject: [PATCH 20/31] macOS: choose the Mac builds; run them on a Mac of your
  own
 
 A Mac build ran two GitHub Mac machines (Intel and Apple Silicon) at

@@ -1,7 +1,7 @@
-From 93d3ba5078d927ad2f45f42373fa59c48cff4ee0 Mon Sep 17 00:00:00 2001
+From a51e321be6503ef08569cea753ac934a4eef7609 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
-Subject: [PATCH 15/30] ui: site defaults and hints for the server fields, a
+Subject: [PATCH 15/31] ui: site defaults and hints for the server fields, a
  reference for the Other section
 
 Custom Server: RDGEN_DEFAULT_PORT, RDGEN_DEFAULT_URL_LINK,

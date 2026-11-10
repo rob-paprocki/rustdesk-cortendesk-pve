@@ -1,7 +1,7 @@
-From 09a9a2cdf0a6df973d75eab95a726b9af241a4f7 Mon Sep 17 00:00:00 2001
+From 249999300da001356e356e9a1261b28e72311df2 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 19:11:10 -0400
-Subject: [PATCH 18/30] builds: delete a finished build from Recent builds
+Subject: [PATCH 18/31] builds: delete a finished build from Recent builds
 
 rdgen keeps its own copy of every build for RDGEN_RETENTION_DAYS, apart
 from any copy a console imported, so deleting a client in the console

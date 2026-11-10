@@ -1,7 +1,7 @@
-From 2b540049564da4351bcae795e0db0573b21fa468 Mon Sep 17 00:00:00 2001
+From 2ea4572bd2d20378bab3bdda1ac92de764f3e14e Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
-Subject: [PATCH 06/30] security: remove the inbound callback endpoints of the
+Subject: [PATCH 06/31] security: remove the inbound callback endpoints of the
  push model
 
 GitHub runners no longer call back into rdgen, so these are gone:

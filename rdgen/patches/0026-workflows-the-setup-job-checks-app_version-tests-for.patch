@@ -1,7 +1,7 @@
-From 003256a4d855a9889b2e0ceb412e92aee1fcad32 Mon Sep 17 00:00:00 2001
+From 15d90643b576bd96f89caa47e5ca62a185415dca Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 19 Oct 2026 00:15:11 -0400
-Subject: [PATCH 26/30] workflows: the setup job checks app_version; tests for
+Subject: [PATCH 26/31] workflows: the setup job checks app_version; tests for
  it
 
 Upstream's app_version (2026-10-18) is a dispatch input, outside the

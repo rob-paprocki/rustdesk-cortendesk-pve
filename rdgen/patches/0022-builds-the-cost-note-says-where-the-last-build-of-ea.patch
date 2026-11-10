@@ -1,7 +1,7 @@
-From 8d2fe7fe3ca574809b1ce971cffd40901971ba71 Mon Sep 17 00:00:00 2001
+From c2e0953de27a3e51a7b620c337b08a4fe3bf23dd Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
-Subject: [PATCH 22/30] builds: the cost note says where the last build of each
+Subject: [PATCH 22/31] builds: the cost note says where the last build of each
  kind ran
 
 The form's cost note quoted GitHub's prices for every build, including Mac

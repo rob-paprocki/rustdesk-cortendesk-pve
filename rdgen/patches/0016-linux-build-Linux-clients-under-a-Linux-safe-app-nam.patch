@@ -1,7 +1,7 @@
-From 7bbdf14f49a2f35e4cb7fc12bde1588eacc642f7 Mon Sep 17 00:00:00 2001
+From 112bda3ecafcae5ab289367092b969fb15a572f4 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
-Subject: [PATCH 16/30] linux: build Linux clients under a Linux-safe app name
+Subject: [PATCH 16/31] linux: build Linux clients under a Linux-safe app name
 
 A Linux build with the app name "Rescue Client (Rob Paprocki)" failed in
 build.py: the workflow writes the name into unquoted shell commands
