@@ -1,4 +1,4 @@
-From 8c805fa98abeb555c493eb89e6a87e559808c174 Mon Sep 17 00:00:00 2001
+From 112d38dbaf1f5da1ef104d08f80d3d3f3f1e81e5 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sat, 24 Oct 2026 08:49:30 +0000
 Subject: [PATCH 28/31] tests: follow upstream's removal of slug_appname

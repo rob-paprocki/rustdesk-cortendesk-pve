@@ -1,4 +1,4 @@
-From 1ac927a440f9c5e5d1d6ea88939ab295d9147506 Mon Sep 17 00:00:00 2001
+From 04cbe7e91d8d5ad68231ea0cb98b49e8e2e34cca Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/31] workflows: apply tools/pullify.py (pull model, pinned

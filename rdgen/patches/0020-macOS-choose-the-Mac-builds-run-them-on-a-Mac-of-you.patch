@@ -1,4 +1,4 @@
-From ac3d632e3285cc07bf18d7b4a0b12245e36f2f69 Mon Sep 17 00:00:00 2001
+From 69dc00788a5fc4fd295de08df3e37b7f93ff7561 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
 Subject: [PATCH 20/31] macOS: choose the Mac builds; run them on a Mac of your

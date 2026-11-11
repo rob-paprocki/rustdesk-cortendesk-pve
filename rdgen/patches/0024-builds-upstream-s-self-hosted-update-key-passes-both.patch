@@ -1,4 +1,4 @@
-From 2269d320461efad36a699fef4876ad347a1b52b7 Mon Sep 17 00:00:00 2001
+From fca19e43d53fbdfff0eaf4ae235d94e7ed6d0f66 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sun, 18 Oct 2026 07:49:21 -0400
 Subject: [PATCH 24/31] builds: upstream's self-hosted update key passes both

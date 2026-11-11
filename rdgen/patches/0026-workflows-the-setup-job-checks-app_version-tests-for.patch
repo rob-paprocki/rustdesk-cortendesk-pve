@@ -1,4 +1,4 @@
-From 15d90643b576bd96f89caa47e5ca62a185415dca Mon Sep 17 00:00:00 2001
+From 7940897ff66715dfeb87ec9c42af3a28b6002689 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 19 Oct 2026 00:15:11 -0400
 Subject: [PATCH 26/31] workflows: the setup job checks app_version; tests for

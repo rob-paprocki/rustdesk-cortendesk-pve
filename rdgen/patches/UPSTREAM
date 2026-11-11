@@ -1,3 +1,3 @@
 upstream: https://github.com/bryangerlach/rdgen
-base-commit: e691b088d563d98c1e5a4c101428587caa5da6c3 (master, 2026-11-09, "update macos 14 to 15")
+base-commit: e02c173464a5059fc070418faee6b40a1707ef53 (master, 2026-11-10, "update testing")
 patches: 31 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)

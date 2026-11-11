@@ -1,4 +1,4 @@
-From 37326c673ca3e3c907835864ac2cbb9c72e49eb9 Mon Sep 17 00:00:00 2001
+From 830b926b7b82cef1dfcb10d60c32e2097a5f0657 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 09:04:15 +0000
 Subject: [PATCH 30/31] macos: one shell-safe name for the bundle and
