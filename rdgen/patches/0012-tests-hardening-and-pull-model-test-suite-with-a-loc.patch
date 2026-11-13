@@ -1,7 +1,7 @@
-From 4417696c291efea9b07494ddb4084ec7d314e9d6 Mon Sep 17 00:00:00 2001
+From 7fd09a085cd202500b021c802eeb1e36333362d1 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:11:23 -0400
-Subject: [PATCH 12/31] tests: hardening and pull-model test suite with a local
+Subject: [PATCH 12/32] tests: hardening and pull-model test suite with a local
  GitHub API stub
 
 rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with

@@ -1,7 +1,7 @@
-From 8c0c75a869d6ff2e6401d7c99931755a46a7e516 Mon Sep 17 00:00:00 2001
+From 19015ba5b33fc25414aa84c3c12507b6c3376ca5 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
-Subject: [PATCH 06/31] security: remove the inbound callback endpoints of the
+Subject: [PATCH 06/32] security: remove the inbound callback endpoints of the
  push model
 
 GitHub runners no longer call back into rdgen, so these are gone:
@@ -64,7 +64,7 @@ index 274bbfd..e593015 100644
      path('api/generate', api_views.api_generate, name='api_generate'),
      path('api/status', api_views.api_status, name='api_status'),
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index a2b70be..5bd36b2 100644
+index d7c15ae..b70faae 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,5 +1,4 @@
@@ -82,7 +82,7 @@ index a2b70be..5bd36b2 100644
  from .validation import validate_build_fields
  from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 82ed9cf..9d6731a 100644
+index c686e87..0156a56 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -1,5 +1,3 @@
@@ -92,7 +92,7 @@ index 82ed9cf..9d6731a 100644
  from PIL import Image
  
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index f8cda0a..48b3421 100644
+index 7c32ea1..064dcda 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,26 +1,22 @@
@@ -157,7 +157,7 @@ index f8cda0a..48b3421 100644
  
  
  def generate_custom_client(params, full_url=None):
-@@ -442,180 +423,3 @@ def serve_build_file(request):
+@@ -473,180 +454,3 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)

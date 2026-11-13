@@ -1,7 +1,7 @@
-From 2a6e1f7546f15f9f18b3c453c0af71f811a5c304 Mon Sep 17 00:00:00 2001
+From 2e85f3225797875f1a3b12d029a3087bcd7a19e4 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
-Subject: [PATCH 15/31] ui: site defaults and hints for the server fields, a
+Subject: [PATCH 15/32] ui: site defaults and hints for the server fields, a
  reference for the Other section
 
 Custom Server: RDGEN_DEFAULT_PORT, RDGEN_DEFAULT_URL_LINK,
@@ -36,8 +36,8 @@ permissions.
  rdgenerator/templates/_update_link.html    |   96 +
  rdgenerator/templates/generator.html       |   26 +-
  rdgenerator/tests/test_ui.py               |   92 +
- rdgenerator/views.py                       |   32 +-
- 9 files changed, 2448 insertions(+), 19 deletions(-)
+ rdgenerator/views.py                       |   24 +-
+ 9 files changed, 2440 insertions(+), 19 deletions(-)
  create mode 100644 rdgenerator/client_settings.json
  create mode 100644 rdgenerator/templates/_other_settings.html
  create mode 100644 rdgenerator/templates/_update_link.html
@@ -2420,7 +2420,7 @@ index 0000000..0b99f44
 +</script>
 +{% endif %}
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 1e1293d..232ba33 100644
+index c3f3a7b..6c39272 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
 @@ -161,6 +161,12 @@
@@ -2463,7 +2463,7 @@ index 1e1293d..232ba33 100644
              </div>
          </div>
          <div class="container">
-@@ -387,11 +393,7 @@
+@@ -386,11 +392,7 @@
              <div class="section">
                  <h2><i class="fas fa-cog"></i> Other</h2>
                      <label for="{{ form.removeWallpaper.id_for_label }}">{{ form.removeWallpaper }} Remove wallpaper during incoming sessions</label><br>
@@ -2575,7 +2575,7 @@ index 0000000..97bc1ce
 +            self.assertNotIn('enable-lan-discovery', custom[section])
 +            self.assertNotIn('allow-auto-disconnect', custom[section])
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index dceb6a5..cc58356 100644
+index 2f81c3f..e75a2b7 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,4 +1,5 @@
@@ -2625,22 +2625,7 @@ index dceb6a5..cc58356 100644
      androidappid = params.get('androidappid', '')
      if not androidappid:
          androidappid = "com.carriez.flutter_hbb"
-@@ -232,6 +237,14 @@ def generate_custom_client(params, full_url=None):
-         if direction == 'incoming':
-             decodedCustom['override-settings']['custom-rendezvous-server'] = server
-             decodedCustom['override-settings']['api-server'] = apiServer
-+    # The client reads these two through Config::get_option(), i.e. from the default/override maps. The top-level
-+    # keys above land in HARD_SETTINGS, which nothing reads for them, so on their own the two boxes did nothing.
-+    # Written only when ticked, so an unticked box keeps RustDesk's own default and lets the user change it.
-+    target = 'override-settings' if permissionsDorO == 'override' else 'default-settings'
-+    if denyLan:
-+        decodedCustom[target]['enable-lan-discovery'] = 'N'
-+    if autoClose:
-+        decodedCustom[target]['allow-auto-disconnect'] = 'Y'
- 
-     if defaultManual:
-         for line in defaultManual.splitlines():
-@@ -363,6 +376,13 @@ def build_files(gh_run, url_name='download'):
+@@ -394,6 +399,13 @@ def build_files(gh_run, url_name='download'):
      return files
  
  
@@ -2654,7 +2639,7 @@ index dceb6a5..cc58356 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -381,7 +401,9 @@ def generator_view(request):
+@@ -412,7 +424,9 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')

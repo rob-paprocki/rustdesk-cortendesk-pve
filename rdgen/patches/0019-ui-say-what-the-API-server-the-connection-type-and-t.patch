@@ -1,7 +1,7 @@
-From 232327f6c8817b7fd9d05748945d631fcc887079 Mon Sep 17 00:00:00 2001
+From 169aee74026a15302759dddb2f602f54b30c8ef3 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 22:46:40 -0400
-Subject: [PATCH 19/31] ui: say what the API server, the connection type and
+Subject: [PATCH 19/32] ui: say what the API server, the connection type and
  the password are for
 
 A user's clients never appeared in the console: the form's API server
@@ -138,7 +138,7 @@ index 0000000..9265a84
 +})();
 +</script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 790c89c..4b6436c 100644
+index 2a124e3..7b42f3d 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
 @@ -276,6 +276,7 @@
@@ -169,10 +169,10 @@ index 790c89c..4b6436c 100644
                      <label for="{{ form.downloadLink.id_for_label }}">Custom URL for downloading updates (replaces https://rustdesk.com/download):</label>
 @@ -328,7 +329,8 @@
                      {{ form.passApproveMode }}<br><br>
-                     <div id="passwordRequirement" class="password-requirement">To use the hide connection window feature, please set a permanent password.</div>
+                     <div id="passwordRequirement" class="password-requirement">To use the hide connection window feature, please set a permanent password. This also forces password approval mode.</div>
                      <label for="{{ form.permanentPassword.id_for_label }}">Set Permanent Password:</label>
--                    {{ form.permanentPassword }} *The password is used as default, but can be changed by the client<br><br>
-+                    {{ form.permanentPassword }}<div class="rd-hint">For unattended access: put it in the build for the computers you connect <i>to</i>. Whoever connects types it instead of the one-time password, and with approve mode <i>via password</i> nobody has to click Accept. It does nothing for connecting <i>from</i> a computer. The computer's user can change it unless Disable Settings is on.</div>
+-                    {{ form.permanentPassword }} *The baked password is always accepted, even if the client already has a saved password. Setting it selects permanent-password verification.<br><br>
++                    {{ form.permanentPassword }}<div class="rd-hint">For unattended access: put it in the build for the computers you connect <i>to</i>. Whoever connects types it instead of the one-time password, and with approve mode <i>via password</i> nobody has to click Accept. It does nothing for connecting <i>from</i> a computer. The computer's user can change it unless Disable Settings is on. It always wins over a password the client already saved, and it selects permanent-password verification.</div>
 +                    <div id="rd-pw-note" class="rd-pw-warn" hidden></div><br>
                      
                      

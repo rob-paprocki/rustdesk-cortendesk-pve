@@ -1,7 +1,7 @@
-From 69dc00788a5fc4fd295de08df3e37b7f93ff7561 Mon Sep 17 00:00:00 2001
+From 845aa62175964a40a6718ff27adfb58bcf5702bd Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
-Subject: [PATCH 20/31] macOS: choose the Mac builds; run them on a Mac of your
+Subject: [PATCH 20/32] macOS: choose the Mac builds; run them on a Mac of your
  own
 
 A Mac build ran two GitHub Mac machines (Intel and Apple Silicon) at
@@ -71,27 +71,27 @@ index 2c4068a..e6c7e5d 100644
  
  ```sh
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index ec476b8..b89b29a 100644
+index 1e60d95..bc962a7 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
-@@ -22,6 +22,7 @@ THEME_DORO_CHOICES = ['default', 'override']
+@@ -21,6 +21,7 @@ THEME_CHOICES = ['light', 'dark', 'system']
+ THEME_DORO_CHOICES = ['default', 'override']
  PASS_APPROVE_MODE_CHOICES = ['password', 'click', 'password-click']
- PERMISSIONS_DORO_CHOICES = ['default', 'override']
  PERMISSIONS_TYPE_CHOICES = ['custom', 'full', 'view']
 +MAC_ARCH_CHOICES = ['both', 'x86_64', 'aarch64']
  
  # Boolean fields
  BOOL_FIELDS = [
-@@ -77,6 +78,7 @@ def validate_generate_params(data):
-         'passApproveMode': (PASS_APPROVE_MODE_CHOICES, 'password-click'),
-         'permissionsDorO': (PERMISSIONS_DORO_CHOICES, 'default'),
+@@ -78,6 +79,7 @@ def validate_generate_params(data):
+         # override-settings so they apply to existing installations.  The old
+         # field is still accepted in incoming JSON and simply ignored.
          'permissionsType': (PERMISSIONS_TYPE_CHOICES, 'custom'),
 +        'macArch': (MAC_ARCH_CHOICES, 'both'),
      }
      for field, (choices, default) in choice_validations.items():
          value = data.get(field, default)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 1142269..bc7778c 100644
+index 1c9dcbb..e6e1998 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -8,6 +8,9 @@ MAX_PNG_BYTES = 4 * 1024 * 1024
@@ -102,7 +102,7 @@ index 1142269..bc7778c 100644
 +    macArch = forms.ChoiceField(choices=[('both', 'Intel and Apple Silicon'), ('x86_64', 'Intel only'),
 +                                         ('aarch64', 'Apple Silicon only')], initial='both', required=False)
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.1')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.3','1.5.3'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.3')
      help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
 diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
 index 9265a84..2cc7ece 100644
@@ -225,7 +225,7 @@ index bd34d35..ecb02b1 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 119b148..e6fc1b6 100644
+index 41429ad..0af7dff 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -73,6 +73,9 @@ def generate_custom_client(params, full_url=None):
@@ -238,7 +238,7 @@ index 119b148..e6fc1b6 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -313,6 +316,9 @@ def generate_custom_client(params, full_url=None):
+@@ -336,6 +339,9 @@ def generate_custom_client(params, full_url=None):
              # validated by validation.py (digits and dots only): the
              # workflows paste this input into a sed command
              result["app_version"] = app_version

@@ -1,7 +1,7 @@
-From 7374a3debfa2eeb6881a7f9f7488e7da351ddbe5 Mon Sep 17 00:00:00 2001
+From f248f5cf290f925098921126385c38383c1633ad Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 08:56:56 +0000
-Subject: [PATCH 29/31] linux: build the Linux-safe name from the name as typed
+Subject: [PATCH 29/32] linux: build the Linux-safe name from the name as typed
  (upstream strips spaces first)
 
 ---
@@ -27,10 +27,10 @@ index 4e08699..d5b9292 100644
      def test_default_and_already_safe_names_unchanged(self):
          self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 6855e97..a813710 100644
+index ea6d293..bd39f4e 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -154,10 +154,11 @@ def generate_custom_client(params, full_url=None):
+@@ -157,10 +157,11 @@ def generate_custom_client(params, full_url=None):
          appname = "rustdesk"
      if platform == 'linux' and appname != 'rustdesk':
          # one name for the package, folders, service and the client's own config (see linux_app_name)

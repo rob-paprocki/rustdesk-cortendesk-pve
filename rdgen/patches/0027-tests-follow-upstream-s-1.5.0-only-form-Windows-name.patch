@@ -1,7 +1,7 @@
-From 83ae4f67c3d9570fbad7903b7bdfa66cbf3b7680 Mon Sep 17 00:00:00 2001
+From 7686e05735ae145d374c9b5504327e7db0625fc1 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Tue, 20 Oct 2026 08:52:53 +0000
-Subject: [PATCH 27/31] tests: follow upstream's 1.5.0-only form (Windows names
+Subject: [PATCH 27/32] tests: follow upstream's 1.5.0-only form (Windows names
  with spaces are refused on 1.5.0) and the slug_appname key
 
 ---

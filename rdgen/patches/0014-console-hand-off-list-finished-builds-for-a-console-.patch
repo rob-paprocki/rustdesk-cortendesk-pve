@@ -1,7 +1,7 @@
-From 8dc9f642ba7a39c2f87dbb176673c88a69d77636 Mon Sep 17 00:00:00 2001
+From 47b1cd3466082ddd0467738f933a172ada2fd58f Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
-Subject: [PATCH 14/31] console hand-off: list finished builds for a console's
+Subject: [PATCH 14/32] console hand-off: list finished builds for a console's
  client downloads
 
 A per-build choice (no / hidden / published, default RDGEN_PUBLISH_DEFAULT;
@@ -102,7 +102,7 @@ index 4e90663..2df970c 100644
  # Empty disables token auth; the API then only accepts a logged-in session.
  RDGEN_API_TOKEN = env('RDGEN_API_TOKEN', '')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 5bd36b2..ec476b8 100644
+index b70faae..1e60d95 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -6,7 +6,7 @@ from django.core.exceptions import RequestDataTooBig
@@ -114,7 +114,7 @@ index 5bd36b2..ec476b8 100644
  from .validation import validate_build_fields
  from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
  
-@@ -108,6 +108,12 @@ def validate_generate_params(data):
+@@ -109,6 +109,12 @@ def validate_generate_params(data):
              continue
          cleaned[field] = value if field in ('permanentPassword',) else value.strip()
  
@@ -128,7 +128,7 @@ index 5bd36b2..ec476b8 100644
      for field, message in validate_build_fields(cleaned).items():
          errors.setdefault(field, message)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 9d6731a..1142269 100644
+index 0156a56..1c9dcbb 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -1,4 +1,5 @@
@@ -137,7 +137,7 @@ index 9d6731a..1142269 100644
  from PIL import Image
  
  from .validation import validate_build_fields
-@@ -89,6 +90,18 @@ class GenerateForm(forms.Form):
+@@ -88,6 +89,18 @@ class GenerateForm(forms.Form):
      xOffline = forms.BooleanField(initial=False, required=False)
      removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
  
@@ -156,7 +156,7 @@ index 9d6731a..1142269 100644
      def clean_iconfile(self):
          image = self.cleaned_data['iconfile']
          if image:
-@@ -147,4 +160,41 @@ class GenerateForm(forms.Form):
+@@ -146,4 +159,41 @@ class GenerateForm(forms.Form):
          for field, message in validate_build_fields(cleaned).items():
              if field in self.fields and field not in self.errors:
                  self.add_error(field, message)
@@ -425,7 +425,7 @@ index 2afcd43..cc6b6fd 100644
      </div>
  
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index e11be5d..1e1293d 100644
+index 40ba829..c3f3a7b 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
 @@ -280,6 +280,7 @@
@@ -573,7 +573,7 @@ index 0000000..0fcd342
 +        from django.contrib.auth import get_user_model
 +        return get_user_model().objects.create_user('tester', password='x' * 16)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 48b3421..dceb6a5 100644
+index 064dcda..2f81c3f 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -13,7 +13,7 @@ from django.urls import reverse
@@ -585,9 +585,9 @@ index 48b3421..dceb6a5 100644
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
  from .validation import sanitize_filename, validate_build_fields
-@@ -135,6 +135,12 @@ def generate_custom_client(params, full_url=None):
-     filename = sanitize_filename(filename)
-     if not all(char.isascii() for char in appname):
+@@ -138,6 +138,12 @@ def generate_custom_client(params, full_url=None):
+     # workflow's directory rename stay in sync.
+     if appname.lower() == "rustdesk":
          appname = "rustdesk"
 +    publish = publish_choice(params.get('publish'))
 +    secret_fields = {'permanentPassword': permPass, 'defaultManual': defaultManual, 'overrideManual': overrideManual}
@@ -598,7 +598,7 @@ index 48b3421..dceb6a5 100644
      myuuid = str(uuid.uuid4())
  
      # Images travel inside the encrypted cfg input (pull model): no /get_png
-@@ -296,6 +302,9 @@ def generate_custom_client(params, full_url=None):
+@@ -327,6 +333,9 @@ def generate_custom_client(params, full_url=None):
          platform=platform,
          filename=filename,
          version=version,
@@ -608,7 +608,7 @@ index 48b3421..dceb6a5 100644
      )
      try:
          run_id, html_url = github.GitHub().dispatch(platform, inputs)
-@@ -372,7 +381,7 @@ def generator_view(request):
+@@ -403,7 +412,7 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')
@@ -617,7 +617,7 @@ index 48b3421..dceb6a5 100644
  
  
  def check_for_file(request):
-@@ -388,6 +397,10 @@ def check_for_file(request):
+@@ -419,6 +428,10 @@ def check_for_file(request):
          'log_url': result['github_log_url'],
          'files': build_files(gh_run),
          'last_error': gh_run.last_error,

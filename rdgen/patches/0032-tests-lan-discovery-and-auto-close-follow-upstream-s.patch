@@ -1,0 +1,42 @@
+From 58b94a9fffcc91d06118a4478214c3335bee0517 Mon Sep 17 00:00:00 2001
+From: Rob Paprocki <hi@rpaprocki.com>
+Date: Fri, 13 Nov 2026 09:49:34 +0000
+Subject: [PATCH 32/32] tests: lan discovery and auto close follow upstream's
+ override-settings
+
+---
+ rdgenerator/tests/test_ui.py | 17 +++++++++--------
+ 1 file changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
+index c82b5f0..dccd539 100644
+--- a/rdgenerator/tests/test_ui.py
++++ b/rdgenerator/tests/test_ui.py
+@@ -127,18 +127,19 @@ class LanAndAutoCloseTests(StubTestCase):
+         return json.loads(base64.b64decode(secrets_json['custom']))
+ 
+     def test_ticked_boxes_reach_the_settings_maps(self):
+-        custom = self.custom(denyLan=True, autoClose=True, permissionsDorO='override')
++        # upstream (1.5.3) writes both into override-settings, the map the client reads them from
++        custom = self.custom(denyLan=True, autoClose=True)
+         self.assertEqual(custom['override-settings']['enable-lan-discovery'], 'N')
+         self.assertEqual(custom['override-settings']['allow-auto-disconnect'], 'Y')
+-        custom = self.custom(denyLan=True, autoClose=True)
+-        self.assertEqual(custom['default-settings']['enable-lan-discovery'], 'N')
+-        self.assertEqual(custom['default-settings']['allow-auto-disconnect'], 'Y')
++        self.assertNotIn('enable-lan-discovery', custom)
++        self.assertNotIn('allow-auto-disconnect', custom)
+ 
+-    def test_unticked_boxes_leave_rustdesk_defaults(self):
++    def test_unticked_boxes_write_rustdesks_own_defaults(self):
+         custom = self.custom()
+-        for section in ('default-settings', 'override-settings'):
+-            self.assertNotIn('enable-lan-discovery', custom[section])
+-            self.assertNotIn('allow-auto-disconnect', custom[section])
++        self.assertEqual(custom['override-settings']['enable-lan-discovery'], 'Y')
++        self.assertEqual(custom['override-settings']['allow-auto-disconnect'], 'N')
++        self.assertNotIn('enable-lan-discovery', custom['default-settings'])
++        self.assertNotIn('allow-auto-disconnect', custom['default-settings'])
+ 
+ 
+ class LinuxAppNameTests(StubTestCase):

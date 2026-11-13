@@ -1,7 +1,7 @@
-From 830b926b7b82cef1dfcb10d60c32e2097a5f0657 Mon Sep 17 00:00:00 2001
+From ca8d51ccd470d417b5b3f034528dc9e2a23acfa9 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 09:04:15 +0000
-Subject: [PATCH 30/31] macos: one shell-safe name for the bundle and
+Subject: [PATCH 30/32] macos: one shell-safe name for the bundle and
  custom.txt app-name
 
 Upstream (073447b) builds with the typed name stripped of spaces and puts the
@@ -85,7 +85,7 @@ index 1057daf..416011e 100644
      """Why a Linux build cannot use this app name, or ''. A blank name means the default (rustdesk)."""
      if not (name or '').strip():
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index a813710..8726d7e 100644
+index bd39f4e..71b290a 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -22,7 +22,7 @@ from . import buildcfg, github
@@ -97,7 +97,7 @@ index a813710..8726d7e 100644
  
  log = logging.getLogger(__name__)
  
-@@ -159,6 +159,9 @@ def generate_custom_client(params, full_url=None):
+@@ -162,6 +162,9 @@ def generate_custom_client(params, full_url=None):
          if problem:
              return {"success": False, "error": problem, "status_code": 400}
          appname = appname_display = linux_app_name(appname_display)

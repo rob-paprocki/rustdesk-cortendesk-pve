@@ -1,7 +1,7 @@
-From 2de68e2d992beca47b5a4f79d4712cc3ce34eec1 Mon Sep 17 00:00:00 2001
+From 0fec005253e5c1743fc1b3550307d112c176e9b4 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
-Subject: [PATCH 16/31] linux: build Linux clients under a Linux-safe app name
+Subject: [PATCH 16/32] linux: build Linux clients under a Linux-safe app name
 
 A Linux build with the app name "Rescue Client (Rob Paprocki)" failed in
 build.py: the workflow writes the name into unquoted shell commands
@@ -8143,7 +8143,7 @@ index 0000000..25ba407
 +})();
 +</script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 232ba33..055968a 100644
+index 6c39272..4ebde2b 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
 @@ -273,12 +273,8 @@
@@ -8170,7 +8170,7 @@ index 232ba33..055968a 100644
                      <label for="{{ form.direction.id_for_label }}">Connection Type:</label>
                      {{ form.direction }}<br><br>
                      <label for="{{ form.installation.id_for_label }}">Disable Installation:</label>
-@@ -419,6 +415,9 @@
+@@ -418,6 +414,9 @@
          </div>
      </form>
      <script>
@@ -8315,7 +8315,7 @@ index 6154f0b..7833032 100644
      """Upstream's rule, minus the \\s hole that let tabs/newlines through."""
      value = (value or '').strip()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index cc58356..86fc5a2 100644
+index e75a2b7..98fa1d4 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -17,7 +17,7 @@ from . import buildcfg, github
@@ -8327,9 +8327,9 @@ index cc58356..86fc5a2 100644
  
  log = logging.getLogger(__name__)
  
-@@ -140,6 +140,12 @@ def generate_custom_client(params, full_url=None):
-     filename = sanitize_filename(filename)
-     if not all(char.isascii() for char in appname):
+@@ -143,6 +143,12 @@ def generate_custom_client(params, full_url=None):
+     # workflow's directory rename stay in sync.
+     if appname.lower() == "rustdesk":
          appname = "rustdesk"
 +    if platform == 'linux' and appname != 'rustdesk':
 +        # one name for the package, folders, service and the client's own config (see linux_app_name)

@@ -1,7 +1,7 @@
-From 3a7b010f51c7b76c9fc8f2b7da245532d3fc35c0 Mon Sep 17 00:00:00 2001
+From 6f7b8fcbad36688df82cbab88100f535f3fb7809 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
-Subject: [PATCH 21/31] builds on machines of your own: Linux and Windows
+Subject: [PATCH 21/32] builds on machines of your own: Linux and Windows
  runners, Linux choices
 
 Self-hosted runners cost no Actions minutes. The workflow side
@@ -82,19 +82,19 @@ index e6c7e5d..bc25a2b 100644
  ## 2. Native install (Alpine 3.24, or Debian 13)
  
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index b89b29a..2d5fec6 100644
+index bc962a7..9fb5a11 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
-@@ -23,6 +23,7 @@ PASS_APPROVE_MODE_CHOICES = ['password', 'click', 'password-click']
- PERMISSIONS_DORO_CHOICES = ['default', 'override']
+@@ -22,6 +22,7 @@ THEME_DORO_CHOICES = ['default', 'override']
+ PASS_APPROVE_MODE_CHOICES = ['password', 'click', 'password-click']
  PERMISSIONS_TYPE_CHOICES = ['custom', 'full', 'view']
  MAC_ARCH_CHOICES = ['both', 'x86_64', 'aarch64']
 +LINUX_FORMATS_CHOICES = ['all', 'deb']
  
  # Boolean fields
  BOOL_FIELDS = [
-@@ -79,6 +80,8 @@ def validate_generate_params(data):
-         'permissionsDorO': (PERMISSIONS_DORO_CHOICES, 'default'),
+@@ -80,6 +81,8 @@ def validate_generate_params(data):
+         # field is still accepted in incoming JSON and simply ignored.
          'permissionsType': (PERMISSIONS_TYPE_CHOICES, 'custom'),
          'macArch': (MAC_ARCH_CHOICES, 'both'),
 +        'linuxArch': (MAC_ARCH_CHOICES, 'both'),
@@ -103,7 +103,7 @@ index b89b29a..2d5fec6 100644
      for field, (choices, default) in choice_validations.items():
          value = data.get(field, default)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index bc7778c..8b3ba64 100644
+index e6e1998..47e50e2 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -11,6 +11,11 @@ class GenerateForm(forms.Form):
@@ -116,7 +116,7 @@ index bc7778c..8b3ba64 100644
 +    linuxFormats = forms.ChoiceField(choices=[('all', '.deb, .rpm, AppImage and Flatpak'), ('deb', '.deb and .rpm only')],
 +                                     initial='all', required=False)
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.1')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.3','1.5.3'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.3')
      help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
 diff --git a/rdgenerator/templates/_build_cost.html b/rdgenerator/templates/_build_cost.html
 index 2cc7ece..1e7d6cd 100644
@@ -211,7 +211,7 @@ index ecb02b1..7beb1e9 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index e6fc1b6..7a291b2 100644
+index 0af7dff..7a98c86 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -74,8 +74,12 @@ def generate_custom_client(params, full_url=None):
@@ -229,7 +229,7 @@ index e6fc1b6..7a291b2 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -319,6 +323,10 @@ def generate_custom_client(params, full_url=None):
+@@ -342,6 +346,10 @@ def generate_custom_client(params, full_url=None):
          # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
          if platform == 'macos' and mac_arch != 'both':
              result["mac_arch"] = mac_arch

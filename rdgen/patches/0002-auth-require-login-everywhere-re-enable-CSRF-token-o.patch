@@ -1,7 +1,7 @@
-From a3c03a3cb9ac158e3d35386374f3fdb8aa92bf95 Mon Sep 17 00:00:00 2001
+From 8655954826f9e66e591b9700ce5ebec5e96acc2c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
-Subject: [PATCH 02/31] auth: require login everywhere, re-enable CSRF, token
+Subject: [PATCH 02/32] auth: require login everywhere, re-enable CSRF, token
  or session for /api
 
 - Add LoginRequiredMiddleware (Django >= 5.1; Alpine 3.24 ships 5.2.17).
@@ -148,7 +148,7 @@ index d28debe..5aa8265 100644
 +    path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
  ]
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index bb5b2ac..c60a777 100644
+index 4a9a854..b5d258e 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,7 +1,12 @@
@@ -164,7 +164,7 @@ index bb5b2ac..c60a777 100644
  from django.conf import settings as _settings
  from .views import generate_custom_client, _get_run_status, _UUID_RE
  
-@@ -110,6 +115,32 @@ def validate_generate_params(data):
+@@ -111,6 +116,32 @@ def validate_generate_params(data):
      return cleaned, errors
  
  
@@ -197,7 +197,7 @@ index bb5b2ac..c60a777 100644
  def api_generate(request):
      """
      POST /api/generate
-@@ -254,6 +285,7 @@ def api_generate(request):
+@@ -255,6 +286,7 @@ def api_generate(request):
          return JsonResponse({"success": False, "error": result['error']}, status=result.get('status_code', 500))
  
  
@@ -305,7 +305,7 @@ index 920ba18..40482d2 100644
  
      <script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 1ede638..a922375 100644
+index 4b1984d..fa10c3a 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
 @@ -224,8 +224,14 @@
@@ -324,7 +324,7 @@ index 1ede638..a922375 100644
          <div class="save-load-section-container">
              <div class="section">
                  <h2 id="saveLoadTitle">Save/Load Configuration <i class="fas fa-chevron-down"></i></h2>  
-@@ -566,6 +572,10 @@
+@@ -565,6 +571,10 @@
                  if (value instanceof File) {
                      return;
                  }
@@ -335,7 +335,7 @@ index 1ede638..a922375 100644
                  formData[key] = value; // Add each key/value pair to the formData object.
              });
  
-@@ -685,6 +695,11 @@
+@@ -684,6 +694,11 @@
                              carriedUnknownFields = {};
                              const skippedKeys = [];
                              for (const key in formData) {

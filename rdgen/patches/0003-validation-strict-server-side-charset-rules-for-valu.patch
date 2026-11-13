@@ -1,7 +1,7 @@
-From af3985456015e181a99d6db5a3fbfa5bc2f74cc5 Mon Sep 17 00:00:00 2001
+From b13d2920d149ca7e504ba2c5a8c441ca98619ac6 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
-Subject: [PATCH 03/31] validation: strict server-side charset rules for values
+Subject: [PATCH 03/32] validation: strict server-side charset rules for values
  that reach build scripts
 
 The generator workflows paste appname, compname, server, key, apiServer,
@@ -40,7 +40,7 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  create mode 100644 rdgenerator/validation.py
 
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index c60a777..bdb7b32 100644
+index b5d258e..1f16c1d 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -8,6 +8,8 @@ from django.http import JsonResponse
@@ -52,7 +52,7 @@ index c60a777..bdb7b32 100644
  from .views import generate_custom_client, _get_run_status, _UUID_RE
  
  
-@@ -32,7 +34,9 @@ BOOL_FIELDS = [
+@@ -31,7 +33,9 @@ BOOL_FIELDS = [
      'enableRemoteModi', 'removeWallpaper', 'enablePrinter', 'enableCamera', 'enableTerminal',
  ]
  
@@ -63,7 +63,7 @@ index c60a777..bdb7b32 100644
  OPTIONAL_STR_FIELDS = [
      'sh_secret_field', 'serverIP', 'serverPort', 'key', 'apiServer', 'urlLink', 'downloadLink',
      'appname', 'compname', 'androidappid', 'permanentPassword',
-@@ -55,8 +59,10 @@ def validate_generate_params(data):
+@@ -54,8 +58,10 @@ def validate_generate_params(data):
      cleaned = {}
  
      # Required string field
@@ -75,7 +75,7 @@ index c60a777..bdb7b32 100644
          errors['exename'] = 'This field is required.'
      else:
          cleaned['exename'] = exename
-@@ -81,9 +87,10 @@ def validate_generate_params(data):
+@@ -82,9 +88,10 @@ def validate_generate_params(data):
          else:
              cleaned[field] = value
  
@@ -88,7 +88,7 @@ index c60a777..bdb7b32 100644
          
          if isinstance(value, str) and value.lower() == 'on':
              value = True
-@@ -95,17 +102,17 @@ def validate_generate_params(data):
+@@ -96,17 +103,17 @@ def validate_generate_params(data):
  
      # Optional string fields
      for field in OPTIONAL_STR_FIELDS:
@@ -118,7 +118,7 @@ index c60a777..bdb7b32 100644
      # File fields are not used in API mode (base64 fields are used instead)
      cleaned['iconfile'] = None
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 3960925..3d266fa 100644
+index 5a7113b..fef5244 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -3,10 +3,9 @@ import re
@@ -135,7 +135,7 @@ index 3960925..3d266fa 100644
  
  class GenerateForm(forms.Form):
      sh_secret_field = forms.CharField(required=False)
-@@ -94,9 +93,10 @@ class GenerateForm(forms.Form):
+@@ -93,9 +92,10 @@ class GenerateForm(forms.Form):
      removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
  
      def clean_iconfile(self):
@@ -147,7 +147,7 @@ index 3960925..3d266fa 100644
              try:
                  # Open the image using Pillow
                  img = Image.open(image)
-@@ -111,24 +111,43 @@ class GenerateForm(forms.Form):
+@@ -110,24 +110,43 @@ class GenerateForm(forms.Form):
                  # Check for square dimensions
                  if width != height:
                      raise forms.ValidationError("Custom App Icon dimensions must be square.")
@@ -207,7 +207,7 @@ index 3960925..3d266fa 100644
 +                self.add_error(field, message)
 +        return cleaned
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index a922375..e11be5d 100644
+index fa10c3a..40ba829 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
 @@ -242,10 +242,12 @@
@@ -322,7 +322,7 @@ index 0000000..e81fc9f
 +            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
 +    return errors
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 4fb1cdb..15e42e6 100644
+index 71ba993..569e73d 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -14,6 +14,7 @@ import pyzipper
@@ -333,7 +333,7 @@ index 4fb1cdb..15e42e6 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -119,11 +120,7 @@ def generate_custom_client(params, full_url):
+@@ -118,11 +119,7 @@ def generate_custom_client(params, full_url):
      enableCamera = params.get('enableCamera', True)
      enableTerminal = params.get('enableTerminal', True)
  
@@ -345,4 +345,4 @@ index 4fb1cdb..15e42e6 100644
 +    filename = sanitize_filename(filename)
      if not all(char.isascii() for char in appname):
          appname = "rustdesk"
-     myuuid = str(uuid.uuid4())
+     # Treat "RustDesk" as the default name too, so the app-name key and the

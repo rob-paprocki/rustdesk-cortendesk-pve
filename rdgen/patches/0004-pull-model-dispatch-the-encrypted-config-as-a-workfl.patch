@@ -1,7 +1,7 @@
-From 15ae37d3b773c66960a830c5d7ebd1388fe32c1f Mon Sep 17 00:00:00 2001
+From 3c5f8c4f578b687a82898caf84724181a3cb978e Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
-Subject: [PATCH 04/31] pull model: dispatch the encrypted config as a workflow
+Subject: [PATCH 04/32] pull model: dispatch the encrypted config as a workflow
  input
 
 Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back
@@ -99,7 +99,7 @@ index f7c3100..4e90663 100644
  MEDIA_URL = '/media/'
  MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index bdb7b32..7e3ca2d 100644
+index 1f16c1d..292ded1 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -4,6 +4,7 @@ import re
@@ -110,7 +110,7 @@ index bdb7b32..7e3ca2d 100644
  from django.http import JsonResponse
  from django.middleware.csrf import CsrfViewMiddleware
  from django.views.decorators.csrf import csrf_exempt
-@@ -38,7 +39,7 @@ _BOOL_DEFAULTS = {name: bool(GenerateForm.base_fields[name].initial) for name in
+@@ -37,7 +38,7 @@ _BOOL_DEFAULTS = {name: bool(GenerateForm.base_fields[name].initial) for name in
  
  # Optional string fields (validated by validation.validate_build_fields)
  OPTIONAL_STR_FIELDS = [
@@ -119,7 +119,7 @@ index bdb7b32..7e3ca2d 100644
      'appname', 'compname', 'androidappid', 'permanentPassword',
      'defaultManual', 'overrideManual',
      'iconbase64', 'logobase64', 'privacybase64',
-@@ -161,7 +162,11 @@ def api_generate(request):
+@@ -162,7 +163,11 @@ def api_generate(request):
          return JsonResponse({"success": False, "error": "Method not allowed. Use POST."}, status=405)
  
      try:
@@ -132,7 +132,7 @@ index bdb7b32..7e3ca2d 100644
      except (json.JSONDecodeError, ValueError) as e:
          return JsonResponse({"success": False, "error": f"Invalid JSON: {str(e)}"}, status=400)
  
-@@ -279,10 +284,7 @@ def api_generate(request):
+@@ -280,10 +285,7 @@ def api_generate(request):
              "details": errors
          }, status=400)
  
@@ -286,7 +286,7 @@ index 0000000..75a5fe8
 +        'Use simpler PNGs (flat colours, no photos), drop the privacy image, '
 +        'or shorten the default/override settings.')
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 3d266fa..82ed9cf 100644
+index fef5244..c686e87 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -8,7 +8,6 @@ from .validation import validate_build_fields
@@ -296,7 +296,7 @@ index 3d266fa..82ed9cf 100644
 -    sh_secret_field = forms.CharField(required=False)
      #Platform
      platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.1')
+     version = forms.ChoiceField(choices=[('master','nightly'),('1.5.3','1.5.3'),('1.5.1','1.5.1'),('1.5.0','1.5.0')], initial='1.5.3')
 diff --git a/rdgenerator/github.py b/rdgenerator/github.py
 new file mode 100644
 index 0000000..acf114e
@@ -529,7 +529,7 @@ index e81fc9f..6154f0b 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 15e42e6..1d2ca1b 100644
+index 569e73d..1031633 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -14,7 +14,35 @@ import pyzipper
@@ -591,7 +591,7 @@ index 15e42e6..1d2ca1b 100644
 -    user_secret = params.get('sh_secret_field', '')
 -    selfhosted = (_settings.SH_SECRET == user_secret)
      platform = params.get('platform', 'windows')
-     version = params.get('version', '1.5.1')
+     version = params.get('version', '1.5.3')
      app_version = params.get('app_version', '')
 @@ -68,14 +95,15 @@ def generate_custom_client(params, full_url):
      apiServer = params.get('apiServer', '')
@@ -612,7 +612,7 @@ index 15e42e6..1d2ca1b 100644
      if not urlLink:
          urlLink = "https://rustdesk.com"
      if not downloadLink:
-@@ -125,36 +153,22 @@ def generate_custom_client(params, full_url):
+@@ -128,36 +156,22 @@ def generate_custom_client(params, full_url):
          appname = "rustdesk"
      myuuid = str(uuid.uuid4())
  
@@ -664,7 +664,7 @@ index 15e42e6..1d2ca1b 100644
  
      ###create the custom.txt json here and send in as inputs below
      decodedCustom = {}
-@@ -247,24 +261,6 @@ def generate_custom_client(params, full_url):
+@@ -278,24 +292,6 @@ def generate_custom_client(params, full_url):
      base64_bytes = base64.b64encode(string_bytes)
      encodedCustom = base64_bytes.decode("ascii")
  
@@ -689,7 +689,7 @@ index 15e42e6..1d2ca1b 100644
      inputs_raw = {
          "server":server,
          "serverPort":serverPort,
-@@ -273,16 +269,9 @@ def generate_custom_client(params, full_url):
+@@ -304,16 +300,9 @@ def generate_custom_client(params, full_url):
          "custom":encodedCustom,
          "uuid":myuuid,
          "iconlink_url":iconlink_url,
@@ -706,7 +706,7 @@ index 15e42e6..1d2ca1b 100644
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -295,74 +284,57 @@ def generate_custom_client(params, full_url):
+@@ -326,74 +315,57 @@ def generate_custom_client(params, full_url):
          "filename":filename
      }
  
@@ -826,7 +826,7 @@ index 15e42e6..1d2ca1b 100644
  
  
  def _get_run_status(uuid_val):
-@@ -414,8 +386,7 @@ def generator_view(request):
+@@ -445,8 +417,7 @@ def generator_view(request):
          form = GenerateForm(request.POST, request.FILES)
          if form.is_valid():
              params = form.cleaned_data
@@ -836,7 +836,7 @@ index 15e42e6..1d2ca1b 100644
              if result['success']:
                  return render(request, 'waiting.html', {
                      'filename': result['filename'],
-@@ -424,10 +395,9 @@ def generator_view(request):
+@@ -455,10 +426,9 @@ def generator_view(request):
                      'platform': result['platform'],
                      'log_url': result['log_url']
                  })

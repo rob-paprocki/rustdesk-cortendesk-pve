@@ -77,6 +77,7 @@ The later patches, newest last:
      stays Acme-Support as before 073447b) as both the build name and custom.txt app-name: RustDesk on macOS runs under
      that app-name, looks for /Applications/<app-name>.app/Contents/MacOS/<app-name> and pastes it unquoted into /bin/sh.
 0031 follows upstream's move of the Apple Silicon Mac runner from macos-14 to macos-15 in the test suite.
+0032 follows upstream 1.5.3, which writes "Deny LAN discovery" and "Automatically close incoming sessions" into override-settings itself (the fix our UI patch had made): the tests now expect those keys there, always.
 
 tools/rdgen-rebase.py moves the series to a newer upstream: it rebases, regenerates 0009, exports and verifies.
 .github/workflows/rdgen-upstream.yml runs it when a CT asks, or by hand. patch-source, installed next to the patches in
