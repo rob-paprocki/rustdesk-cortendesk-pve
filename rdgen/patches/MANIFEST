@@ -30,4 +30,5 @@
 0030-macos-one-shell-safe-name-for-the-bundle-and-custom..patch
 0031-tests-follow-upstream-s-move-of-the-Apple-Silicon-ru.patch
 0032-tests-lan-discovery-and-auto-close-follow-upstream-s.patch
+0033-theme-colors-validate-the-new-build-config-keys-on-b.patch
 UPSTREAM

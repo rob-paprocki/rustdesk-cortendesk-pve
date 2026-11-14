@@ -1,7 +1,7 @@
-From 0fec005253e5c1743fc1b3550307d112c176e9b4 Mon Sep 17 00:00:00 2001
+From 3f15a7c3fe482fb19abe95d5c6c4c0815b8d240c Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
-Subject: [PATCH 16/32] linux: build Linux clients under a Linux-safe app name
+Subject: [PATCH 16/33] linux: build Linux clients under a Linux-safe app name
 
 A Linux build with the app name "Rescue Client (Rob Paprocki)" failed in
 build.py: the workflow writes the name into unquoted shell commands
@@ -8143,10 +8143,10 @@ index 0000000..25ba407
 +})();
 +</script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 6c39272..4ebde2b 100644
+index 562080e..c2f7c1d 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -273,12 +273,8 @@
+@@ -467,12 +467,8 @@
                      <i class="fab fa-apple platform-icon" data-platform="macos"></i>
                  </div>
                  <select name="platform" id="id_platform">
@@ -8161,7 +8161,7 @@ index 6c39272..4ebde2b 100644
                  <label for="{{ form.version.id_for_label }}">Rustdesk Version:</label>
                  {{ form.version }}
                  {% if form.version.help_text %}
-@@ -295,7 +291,7 @@
+@@ -489,7 +485,7 @@
                      <label for="{{ form.exename.id_for_label }}">Name of the configuration (no spaces or special characters, English characters only):</label>
                      {{ form.exename }}<span id="filenameError" class="error"></span><br><br>
                      <label for="{{ form.appname.id_for_label }}">Custom Application Name (leave blank to use default):</label>
@@ -8170,7 +8170,7 @@ index 6c39272..4ebde2b 100644
                      <label for="{{ form.direction.id_for_label }}">Connection Type:</label>
                      {{ form.direction }}<br><br>
                      <label for="{{ form.installation.id_for_label }}">Disable Installation:</label>
-@@ -418,6 +414,9 @@
+@@ -664,6 +660,9 @@
          </div>
      </form>
      <script>
@@ -8256,7 +8256,7 @@ index b782d4b..64ae933 100644
          self.assertEqual(sorted(os.listdir(WORKFLOWS)), sorted([
              'bridge.yml', 'fetch-encrypted-secrets.yml', 'generator-android.yml', 'generator-linux.yml',
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index 6154f0b..7833032 100644
+index a4d8e7e..0c32b66 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -6,6 +6,8 @@ characters listed here are accepted; the decrypt step in the workflow
@@ -8268,7 +8268,7 @@ index 6154f0b..7833032 100644
  import re
  
  _LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
-@@ -43,6 +45,45 @@ MAX_PASSWORD_CHARS = 128
+@@ -46,6 +48,45 @@ MAX_PASSWORD_CHARS = 128
  MAX_DATA_URI_CHARS = 6 * 1024 * 1024
  
  
@@ -8315,11 +8315,11 @@ index 6154f0b..7833032 100644
      """Upstream's rule, minus the \\s hole that let tabs/newlines through."""
      value = (value or '').strip()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index e75a2b7..98fa1d4 100644
+index 8a79274..71c5035 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -17,7 +17,7 @@ from . import buildcfg, github
- from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
+ from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
 -from .validation import sanitize_filename, validate_build_fields
@@ -8327,7 +8327,7 @@ index e75a2b7..98fa1d4 100644
  
  log = logging.getLogger(__name__)
  
-@@ -143,6 +143,12 @@ def generate_custom_client(params, full_url=None):
+@@ -161,6 +161,12 @@ def generate_custom_client(params, full_url=None):
      # workflow's directory rename stay in sync.
      if appname.lower() == "rustdesk":
          appname = "rustdesk"

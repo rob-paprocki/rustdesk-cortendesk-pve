@@ -1,7 +1,7 @@
-From 204ef62a6a3508863ca940bf9f90e4983b7a9308 Mon Sep 17 00:00:00 2001
+From f8fcc31b1937bf7ab0a679ebc0d1285c7cfafa02 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
-Subject: [PATCH 22/32] builds: the cost note says where the last build of each
+Subject: [PATCH 22/33] builds: the cost note says where the last build of each
  kind ran
 
 The form's cost note quoted GitHub's prices for every build, including Mac
@@ -308,10 +308,10 @@ index 7beb1e9..b6484bf 100644
      def test_reference_data_is_consistent(self):
          data = views.client_settings()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 7a98c86..ea6d293 100644
+index 94a5566..afcee0f 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -431,6 +431,35 @@ def client_settings():
+@@ -459,6 +459,35 @@ def client_settings():
          return json.load(fh)
  
  
@@ -347,7 +347,7 @@ index 7a98c86..ea6d293 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -451,7 +480,8 @@ def generator_view(request):
+@@ -479,7 +508,8 @@ def generator_view(request):
      #return render(request, 'maintenance.html')
      return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
                                                'client_settings': client_settings(),

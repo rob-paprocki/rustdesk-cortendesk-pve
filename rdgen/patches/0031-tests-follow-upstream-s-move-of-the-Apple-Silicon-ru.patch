@@ -1,7 +1,7 @@
-From 514c1a215508de12681e0685519cbe93f8425388 Mon Sep 17 00:00:00 2001
+From 89d936bc8a50f385b9fe23562f07c98bdc6eb83e Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Tue, 10 Nov 2026 09:50:54 +0000
-Subject: [PATCH 31/32] tests: follow upstream's move of the Apple Silicon
+Subject: [PATCH 31/33] tests: follow upstream's move of the Apple Silicon
  runner to macos-15
 
 ---

@@ -1,7 +1,7 @@
-From d50c73a084f7d16d8aa053021eba6699492819e0 Mon Sep 17 00:00:00 2001
+From 61e7624ca1554d1fa230326f1e84864386e81ed3 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
-Subject: [PATCH 05/32] pull model: poller downloads and deletes artifacts;
+Subject: [PATCH 05/33] pull model: poller downloads and deletes artifacts;
  status and downloads from the DB
 
 New `manage.py rdgen_poll` (run as a supervised service) and
@@ -85,7 +85,7 @@ index 5aa8265..274bbfd 100644
      path('accounts/login/', auth_views.LoginView.as_view(redirect_authenticated_user=True), name='login'),
      path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 292ded1..d7c15ae 100644
+index 6f03919..a9a885e 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,5 +1,4 @@
@@ -96,14 +96,14 @@ index 292ded1..d7c15ae 100644
  
 @@ -11,7 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
  from django.conf import settings as _settings
- from .forms import GenerateForm
+ from .forms import GenerateForm, HEX_COLOR_RE
  from .validation import validate_build_fields
 -from .views import generate_custom_client, _get_run_status, _UUID_RE
 +from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
  
  
  # Field validation constraints (mirrored from GenerateForm)
-@@ -302,8 +301,8 @@ def api_status(request):
+@@ -317,8 +316,8 @@ def api_status(request):
  
      Checks the generation status for a given UUID.
      Returns JSON with status, uuid, and optional log_url/filename/platform.
@@ -114,7 +114,7 @@ index 292ded1..d7c15ae 100644
      """
      if request.method != 'GET':
          return JsonResponse({"success": False, "error": "Method not allowed. Use GET."}, status=405)
-@@ -312,36 +311,31 @@ def api_status(request):
+@@ -327,36 +326,31 @@ def api_status(request):
      if not uuid_val:
          return JsonResponse({"error": "Missing required parameter: uuid"}, status=400)
  
@@ -752,7 +752,7 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 1031633..7c32ea1 100644
+index ebece84..63b0442 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,6 +1,8 @@
@@ -766,14 +766,14 @@ index 1031633..7c32ea1 100644
  from django.core.files.base import ContentFile
  import os
 @@ -16,6 +18,7 @@ from django.db.models import Q
- from .forms import GenerateForm
+ from .forms import GenerateForm, HEX_COLOR_RE
  from .validation import sanitize_filename, validate_build_fields
  from . import buildcfg, github
 +from .poller import allowed_output_name, valid_uuid
  from django.utils import timezone
  import logging
  
-@@ -370,48 +373,37 @@ def generate_custom_client(params, full_url=None):
+@@ -394,48 +397,37 @@ def generate_custom_client(params, full_url=None):
  
  def _get_run_status(uuid_val):
      """
@@ -844,7 +844,7 @@ index 1031633..7c32ea1 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -433,106 +425,55 @@ def generator_view(request):
+@@ -457,106 +449,55 @@ def generator_view(request):
      return render(request, 'generator.html', {'form': form})
  
  

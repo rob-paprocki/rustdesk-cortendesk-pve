@@ -1,7 +1,7 @@
-From b13d2920d149ca7e504ba2c5a8c441ca98619ac6 Mon Sep 17 00:00:00 2001
+From 680ef4054e5c8f7bad0a67314f2994a82ba5f898 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
-Subject: [PATCH 03/32] validation: strict server-side charset rules for values
+Subject: [PATCH 03/33] validation: strict server-side charset rules for values
  that reach build scripts
 
 The generator workflows paste appname, compname, server, key, apiServer,
@@ -31,28 +31,29 @@ shell of the runner, which holds the signing secrets.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
- rdgenerator/api_views.py             | 37 +++++++-----
- rdgenerator/forms.py                 | 59 +++++++++++-------
+ rdgenerator/api_views.py             | 36 ++++++-----
+ rdgenerator/forms.py                 | 59 ++++++++++++------
  rdgenerator/templates/generator.html |  8 ++-
- rdgenerator/validation.py            | 89 ++++++++++++++++++++++++++++
+ rdgenerator/validation.py            | 92 ++++++++++++++++++++++++++++
  rdgenerator/views.py                 |  7 +--
- 5 files changed, 157 insertions(+), 43 deletions(-)
+ 5 files changed, 159 insertions(+), 43 deletions(-)
  create mode 100644 rdgenerator/validation.py
 
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index b5d258e..1f16c1d 100644
+index e9874d2..b12d53b 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
-@@ -8,6 +8,8 @@ from django.http import JsonResponse
+@@ -8,7 +8,8 @@ from django.http import JsonResponse
  from django.middleware.csrf import CsrfViewMiddleware
  from django.views.decorators.csrf import csrf_exempt
  from django.conf import settings as _settings
-+from .forms import GenerateForm
+-from .forms import HEX_COLOR_RE
++from .forms import GenerateForm, HEX_COLOR_RE
 +from .validation import validate_build_fields
- from .views import generate_custom_client, _get_run_status, _UUID_RE
+ from .views import generate_custom_client, get_full_url, _get_run_status, _UUID_RE
  
  
-@@ -31,7 +33,9 @@ BOOL_FIELDS = [
+@@ -32,7 +33,9 @@ BOOL_FIELDS = [
      'enableRemoteModi', 'removeWallpaper', 'enablePrinter', 'enableCamera', 'enableTerminal',
  ]
  
@@ -63,7 +64,7 @@ index b5d258e..1f16c1d 100644
  OPTIONAL_STR_FIELDS = [
      'sh_secret_field', 'serverIP', 'serverPort', 'key', 'apiServer', 'urlLink', 'downloadLink',
      'appname', 'compname', 'androidappid', 'permanentPassword',
-@@ -54,8 +58,10 @@ def validate_generate_params(data):
+@@ -56,8 +59,10 @@ def validate_generate_params(data):
      cleaned = {}
  
      # Required string field
@@ -75,7 +76,7 @@ index b5d258e..1f16c1d 100644
          errors['exename'] = 'This field is required.'
      else:
          cleaned['exename'] = exename
-@@ -82,9 +88,10 @@ def validate_generate_params(data):
+@@ -84,9 +89,10 @@ def validate_generate_params(data):
          else:
              cleaned[field] = value
  
@@ -88,12 +89,19 @@ index b5d258e..1f16c1d 100644
          
          if isinstance(value, str) and value.lower() == 'on':
              value = True
-@@ -96,17 +103,17 @@ def validate_generate_params(data):
+@@ -98,17 +104,17 @@ def validate_generate_params(data):
  
      # Optional string fields
      for field in OPTIONAL_STR_FIELDS:
 -        cleaned[field] = data.get(field, '')
--
++        value = data.get(field, '')
++        if value is None:
++            value = ''
++        if not isinstance(value, str):
++            errors[field] = 'Must be a string.'
++            continue
++        cleaned[field] = value if field in ('permanentPassword',) else value.strip()
+ 
 -    # Free-text names flow into single/double-quoted bash sed scripts
 -    # (same rule as GenerateForm.clean_appname/clean_compname).
 -    for field in ('appname', 'compname'):
@@ -103,22 +111,14 @@ index b5d258e..1f16c1d 100644
 -                'Contains characters unsupported in build scripts '
 -                '(& \\ | \' " $ `, newlines).'
 -            )
-+        value = data.get(field, '')
-+        if value is None:
-+            value = ''
-+        if not isinstance(value, str):
-+            errors[field] = 'Must be a string.'
-+            continue
-+        cleaned[field] = value if field in ('permanentPassword',) else value.strip()
-+
 +    # Values that reach the build scripts (same rules as GenerateForm).
 +    for field, message in validate_build_fields(cleaned).items():
 +        errors.setdefault(field, message)
  
-     # File fields are not used in API mode (base64 fields are used instead)
-     cleaned['iconfile'] = None
+     # Theme colors flow into Dart 0xAARRGGBB literals in the workflow patch.
+     # Accept #RRGGBB/RRGGBB and store the canonical form; blank = stock.
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 5a7113b..fef5244 100644
+index ae24e06..f146702 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -3,10 +3,9 @@ import re
@@ -133,9 +133,9 @@ index 5a7113b..fef5244 100644
 +
 +MAX_PNG_BYTES = 4 * 1024 * 1024
  
- class GenerateForm(forms.Form):
-     sh_secret_field = forms.CharField(required=False)
-@@ -93,9 +92,10 @@ class GenerateForm(forms.Form):
+ # Theme colours are interpolated into 0xAARRGGBB Dart literals by the
+ # workflow patch. Accept the same forms a user types in a colour picker, but
+@@ -124,9 +123,10 @@ class GenerateForm(forms.Form):
      removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
  
      def clean_iconfile(self):
@@ -147,7 +147,7 @@ index 5a7113b..fef5244 100644
              try:
                  # Open the image using Pillow
                  img = Image.open(image)
-@@ -110,24 +110,43 @@ class GenerateForm(forms.Form):
+@@ -141,27 +141,35 @@ class GenerateForm(forms.Form):
                  # Check for square dimensions
                  if width != height:
                      raise forms.ValidationError("Custom App Icon dimensions must be square.")
@@ -195,6 +195,13 @@ index 5a7113b..fef5244 100644
 +
 +    def clean_logofile(self):
 +        return self._clean_png('logofile')
+ 
+     def _clean_hex_color(self, field):
+         """Accept #RRGGBB or RRGGBB; return canonical #RRGGBB or ''."""
+@@ -186,3 +194,14 @@ class GenerateForm(forms.Form):
+ 
+     def clean_themeMeColor(self):
+         return self._clean_hex_color('themeMeColor')
 +
 +    def clean_privacyfile(self):
 +        return self._clean_png('privacyfile')
@@ -207,10 +214,10 @@ index 5a7113b..fef5244 100644
 +                self.add_error(field, message)
 +        return cleaned
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index fa10c3a..40ba829 100644
+index 7d5df53..46ced7b 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -242,10 +242,12 @@
+@@ -436,10 +436,12 @@
                  </div>
              </div>
          </div>
@@ -228,10 +235,10 @@ index fa10c3a..40ba829 100644
          {% endif %}
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
 new file mode 100644
-index 0000000..e81fc9f
+index 0000000..2c64e3a
 --- /dev/null
 +++ b/rdgenerator/validation.py
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,92 @@
 +"""Server-side validation of every value that ends up in a build script.
 +
 +The generator workflows interpolate these values into bash/pwsh/sed/perl
@@ -268,6 +275,9 @@ index 0000000..e81fc9f
 +    'androidappid': (re.compile(r'[A-Za-z][A-Za-z0-9_]{0,40}(?:\.[A-Za-z][A-Za-z0-9_]{0,40}){1,6}'),
 +                     'a Java package name such as com.example.remote'),
 +}
++# Dart 0xAARRGGBB literals in the theme patch; forms/API store the canonical #RRGGBB.
++for _field in ('themeColor', 'themeSurfaceLight', 'themeSurfaceDark', 'themeMeColor'):
++    RULES[_field] = (re.compile(r'#?[0-9A-Fa-f]{6}'), 'a 6-digit hex color such as #0071FF')
 +
 +MANUAL_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
 +MAX_MANUAL_CHARS = 8000
@@ -322,18 +332,18 @@ index 0000000..e81fc9f
 +            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
 +    return errors
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 71ba993..569e73d 100644
+index e0b3837..6e0d7c4 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -14,6 +14,7 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
- from .forms import GenerateForm
+ from .forms import GenerateForm, HEX_COLOR_RE
 +from .validation import sanitize_filename
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -118,11 +119,7 @@ def generate_custom_client(params, full_url):
+@@ -147,11 +148,7 @@ def generate_custom_client(params, full_url):
      enableCamera = params.get('enableCamera', True)
      enableTerminal = params.get('enableTerminal', True)
  

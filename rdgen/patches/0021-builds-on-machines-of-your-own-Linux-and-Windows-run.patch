@@ -1,7 +1,7 @@
-From 6f7b8fcbad36688df82cbab88100f535f3fb7809 Mon Sep 17 00:00:00 2001
+From 9ff580550117d7c27e6f64fb7a046dab58b7b752 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
-Subject: [PATCH 21/32] builds on machines of your own: Linux and Windows
+Subject: [PATCH 21/33] builds on machines of your own: Linux and Windows
  runners, Linux choices
 
 Self-hosted runners cost no Actions minutes. The workflow side
@@ -82,7 +82,7 @@ index e6c7e5d..bc25a2b 100644
  ## 2. Native install (Alpine 3.24, or Debian 13)
  
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index bc962a7..9fb5a11 100644
+index 45bf24f..57a3f1e 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -22,6 +22,7 @@ THEME_DORO_CHOICES = ['default', 'override']
@@ -93,7 +93,7 @@ index bc962a7..9fb5a11 100644
  
  # Boolean fields
  BOOL_FIELDS = [
-@@ -80,6 +81,8 @@ def validate_generate_params(data):
+@@ -81,6 +82,8 @@ def validate_generate_params(data):
          # field is still accepted in incoming JSON and simply ignored.
          'permissionsType': (PERMISSIONS_TYPE_CHOICES, 'custom'),
          'macArch': (MAC_ARCH_CHOICES, 'both'),
@@ -103,10 +103,10 @@ index bc962a7..9fb5a11 100644
      for field, (choices, default) in choice_validations.items():
          value = data.get(field, default)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index e6e1998..47e50e2 100644
+index 0b3fe75..e8e5902 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -11,6 +11,11 @@ class GenerateForm(forms.Form):
+@@ -16,6 +16,11 @@ class GenerateForm(forms.Form):
      # which Mac jobs run (workflow input mac_arch); sent only for macOS builds, and only when it is not 'both'
      macArch = forms.ChoiceField(choices=[('both', 'Intel and Apple Silicon'), ('x86_64', 'Intel only'),
                                           ('aarch64', 'Apple Silicon only')], initial='both', required=False)
@@ -211,10 +211,10 @@ index ecb02b1..7beb1e9 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 0af7dff..7a98c86 100644
+index 90a9b84..94a5566 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -74,8 +74,12 @@ def generate_custom_client(params, full_url=None):
+@@ -87,8 +87,12 @@ def generate_custom_client(params, full_url=None):
      # without changing the git tag that version selects. If left empty, the
      # RustDesk build's own version (from the checked-out tag) is used.
      mac_arch = params.get('macArch') or 'both'
@@ -229,7 +229,7 @@ index 0af7dff..7a98c86 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -342,6 +346,10 @@ def generate_custom_client(params, full_url=None):
+@@ -370,6 +374,10 @@ def generate_custom_client(params, full_url=None):
          # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
          if platform == 'macos' and mac_arch != 'both':
              result["mac_arch"] = mac_arch

@@ -1,7 +1,7 @@
-From 58b94a9fffcc91d06118a4478214c3335bee0517 Mon Sep 17 00:00:00 2001
+From c20f303cd67ec863da7d33b2837a353905925410 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 13 Nov 2026 09:49:34 +0000
-Subject: [PATCH 32/32] tests: lan discovery and auto close follow upstream's
+Subject: [PATCH 32/33] tests: lan discovery and auto close follow upstream's
  override-settings
 
 ---

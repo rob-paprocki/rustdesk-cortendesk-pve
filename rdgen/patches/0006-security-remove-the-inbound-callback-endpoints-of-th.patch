@@ -1,7 +1,7 @@
-From 19015ba5b33fc25414aa84c3c12507b6c3376ca5 Mon Sep 17 00:00:00 2001
+From 74d995c3eacfdfb8bc7561369c2a5b0fb6d1b5d8 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
-Subject: [PATCH 06/32] security: remove the inbound callback endpoints of the
+Subject: [PATCH 06/33] security: remove the inbound callback endpoints of the
  push model
 
 GitHub runners no longer call back into rdgen, so these are gone:
@@ -30,8 +30,8 @@ Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
  rdgen/urls.py            |  12 +--
  rdgenerator/api_views.py |   2 -
  rdgenerator/forms.py     |   2 -
- rdgenerator/views.py     | 222 +++------------------------------------
- 4 files changed, 17 insertions(+), 221 deletions(-)
+ rdgenerator/views.py     | 226 +++------------------------------------
+ 4 files changed, 21 insertions(+), 221 deletions(-)
 
 diff --git a/rdgen/urls.py b/rdgen/urls.py
 index 274bbfd..e593015 100644
@@ -64,7 +64,7 @@ index 274bbfd..e593015 100644
      path('api/generate', api_views.api_generate, name='api_generate'),
      path('api/status', api_views.api_status, name='api_status'),
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index d7c15ae..b70faae 100644
+index a9a885e..608ed19 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,5 +1,4 @@
@@ -78,11 +78,11 @@ index d7c15ae..b70faae 100644
  from django.middleware.csrf import CsrfViewMiddleware
  from django.views.decorators.csrf import csrf_exempt
 -from django.conf import settings as _settings
- from .forms import GenerateForm
+ from .forms import GenerateForm, HEX_COLOR_RE
  from .validation import validate_build_fields
  from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index c686e87..0156a56 100644
+index 74d5434..52023d6 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
 @@ -1,5 +1,3 @@
@@ -92,7 +92,7 @@ index c686e87..0156a56 100644
  from PIL import Image
  
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 7c32ea1..064dcda 100644
+index 63b0442..3801b07 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,26 +1,22 @@
@@ -118,7 +118,7 @@ index 7c32ea1..064dcda 100644
 +
  from django.conf import settings as _settings
 -from django.db.models import Q
--from .forms import GenerateForm
+-from .forms import GenerateForm, HEX_COLOR_RE
 -from .validation import sanitize_filename, validate_build_fields
 +from django.http import FileResponse, Http404
 +from django.shortcuts import render
@@ -126,7 +126,7 @@ index 7c32ea1..064dcda 100644
 +from django.utils import timezone
 +
  from . import buildcfg, github
-+from .forms import GenerateForm
++from .forms import GenerateForm, HEX_COLOR_RE
 +from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
 -from django.utils import timezone
@@ -156,8 +156,19 @@ index 7c32ea1..064dcda 100644
 -    return True
  
  
- def generate_custom_client(params, full_url=None):
-@@ -473,180 +454,3 @@ def serve_build_file(request):
+ def _norm_hex_color(value):
+@@ -330,6 +311,10 @@ def generate_custom_client(params, full_url=None):
+         "logolink_url":logolink_url,
+         "privacylink_url":privacylink_url,
+         "appname":appname,
++        "themeColor": themeColor,
++        "themeSurfaceLight": themeSurfaceLight,
++        "themeSurfaceDark": themeSurfaceDark,
++        "themeMeColor": themeMeColor,
+         "urlLink":urlLink,
+         "downloadLink":downloadLink,
+         "delayFix": 'true' if delayFix else 'false',
+@@ -497,180 +482,3 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)

@@ -1,0 +1,177 @@
+From a410d348f09e5a7334b725fc2c4e12ff54aa98e6 Mon Sep 17 00:00:00 2001
+From: "claude[bot]" <noreply@anthropic.com>
+Date: Sat, 14 Nov 2026 09:48:22 +0000
+Subject: [PATCH 33/33] theme colors: validate the new build config keys on
+ both sides
+
+Upstream's theme color chooser adds themeColor, themeSurfaceLight,
+themeSurfaceDark and themeMeColor to the config. validation.py and the
+runner's validate.py now accept only canonical #RRGGBB (or blank), the
+form/API tests of upstream's removed tests.py move into the tests package,
+and forms.py imports re again (HEX_COLOR_RE).
+---
+ .github/actions/decrypt-secrets/validate.py |  8 +-
+ rdgenerator/forms.py                        |  2 +
+ rdgenerator/tests/test_theme.py             | 84 +++++++++++++++++++++
+ rdgenerator/tests/test_workflows.py         |  8 +-
+ 4 files changed, 98 insertions(+), 4 deletions(-)
+ create mode 100644 rdgenerator/tests/test_theme.py
+
+diff --git a/.github/actions/decrypt-secrets/validate.py b/.github/actions/decrypt-secrets/validate.py
+index f7ff83c..ec1fe7c 100644
+--- a/.github/actions/decrypt-secrets/validate.py
++++ b/.github/actions/decrypt-secrets/validate.py
+@@ -34,13 +34,19 @@ RULES = {
+     'androidappid': r'[A-Za-z][A-Za-z0-9_]{0,40}(?:\.[A-Za-z][A-Za-z0-9_]{0,40}){1,6}',
+     'filename': r'[A-Za-z0-9_-]{1,64}',
+     'update_public_key': r'(?:[A-Za-z0-9+/]{43}=)?',
++    # Dart 0xAARRGGBB literals (themeColors.py); rdgen sends canonical #RRGGBB or blank.
++    'themeColor': r'(?:#[0-9A-F]{6})?',
++    'themeSurfaceLight': r'(?:#[0-9A-F]{6})?',
++    'themeSurfaceDark': r'(?:#[0-9A-F]{6})?',
++    'themeMeColor': r'(?:#[0-9A-F]{6})?',
+ }
+ _COMPILED = {k: re.compile(v) for k, v in RULES.items()}
+ 
+ # Not secret, and masking them would blank out common words ("true") or
+ # the build id in every log line.
+ NOT_SECRET = {'uuid', 'rdgen', 'delayFix', 'xOffline', 'removeNewVersionNotif',
+-              'iconlink_url', 'logolink_url', 'privacylink_url'}
++              'iconlink_url', 'logolink_url', 'privacylink_url',
++              'themeColor', 'themeSurfaceLight', 'themeSurfaceDark', 'themeMeColor'}
+ 
+ 
+ def validate_secrets(data):
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index e8e5902..d7c5fe5 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -1,3 +1,5 @@
++import re
++
+ from django import forms
+ from django.conf import settings as _settings
+ from PIL import Image
+diff --git a/rdgenerator/tests/test_theme.py b/rdgenerator/tests/test_theme.py
+new file mode 100644
+index 0000000..d2bd261
+--- /dev/null
++++ b/rdgenerator/tests/test_theme.py
+@@ -0,0 +1,84 @@
++from django.test import SimpleTestCase
++
++from rdgenerator.api_views import validate_generate_params
++from rdgenerator.forms import GenerateForm
++from rdgenerator.views import _norm_hex_color
++
++
++class ThemeColorValidationTests(SimpleTestCase):
++    base = {
++        'platform': 'windows',
++        'version': '1.5.3',
++        'exename': 'client',
++        'direction': 'both',
++        'installation': 'installationY',
++        'settings': 'settingsY',
++        'theme': 'system',
++        'themeDorO': 'default',
++        'passApproveMode': 'password-click',
++        'permissionsType': 'custom',
++    }
++
++    def _form(self, **overrides):
++        data = dict(self.base)
++        data.update(overrides)
++        return GenerateForm(data)
++
++    def test_theme_colors_accept_hash_or_bare_hex(self):
++        form = self._form(themeColor='ff8800', themeSurfaceLight='#FFF6E9')
++        self.assertTrue(form.is_valid(), form.errors)
++        self.assertEqual(form.cleaned_data['themeColor'], '#FF8800')
++        self.assertEqual(form.cleaned_data['themeSurfaceLight'], '#FFF6E9')
++
++    def test_blank_theme_color_means_stock(self):
++        form = self._form(themeColor='', themeSurfaceDark='   ')
++        self.assertTrue(form.is_valid(), form.errors)
++        self.assertEqual(form.cleaned_data['themeColor'], '')
++        self.assertEqual(form.cleaned_data['themeSurfaceDark'], '')
++
++    def test_bad_theme_color_is_rejected(self):
++        for value in ('red', '#ff880', '#gg8800', '#ff8800ff'):
++            with self.subTest(value=value):
++                form = self._form(themeColor=value)
++                self.assertFalse(form.is_valid())
++                self.assertIn('themeColor', form.errors)
++
++    def test_api_normalizes_theme_colors(self):
++        data = dict(self.base)
++        data.update({
++            'themeColor': 'ff8800',
++            'themeSurfaceLight': '#FFF6E9',
++            'themeSurfaceDark': '',
++            'themeMeColor': '#00AA66',
++        })
++        cleaned, errors = validate_generate_params(data)
++        self.assertEqual(errors, {})
++        self.assertEqual(cleaned['themeColor'], '#FF8800')
++        self.assertEqual(cleaned['themeSurfaceLight'], '#FFF6E9')
++        self.assertEqual(cleaned['themeSurfaceDark'], '')
++        self.assertEqual(cleaned['themeMeColor'], '#00AA66')
++
++    def test_api_rejects_bad_theme_color(self):
++        data = dict(self.base)
++        data['themeMeColor'] = 'green'
++        _, errors = validate_generate_params(data)
++        self.assertIn('themeMeColor', errors)
++
++    def test_norm_hex_color(self):
++        self.assertEqual(_norm_hex_color('ff8800'), '#FF8800')
++
++    def test_validate_py_accepts_canonical_colors_only(self):
++        import importlib.util
++        from pathlib import Path
++        from django.conf import settings
++        path = Path(settings.BASE_DIR) / '.github' / 'actions' / 'decrypt-secrets' / 'validate.py'
++        spec = importlib.util.spec_from_file_location('rd_validate', path)
++        mod = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(mod)
++        for key in ('themeColor', 'themeSurfaceLight', 'themeSurfaceDark', 'themeMeColor'):
++            self.assertIn(key, mod.RULES)
++            rx = mod._COMPILED[key]
++            for good in ('', '#FF8800'):
++                self.assertTrue(rx.fullmatch(good), good)
++            for bad in ('ff8800', '#ff8800', '#FF880', '#FF8800;id', '#FF8800\n'):
++                self.assertFalse(rx.fullmatch(bad), bad)
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index e4df239..d00b603 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -35,7 +35,8 @@ def secrets_json(u, **over):
+          'iconlink_url': 'embedded', 'logolink_url': 'false', 'privacylink_url': 'false', 'appname': 'Acme Remote',
+          'urlLink': 'https://example.com', 'downloadLink': 'https://example.com/dl', 'delayFix': 'true',
+          'rdgen': 'true', 'xOffline': 'false', 'removeNewVersionNotif': 'false', 'compname': 'Acme Ltd',
+-         'androidappid': 'com.acme.remote', 'filename': 'acme', 'update_public_key': ''}
++         'androidappid': 'com.acme.remote', 'filename': 'acme', 'update_public_key': '',
++         'themeColor': '#FF8800', 'themeSurfaceLight': '', 'themeSurfaceDark': '', 'themeMeColor': ''}
+     d.update(over)
+     return d
+ 
+@@ -303,7 +304,8 @@ class RunnerValidatorParityTests(SimpleTestCase):
+         for field, value in [('serverIP', 'a.com";id;"'), ('appname', "x'$(id)"), ('compname', 'a|b'),
+                              ('apiServer', "https://a/'x"), ('urlLink', 'https://a/?a=1&b'),
+                              ('downloadLink', 'ftp://a'), ('androidappid', 'com'), ('key', 'short'),
+-                             ('update_public_key', 'x";id;"'), ('update_public_key', '00' * 32)]:
++                             ('update_public_key', 'x";id;"'), ('update_public_key', '00' * 32),
++                             ('themeColor', 'red'), ('themeMeColor', '#FF8800;id'), ('themeSurfaceDark', '#ff8800\n')]:
+             self.assertIn(field, validate_build_fields({field: value}), field)
+             runner_key = self.FIELD_MAP.get(field, field)
+             self.assertTrue(v.validate_secrets(secrets_json(u, **{runner_key: value})), field)
+@@ -355,7 +357,7 @@ class RunnerStepsTests(SimpleTestCase):
+         pairs = dict((k, v) for k, _d, v in re.findall(r'^(\w+)<<(RDGEN_EOF_[0-9a-f]{32})\n(.*?)\n\2$', genv, re.M | re.S))
+         self.assertEqual(pairs['appname'], 'Acme Remote')
+         self.assertEqual(pairs['uuid'], u)
+-        self.assertEqual(len(pairs), 20)
++        self.assertEqual(len(pairs), 24)
+         self.assertNotIn('slug_appname', pairs)
+         self.assertEqual(pairs['update_public_key'], '')
+         self.assertIn('::add-mask::rd.example.com', r2.stdout)

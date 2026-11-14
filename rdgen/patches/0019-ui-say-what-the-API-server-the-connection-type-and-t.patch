@@ -1,7 +1,7 @@
-From 169aee74026a15302759dddb2f602f54b30c8ef3 Mon Sep 17 00:00:00 2001
+From ddaee04ca4eaf9812a3f82131c9105e921c12bcd Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Thu, 1 Oct 2026 22:46:40 -0400
-Subject: [PATCH 19/32] ui: say what the API server, the connection type and
+Subject: [PATCH 19/33] ui: say what the API server, the connection type and
  the password are for
 
 A user's clients never appeared in the console: the form's API server
@@ -138,10 +138,10 @@ index 0000000..9265a84
 +})();
 +</script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 2a124e3..7b42f3d 100644
+index 7b734a4..bb71629 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -276,6 +276,7 @@
+@@ -470,6 +470,7 @@
                  <select name="platform" id="id_platform">
                      {% for value, label in form.fields.platform.choices %}<option value="{{ value }}"{% if form.platform.value == value %} selected{% endif %}>{{ label }}</option>
                      {% endfor %}</select>
@@ -149,7 +149,7 @@ index 2a124e3..7b42f3d 100644
                  <label for="{{ form.version.id_for_label }}">Rustdesk Version:</label>
                  {{ form.version }}
                  {% if form.version.help_text %}
-@@ -294,7 +295,7 @@
+@@ -488,7 +489,7 @@
                      <label for="{{ form.appname.id_for_label }}">Custom Application Name (leave blank to use default):</label>
                      {{ form.appname }}{% include '_linux_name.html' %}<br>
                      <label for="{{ form.direction.id_for_label }}">Connection Type:</label>
@@ -158,7 +158,7 @@ index 2a124e3..7b42f3d 100644
                      <label for="{{ form.installation.id_for_label }}">Disable Installation:</label>
                      {{ form.installation }}<br><br>
                      <label for="{{ form.settings.id_for_label }}">Disable Settings:</label>
-@@ -312,7 +313,7 @@
+@@ -506,7 +507,7 @@
                      <label for="{{ form.key.id_for_label }}">Key:</label>
                      {{ form.key }}<div class="rd-hint">The server's public key (the contents of id_ed25519.pub). Clients only connect to a server that holds the matching private key. If empty: this site's default, else RustDesk's public key.</div><br>
                      <label for="{{ form.apiServer.id_for_label }}">API:</label>
@@ -167,7 +167,7 @@ index 2a124e3..7b42f3d 100644
                      <label for="{{ form.urlLink.id_for_label }}">Custom URL for links (replaces https://rustdesk.com):</label>
                      {{ form.urlLink }}<div class="rd-hint">The Homepage link in the client's About page, and <i>URL</i>/privacy.html for its Privacy link. Empty keeps https://rustdesk.com.</div><br>
                      <label for="{{ form.downloadLink.id_for_label }}">Custom URL for downloading updates (replaces https://rustdesk.com/download):</label>
-@@ -328,7 +329,8 @@
+@@ -521,7 +522,8 @@
                      {{ form.passApproveMode }}<br><br>
                      <div id="passwordRequirement" class="password-requirement">To use the hide connection window feature, please set a permanent password. This also forces password approval mode.</div>
                      <label for="{{ form.permanentPassword.id_for_label }}">Set Permanent Password:</label>

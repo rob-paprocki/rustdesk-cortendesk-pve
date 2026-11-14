@@ -1,7 +1,7 @@
-From f5b2b53e2165db917b17f9039d958c4a5605da82 Mon Sep 17 00:00:00 2001
+From 1b2deec5cd5e1ce5f5db6bb8cee1e9fc9e6ee692 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 01:03:12 -0400
-Subject: [PATCH 08/32] tools: add pullify.py, a rewriter that turns upstream
+Subject: [PATCH 08/33] tools: add pullify.py, a rewriter that turns upstream
  workflows into pull-model ones
 
 The generator workflows are ~5,000 lines of YAML that upstream changes

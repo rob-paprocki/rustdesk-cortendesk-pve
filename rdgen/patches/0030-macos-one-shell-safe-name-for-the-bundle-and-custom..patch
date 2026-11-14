@@ -1,7 +1,7 @@
-From ca8d51ccd470d417b5b3f034528dc9e2a23acfa9 Mon Sep 17 00:00:00 2001
+From 3f98da8c0451baca860f964b9842ef6549a3c680 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Fri, 30 Oct 2026 09:04:15 +0000
-Subject: [PATCH 30/32] macos: one shell-safe name for the bundle and
+Subject: [PATCH 30/33] macos: one shell-safe name for the bundle and
  custom.txt app-name
 
 Upstream (073447b) builds with the typed name stripped of spaces and puts the
@@ -60,10 +60,10 @@ index d5b9292..c82b5f0 100644
          self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
          self.assertEqual(self.secrets(platform='linux', appname='acme-remote')['appname'], 'acme-remote')
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index 1057daf..416011e 100644
+index b230ea5..361ea6d 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
-@@ -72,6 +72,20 @@ def linux_reserved_names():
+@@ -75,6 +75,20 @@ def linux_reserved_names():
          return frozenset(line.strip() for line in fh if line.strip() and not line.startswith('#'))
  
  
@@ -85,11 +85,11 @@ index 1057daf..416011e 100644
      """Why a Linux build cannot use this app name, or ''. A blank name means the default (rustdesk)."""
      if not (name or '').strip():
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index bd39f4e..71b290a 100644
+index 9db37e4..67db95a 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -22,7 +22,7 @@ from . import buildcfg, github
- from .forms import GenerateForm, embeds_secret, publish_choice, publish_problem
+ from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun, ShareLink
  from .poller import allowed_output_name, discard_build, valid_uuid
 -from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
@@ -97,7 +97,7 @@ index bd39f4e..71b290a 100644
  
  log = logging.getLogger(__name__)
  
-@@ -162,6 +162,9 @@ def generate_custom_client(params, full_url=None):
+@@ -180,6 +180,9 @@ def generate_custom_client(params, full_url=None):
          if problem:
              return {"success": False, "error": problem, "status_code": 400}
          appname = appname_display = linux_app_name(appname_display)

@@ -1,7 +1,7 @@
-From cb74ae20268edb3360278da203492504cf3537b7 Mon Sep 17 00:00:00 2001
+From e54c57749ff22bdc3a41614bc1b87f1be2afd73f Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Sun, 18 Oct 2026 07:49:21 -0400
-Subject: [PATCH 24/32] builds: upstream's self-hosted update key passes both
+Subject: [PATCH 24/33] builds: upstream's self-hosted update key passes both
  checks
 
 Upstream (2026-10-17, "auto update with rustdesk-api") puts
@@ -140,7 +140,7 @@ index 64ae933..f89ff21 100644
      def test_replayed_cfg_rejected(self):
          r1, r2, _ = self.run_steps(secrets_json(str(uuid.uuid4())), event_uuid=str(uuid.uuid4()))
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index 9456cc5..1057daf 100644
+index 089eb58..b230ea5 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -37,6 +37,10 @@ RULES = {
@@ -152,5 +152,5 @@ index 9456cc5..1057daf 100644
 +    'update_public_key': (re.compile(r'[A-Za-z0-9+/]{43}='),
 +                          'an ed25519 public key: 44 characters of base64 ending in ='),
  }
- 
- MANUAL_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
+ # Dart 0xAARRGGBB literals in the theme patch; forms/API store the canonical #RRGGBB.
+ for _field in ('themeColor', 'themeSurfaceLight', 'themeSurfaceDark', 'themeMeColor'):

@@ -1,7 +1,7 @@
-From 2e85f3225797875f1a3b12d029a3087bcd7a19e4 Mon Sep 17 00:00:00 2001
+From 851569e4cdbefc18b56e47c700d6ad1461e46fd0 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
-Subject: [PATCH 15/32] ui: site defaults and hints for the server fields, a
+Subject: [PATCH 15/33] ui: site defaults and hints for the server fields, a
  reference for the Other section
 
 Custom Server: RDGEN_DEFAULT_PORT, RDGEN_DEFAULT_URL_LINK,
@@ -34,10 +34,10 @@ permissions.
  rdgenerator/client_settings.json           | 1996 ++++++++++++++++++++
  rdgenerator/templates/_other_settings.html |  204 ++
  rdgenerator/templates/_update_link.html    |   96 +
- rdgenerator/templates/generator.html       |   26 +-
+ rdgenerator/templates/generator.html       |   32 +-
  rdgenerator/tests/test_ui.py               |   92 +
  rdgenerator/views.py                       |   24 +-
- 9 files changed, 2440 insertions(+), 19 deletions(-)
+ 9 files changed, 2440 insertions(+), 25 deletions(-)
  create mode 100644 rdgenerator/client_settings.json
  create mode 100644 rdgenerator/templates/_other_settings.html
  create mode 100644 rdgenerator/templates/_update_link.html
@@ -2420,10 +2420,10 @@ index 0000000..0b99f44
 +</script>
 +{% endif %}
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index c3f3a7b..6c39272 100644
+index 6ed4b8b..562080e 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -161,6 +161,12 @@
+@@ -355,6 +355,12 @@
              100% { opacity: 1; }
          }
  
@@ -2436,7 +2436,7 @@ index c3f3a7b..6c39272 100644
          .help-text {
              color: #ffd700;
              font-style: italic;
-@@ -303,19 +309,19 @@
+@@ -497,19 +503,19 @@
              <div class="section">
                  <h2><i class="fas fa-server"></i> Custom Server</h2>
                      <label for="{{ form.serverIP.id_for_label }}">Host:</label>
@@ -2461,17 +2461,23 @@ index c3f3a7b..6c39272 100644
 -                    {{ form.compname }}<br><br>
 +                    {{ form.compname }}<div class="rd-hint">Shown as the copyright holder in the About page and in the installer's license text. Empty keeps Purslane Ltd (RustDesk's company).</div><br>
              </div>
-         </div>
-         <div class="container">
-@@ -386,11 +392,7 @@
+ 
              <div class="section">
+@@ -632,17 +638,7 @@
+             <div class="section section--wide">
                  <h2><i class="fas fa-cog"></i> Other</h2>
                      <label for="{{ form.removeWallpaper.id_for_label }}">{{ form.removeWallpaper }} Remove wallpaper during incoming sessions</label><br>
 -                    <a href="https://rustdesk.com/docs/en/self-host/client-configuration/advanced-settings/">Click here for a list of Default/Override settings</a>
--                    <label for="{{ form.defaultManual.id_for_label }}">Default settings</label><br>
--                    {{ form.defaultManual }}<br><br>
--                    <label for="{{ form.overrideManual.id_for_label }}">Override settings</label><br>
--                    {{ form.overrideManual }}<br><br>
+-                    <div class="split-grid">
+-                        <div>
+-                            <label for="{{ form.defaultManual.id_for_label }}">Default settings</label>
+-                            {{ form.defaultManual }}
+-                        </div>
+-                        <div>
+-                            <label for="{{ form.overrideManual.id_for_label }}">Override settings</label>
+-                            {{ form.overrideManual }}
+-                        </div>
+-                    </div>
 +                    {% include '_other_settings.html' %}
              </div>
          </div>
@@ -2575,7 +2581,7 @@ index 0000000..97bc1ce
 +            self.assertNotIn('enable-lan-discovery', custom[section])
 +            self.assertNotIn('allow-auto-disconnect', custom[section])
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 2f81c3f..e75a2b7 100644
+index 63e5608..8a79274 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,4 +1,5 @@
@@ -2597,7 +2603,7 @@ index 2f81c3f..e75a2b7 100644
      }
      key_file = _settings.RDGEN_DEFAULTS.get('key_file', '')
      if not values['key'] and key_file:
-@@ -83,15 +88,15 @@ def generate_custom_client(params, full_url=None):
+@@ -96,15 +101,15 @@ def generate_custom_client(params, full_url=None):
      if not server:
          server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
      if not serverPort:
@@ -2616,7 +2622,7 @@ index 2f81c3f..e75a2b7 100644
      direction = params.get('direction', 'both')
      installation = params.get('installation', 'installationY')
      settings = params.get('settings', 'settingsY')
-@@ -102,7 +107,7 @@ def generate_custom_client(params, full_url=None):
+@@ -115,7 +120,7 @@ def generate_custom_client(params, full_url=None):
      filename = params.get('exename', 'rustdesk')
      compname = params.get('compname', '')
      if not compname:
@@ -2625,7 +2631,7 @@ index 2f81c3f..e75a2b7 100644
      androidappid = params.get('androidappid', '')
      if not androidappid:
          androidappid = "com.carriez.flutter_hbb"
-@@ -394,6 +399,13 @@ def build_files(gh_run, url_name='download'):
+@@ -422,6 +427,13 @@ def build_files(gh_run, url_name='download'):
      return files
  
  
@@ -2639,7 +2645,7 @@ index 2f81c3f..e75a2b7 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -412,7 +424,9 @@ def generator_view(request):
+@@ -440,7 +452,9 @@ def generator_view(request):
      else:
          form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')

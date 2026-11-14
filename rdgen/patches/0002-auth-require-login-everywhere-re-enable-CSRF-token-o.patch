@@ -1,7 +1,7 @@
-From 8655954826f9e66e591b9700ce5ebec5e96acc2c Mon Sep 17 00:00:00 2001
+From 22c48af70e06f709733303e5a1d1ecfe41ce7cdf Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
-Subject: [PATCH 02/32] auth: require login everywhere, re-enable CSRF, token
+Subject: [PATCH 02/33] auth: require login everywhere, re-enable CSRF, token
  or session for /api
 
 - Add LoginRequiredMiddleware (Django >= 5.1; Alpine 3.24 ships 5.2.17).
@@ -148,7 +148,7 @@ index d28debe..5aa8265 100644
 +    path('accounts/logout/', auth_views.LogoutView.as_view(), name='logout'),
  ]
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 4a9a854..b5d258e 100644
+index 7cd5f76..e9874d2 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
 @@ -1,7 +1,12 @@
@@ -162,9 +162,9 @@ index 4a9a854..b5d258e 100644
 +from django.middleware.csrf import CsrfViewMiddleware
 +from django.views.decorators.csrf import csrf_exempt
  from django.conf import settings as _settings
- from .views import generate_custom_client, _get_run_status, _UUID_RE
- 
-@@ -111,6 +116,32 @@ def validate_generate_params(data):
+ from .forms import HEX_COLOR_RE
+ from .views import generate_custom_client, get_full_url, _get_run_status, _UUID_RE
+@@ -127,6 +132,32 @@ def validate_generate_params(data):
      return cleaned, errors
  
  
@@ -197,7 +197,7 @@ index 4a9a854..b5d258e 100644
  def api_generate(request):
      """
      POST /api/generate
-@@ -255,6 +286,7 @@ def api_generate(request):
+@@ -271,6 +302,7 @@ def api_generate(request):
          return JsonResponse({"success": False, "error": result['error']}, status=result.get('status_code', 500))
  
  
@@ -305,10 +305,10 @@ index 920ba18..40482d2 100644
  
      <script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 4b1984d..fa10c3a 100644
+index 320d3eb..7d5df53 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -224,8 +224,14 @@
+@@ -418,8 +418,14 @@
        </style>
  </head>
  <body>
@@ -324,7 +324,7 @@ index 4b1984d..fa10c3a 100644
          <div class="save-load-section-container">
              <div class="section">
                  <h2 id="saveLoadTitle">Save/Load Configuration <i class="fas fa-chevron-down"></i></h2>  
-@@ -565,6 +571,10 @@
+@@ -958,6 +964,10 @@
                  if (value instanceof File) {
                      return;
                  }
@@ -335,7 +335,7 @@ index 4b1984d..fa10c3a 100644
                  formData[key] = value; // Add each key/value pair to the formData object.
              });
  
-@@ -684,6 +694,11 @@
+@@ -1077,6 +1087,11 @@
                              carriedUnknownFields = {};
                              const skippedKeys = [];
                              for (const key in formData) {

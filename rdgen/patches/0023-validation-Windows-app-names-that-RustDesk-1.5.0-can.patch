@@ -1,7 +1,7 @@
-From e1b4764fe9e3cb60978a902a11149be4df43efe6 Mon Sep 17 00:00:00 2001
+From dabb60b30278abafa2f4b35c5722fa741eabd395 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Mon, 5 Oct 2026 20:09:22 -0400
-Subject: [PATCH 23/32] validation: Windows app names that RustDesk 1.5.0 can
+Subject: [PATCH 23/33] validation: Windows app names that RustDesk 1.5.0 can
  install
 
 From 1.5.0 on, RustDesk's Windows installer refuses to install unless the
@@ -41,10 +41,10 @@ index ba544eb..ffec9b2 100644
          self.assertEqual(sanitize_filename('my client\tname\n'), 'my_client_name')
          self.assertEqual(sanitize_filename('../x'), '___x')
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index 7833032..9456cc5 100644
+index 0c32b66..089eb58 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
-@@ -42,6 +42,10 @@ RULES = {
+@@ -45,6 +45,10 @@ for _field in ('themeColor', 'themeSurfaceLight', 'themeSurfaceDark', 'themeMeCo
  MANUAL_KEY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
  MAX_MANUAL_CHARS = 8000
  MAX_PASSWORD_CHARS = 128
@@ -55,7 +55,7 @@ index 7833032..9456cc5 100644
  MAX_DATA_URI_CHARS = 6 * 1024 * 1024
  
  
-@@ -102,6 +106,12 @@ def validate_build_fields(data):
+@@ -105,6 +109,12 @@ def validate_build_fields(data):
              errors[field] = 'Must be a string.'
          elif value and not rx.fullmatch(value):
              errors[field] = f'Unsupported value. Allowed: {allowed}.'

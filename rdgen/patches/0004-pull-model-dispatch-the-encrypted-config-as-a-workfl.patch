@@ -1,7 +1,7 @@
-From 3c5f8c4f578b687a82898caf84724181a3cb978e Mon Sep 17 00:00:00 2001
+From 5cc25fe425058690a40d948c1a63157fe65eb267 Mon Sep 17 00:00:00 2001
 From: Rob Paprocki <hi@rpaprocki.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
-Subject: [PATCH 04/32] pull model: dispatch the encrypted config as a workflow
+Subject: [PATCH 04/33] pull model: dispatch the encrypted config as a workflow
  input
 
 Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back
@@ -48,15 +48,15 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgen/settings.py                         |  19 +-
- rdgenerator/api_views.py                  |  14 +-
- rdgenerator/buildcfg.py                   | 135 +++++++++++++
+ rdgenerator/api_views.py                  |  16 +-
+ rdgenerator/buildcfg.py                   | 135 ++++++++++++
  rdgenerator/forms.py                      |   1 -
  rdgenerator/github.py                     | 117 +++++++++++
- rdgenerator/migrations/0003_pull_model.py |  46 +++++
- rdgenerator/models.py                     |  33 +++-
+ rdgenerator/migrations/0003_pull_model.py |  46 ++++
+ rdgenerator/models.py                     |  33 ++-
  rdgenerator/validation.py                 |   2 +
- rdgenerator/views.py                      | 228 ++++++++++------------
- 9 files changed, 453 insertions(+), 142 deletions(-)
+ rdgenerator/views.py                      | 243 +++++++++-------------
+ 9 files changed, 454 insertions(+), 158 deletions(-)
  create mode 100644 rdgenerator/buildcfg.py
  create mode 100644 rdgenerator/github.py
  create mode 100644 rdgenerator/migrations/0003_pull_model.py
@@ -99,10 +99,10 @@ index f7c3100..4e90663 100644
  MEDIA_URL = '/media/'
  MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
-index 1f16c1d..292ded1 100644
+index b12d53b..6f03919 100644
 --- a/rdgenerator/api_views.py
 +++ b/rdgenerator/api_views.py
-@@ -4,6 +4,7 @@ import re
+@@ -4,13 +4,14 @@ import re
  from functools import wraps
  
  from django.contrib.auth.decorators import login_not_required
@@ -110,6 +110,14 @@ index 1f16c1d..292ded1 100644
  from django.http import JsonResponse
  from django.middleware.csrf import CsrfViewMiddleware
  from django.views.decorators.csrf import csrf_exempt
+ from django.conf import settings as _settings
+ from .forms import GenerateForm, HEX_COLOR_RE
+ from .validation import validate_build_fields
+-from .views import generate_custom_client, get_full_url, _get_run_status, _UUID_RE
++from .views import generate_custom_client, _get_run_status, _UUID_RE
+ 
+ 
+ # Field validation constraints (mirrored from GenerateForm)
 @@ -37,7 +38,7 @@ _BOOL_DEFAULTS = {name: bool(GenerateForm.base_fields[name].initial) for name in
  
  # Optional string fields (validated by validation.validate_build_fields)
@@ -119,7 +127,7 @@ index 1f16c1d..292ded1 100644
      'appname', 'compname', 'androidappid', 'permanentPassword',
      'defaultManual', 'overrideManual',
      'iconbase64', 'logobase64', 'privacybase64',
-@@ -162,7 +163,11 @@ def api_generate(request):
+@@ -177,7 +178,11 @@ def api_generate(request):
          return JsonResponse({"success": False, "error": "Method not allowed. Use POST."}, status=405)
  
      try:
@@ -132,12 +140,12 @@ index 1f16c1d..292ded1 100644
      except (json.JSONDecodeError, ValueError) as e:
          return JsonResponse({"success": False, "error": f"Invalid JSON: {str(e)}"}, status=400)
  
-@@ -280,10 +285,7 @@ def api_generate(request):
+@@ -295,10 +300,7 @@ def api_generate(request):
              "details": errors
          }, status=400)
  
 -    # Build full_url the same way as generator_view
--    full_url = f"{_settings.PROTOCOL}://{request.get_host()}" if _settings.GENURL else f"{_settings.PROTOCOL}://{request.get_host()}"
+-    full_url = get_full_url(request)
 -
 -    result = generate_custom_client(cleaned, full_url)
 +    result = generate_custom_client(cleaned)
@@ -286,11 +294,11 @@ index 0000000..75a5fe8
 +        'Use simpler PNGs (flat colours, no photos), drop the privacy image, '
 +        'or shorten the default/override settings.')
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index fef5244..c686e87 100644
+index f146702..74d5434 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -8,7 +8,6 @@ from .validation import validate_build_fields
- MAX_PNG_BYTES = 4 * 1024 * 1024
+@@ -13,7 +13,6 @@ MAX_PNG_BYTES = 4 * 1024 * 1024
+ HEX_COLOR_RE = re.compile(r'^#?[0-9A-Fa-f]{6}$')
  
  class GenerateForm(forms.Form):
 -    sh_secret_field = forms.CharField(required=False)
@@ -516,7 +524,7 @@ index 7498bbd..7ec77b8 100644
 +    def is_terminal(self):
 +        return self.status in TERMINAL_STATUSES
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index e81fc9f..6154f0b 100644
+index 2c64e3a..a4d8e7e 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -31,6 +31,8 @@ RULES = {
@@ -529,13 +537,13 @@ index e81fc9f..6154f0b 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 569e73d..1031633 100644
+index 6e0d7c4..ebece84 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -14,7 +14,35 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
- from .forms import GenerateForm
+ from .forms import GenerateForm, HEX_COLOR_RE
 -from .validation import sanitize_filename
 +from .validation import sanitize_filename, validate_build_fields
 +from . import buildcfg, github
@@ -569,10 +577,21 @@ index 569e73d..1031633 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -32,20 +60,19 @@ def _safe_parts(uuid_val, filename):
-     return True
+@@ -45,31 +73,19 @@ def _norm_hex_color(value):
+     return '#' + value.lstrip('#').upper()
  
  
+-def get_full_url(request):
+-    """URL the GitHub workflow uses to reach this server. GENURL wins over the
+-    request host, which can be an internal address behind a reverse proxy."""
+-    if _settings.GENURL:
+-        genurl = _settings.GENURL.rstrip('/')
+-        if '://' in genurl:
+-            return genurl
+-        return f"{_settings.PROTOCOL}://{genurl}"
+-    return f"{_settings.PROTOCOL}://{request.get_host()}"
+-
+-
 -def generate_custom_client(params, full_url):
 +def generate_custom_client(params, full_url=None):
      """
@@ -593,7 +612,7 @@ index 569e73d..1031633 100644
      platform = params.get('platform', 'windows')
      version = params.get('version', '1.5.3')
      app_version = params.get('app_version', '')
-@@ -68,14 +95,15 @@ def generate_custom_client(params, full_url):
+@@ -92,14 +108,15 @@ def generate_custom_client(params, full_url):
      apiServer = params.get('apiServer', '')
      urlLink = params.get('urlLink', '')
      downloadLink = params.get('downloadLink', '')
@@ -612,7 +631,7 @@ index 569e73d..1031633 100644
      if not urlLink:
          urlLink = "https://rustdesk.com"
      if not downloadLink:
-@@ -128,36 +156,22 @@ def generate_custom_client(params, full_url):
+@@ -157,36 +174,22 @@ def generate_custom_client(params, full_url):
          appname = "rustdesk"
      myuuid = str(uuid.uuid4())
  
@@ -664,7 +683,7 @@ index 569e73d..1031633 100644
  
      ###create the custom.txt json here and send in as inputs below
      decodedCustom = {}
-@@ -278,24 +292,6 @@ def generate_custom_client(params, full_url):
+@@ -313,24 +316,6 @@ def generate_custom_client(params, full_url):
      base64_bytes = base64.b64encode(string_bytes)
      encodedCustom = base64_bytes.decode("ascii")
  
@@ -689,7 +708,7 @@ index 569e73d..1031633 100644
      inputs_raw = {
          "server":server,
          "serverPort":serverPort,
-@@ -304,16 +300,9 @@ def generate_custom_client(params, full_url):
+@@ -339,20 +324,9 @@ def generate_custom_client(params, full_url):
          "custom":encodedCustom,
          "uuid":myuuid,
          "iconlink_url":iconlink_url,
@@ -703,10 +722,14 @@ index 569e73d..1031633 100644
 -        "privacylink_file":privacylink_file,
          "appname":appname,
 -        "genurl":_settings.GENURL,
+-        "themeColor": themeColor,
+-        "themeSurfaceLight": themeSurfaceLight,
+-        "themeSurfaceDark": themeSurfaceDark,
+-        "themeMeColor": themeMeColor,
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -326,74 +315,57 @@ def generate_custom_client(params, full_url):
+@@ -365,74 +339,57 @@ def generate_custom_client(params, full_url):
          "filename":filename
      }
  
@@ -721,13 +744,13 @@ index 569e73d..1031633 100644
 -    with pyzipper.AESZipFile(zip_path, 'w', compression=pyzipper.ZIP_LZMA, encryption=pyzipper.WZ_AES) as zf:
 -        zf.setpassword(_settings.ZIP_PASSWORD.encode())
 -        zf.write(temp_json_path, arcname="secrets.json")
--
--    if os.path.exists(temp_json_path):
--        os.remove(temp_json_path)
 +    if not github.configured():
 +        return {"success": False, "status_code": 503,
 +                "error": "The GitHub build repository is not configured (GHUSER/REPONAME/GHBEARER)."}
  
+-    if os.path.exists(temp_json_path):
+-        os.remove(temp_json_path)
+-
 -    zipJson = {}
 -    zipJson['url'] = full_url
 -    zipJson['file'] = zip_filename
@@ -826,17 +849,17 @@ index 569e73d..1031633 100644
  
  
  def _get_run_status(uuid_val):
-@@ -445,8 +417,7 @@ def generator_view(request):
+@@ -484,8 +441,7 @@ def generator_view(request):
          form = GenerateForm(request.POST, request.FILES)
          if form.is_valid():
              params = form.cleaned_data
--            full_url = f"{_settings.PROTOCOL}://{request.get_host()}" if _settings.GENURL else f"{_settings.PROTOCOL}://{request.get_host()}"
+-            full_url = get_full_url(request)
 -            result = generate_custom_client(params, full_url)
 +            result = generate_custom_client(params)
              if result['success']:
                  return render(request, 'waiting.html', {
                      'filename': result['filename'],
-@@ -455,10 +426,9 @@ def generator_view(request):
+@@ -494,10 +450,9 @@ def generator_view(request):
                      'platform': result['platform'],
                      'log_url': result['log_url']
                  })
