@@ -3,3 +3,7 @@
 *~
 .rdgen-work/
 __pycache__/
+*.pyc
+.claude/
+.playwright-mcp/
+wordlist.local

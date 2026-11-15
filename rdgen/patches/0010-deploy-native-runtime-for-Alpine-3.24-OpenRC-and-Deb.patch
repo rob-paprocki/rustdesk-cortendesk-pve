@@ -1,5 +1,5 @@
 From b3ca1533859c172aa62d59761a9d7eb05e9b41c2 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 01:01:25 -0400
 Subject: [PATCH 10/33] deploy: native runtime for Alpine 3.24 (OpenRC) and
  Debian 13 (systemd), no Docker
@@ -38,8 +38,6 @@ layouts serve login, CSRF, redirects and cookies correctly. The web
 worker and poller run against a GitHub stub. RSS: gunicorn master 18 MB,
 worker 57 MB, poller 57 MB.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  deploy/gunicorn.conf.py             | 41 +++++++++++++++++++++++++
  deploy/nginx/rdgen-lan.conf         | 33 +++++++++++++++++++++

@@ -1,5 +1,5 @@
 From 95d541306804d88c93452e4445bc01b3b37c7b1f Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 01:11:23 -0400
 Subject: [PATCH 12/33] tests: hardening and pull-model test suite with a local
  GitHub API stub
@@ -41,8 +41,6 @@ rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with
   rejection of a replayed cfg, a protocol mismatch, an injection and a
   flag/image mismatch).
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgenerator/tests.py                | 136 -----------
  rdgenerator/tests/__init__.py       |   0

@@ -14,7 +14,7 @@
 #   patch-source request-repair <upstream>     start .github/workflows/rdgen-upstream.yml there (rdgen-update calls it
 #                                              when the patches stop applying); the outcome goes into the notification
 #   patch-source request-sync <upstream>       start it after a successful update when the series' base is older than
-#                                              <upstream>, so the repository (and its public copy) follow what runs
+#                                              <upstream>, so the repository follows what runs
 # Installed by the ct script and tools/refresh-ct.sh next to the patches (/usr/local/share/rustdesk-cortendesk/rdgen).
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh

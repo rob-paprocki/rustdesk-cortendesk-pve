@@ -6,7 +6,7 @@ _cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:-$(dirname "${BASH_SOURCE[0]}")/../../cor
 source "$_cs_boot" 2>/dev/null || source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/build.func")
 # Copyright (c) 2021-2026 community-scripts ORG
 # Based on community-scripts ct/rustdeskserver.sh (MIT) by tremor021.
-# Copyright (c) 2026 the rustdesk-server-pve contributors
+# Copyright (c) 2026 the rustdesk-cortendesk-pve contributors
 # License: GPL-3.0-or-later (see LICENSE); the community-scripts parts are MIT (see NOTICE)
 # Source: https://github.com/marcpope/cortendesk | https://github.com/marcpope/cortendesk-server | https://github.com/bryangerlach/rdgen
 #

@@ -1,5 +1,5 @@
 From 79a28459bff92c0f49f92684c9007c2c1549891f Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
 Subject: [PATCH 20/33] macOS: choose the Mac builds; run them on a Mac of your
  own
@@ -24,8 +24,6 @@ about ten times the Linux rate, roughly 600-700 of the Free plan's
 The GitHub API stub accepts the macOS workflow's optional input and
 still rejects anything undeclared, as GitHub does.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  SETUP-PULL.md                          | 19 +++++++++++++---
  rdgenerator/api_views.py               |  2 ++

@@ -1,5 +1,5 @@
 From ddaee04ca4eaf9812a3f82131c9105e921c12bcd Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 22:46:40 -0400
 Subject: [PATCH 19/33] ui: say what the API server, the connection type and
  the password are for
@@ -24,8 +24,6 @@ builds quietly used most of their GitHub Actions minutes.
 - Platform: what a build costs in Actions minutes; a Mac build runs two
   Mac machines and uses roughly 600-700 of the Free plan's 2,000.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgenerator/templates/_api_server.html | 61 ++++++++++++++++++++++++++
  rdgenerator/templates/_build_cost.html | 29 ++++++++++++

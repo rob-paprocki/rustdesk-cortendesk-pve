@@ -1,5 +1,5 @@
 From f8fcc31b1937bf7ab0a679ebc0d1285c7cfafa02 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
 Subject: [PATCH 22/33] builds: the cost note says where the last build of each
  kind ran
@@ -19,8 +19,6 @@ Actions access only), but it can see where jobs ran.
   last time, so no GitHub Actions minutes", or GitHub's cost where it ran on
   GitHub's machines or nothing is known yet.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  .../migrations/0007_githubrun_runners.py      | 16 +++++
  rdgenerator/models.py                         |  3 +

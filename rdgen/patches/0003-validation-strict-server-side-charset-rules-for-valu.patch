@@ -1,5 +1,5 @@
 From 680ef4054e5c8f7bad0a67314f2994a82ba5f898 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
 Subject: [PATCH 03/33] validation: strict server-side charset rules for values
  that reach build scripts
@@ -28,8 +28,6 @@ shell of the runner, which holds the signing secrets.
   defaulted all 20 booleans to False (keyboard, clipboard, ... off),
   unlike the UI. Non-string values are rejected instead of crashing.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgenerator/api_views.py             | 36 ++++++-----
  rdgenerator/forms.py                 | 59 ++++++++++++------

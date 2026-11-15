@@ -1,5 +1,5 @@
 From dabb60b30278abafa2f4b35c5722fa741eabd395 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Mon, 5 Oct 2026 20:09:22 -0400
 Subject: [PATCH 23/33] validation: Windows app names that RustDesk 1.5.0 can
  install
@@ -8,12 +8,10 @@ From 1.5.0 on, RustDesk's Windows installer refuses to install unless the
 app name matches [a-zA-Z0-9-]+ (validate_install_app_name, run before the
 elevated install script). The error never reaches the window: "Accept and
 install" just does nothing. rdgen allowed spaces and other characters, so a
-client named "Rustdesk Rescue Client (rpaprocki)" built fine and could not
+client named "Rustdesk Rescue Client (example)" built fine and could not
 be installed. Windows builds of 1.5.0 and nightly now get a clear error on
 the app name instead; 1.4.x and the other platforms keep the wider rules.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgenerator/tests/test_security.py | 10 ++++++++++
  rdgenerator/validation.py          | 10 ++++++++++
@@ -29,12 +27,12 @@ index ba544eb..ffec9b2 100644
  
 +    def test_windows_app_name_must_install(self):
 +        # RustDesk 1.5.0 on Windows installs only [A-Za-z0-9-]+ names; 1.4.x and other platforms take more
-+        name = 'Rustdesk Rescue Client (rpaprocki)'
++        name = 'Rustdesk Rescue Client (example)'
 +        for platform, version, bad in (('windows', '1.5.0', True), ('windows-x86', 'master', True),
 +                                       ('windows', '1.4.9', False), ('macos', '1.5.0', False), ('linux', '1.5.0', False)):
 +            errors = validate_build_fields({'appname': name, 'platform': platform, 'version': version})
 +            self.assertEqual('appname' in errors, bad, (platform, version))
-+        self.assertEqual(validate_build_fields({'appname': 'Rustdesk-Rescue-rpaprocki', 'platform': 'windows',
++        self.assertEqual(validate_build_fields({'appname': 'Rustdesk-Rescue-example', 'platform': 'windows',
 +                                                'version': '1.5.0'}), {})
 +
      def test_filename_sanitized(self):

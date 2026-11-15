@@ -1,5 +1,5 @@
 From bab16e6d71d1b3450b8908548a2c3c33896fbd92 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:51:33 -0400
 Subject: [PATCH 07/33] workflows: take the config from the cfg input; harden
  the decrypt step
@@ -41,8 +41,6 @@ decrypt-secrets action:
   steps must not fetch anything from rdgen or from bryangerlach's master
   branch.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  .github/actions/decrypt-secrets/action.yml    |  39 +++----
  .github/actions/decrypt-secrets/decrypt.py    | 100 ++++++++++++++++++

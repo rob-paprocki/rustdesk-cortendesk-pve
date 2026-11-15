@@ -1,9 +1,9 @@
 From 3f15a7c3fe482fb19abe95d5c6c4c0815b8d240c Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
 Subject: [PATCH 16/33] linux: build Linux clients under a Linux-safe app name
 
-A Linux build with the app name "Rescue Client (Rob Paprocki)" failed in
+A Linux build with the app name "Rescue Client (Example Name)" failed in
 build.py: the workflow writes the name into unquoted shell commands
 (mkdir -p tmpdeb/usr/share/<name>), the deb Package field, the rpm Name,
 systemd unit names and desktop files, and dash stopped at the bracket.
@@ -13,7 +13,7 @@ Linux build cannot keep a display name with spaces either.
 
 Linux builds now get one name everywhere (workflow input and custom.txt
 app-name): the app name lowercased, with every run of other characters
-turned into a hyphen ("rescue-client-rob-paprocki"). Other platforms and
+turned into a hyphen ("rescue-client-example-name"). Other platforms and
 the label shown in the console keep the full name. A Linux build is
 refused with a clear message when that name is shorter than two
 characters, starts with a digit (invalid link scheme), contains
@@ -8198,16 +8198,16 @@ index 97bc1ce..1d82e70 100644
 +        return json.loads(decrypt_cfg(req['body']['inputs']['cfg'])['secrets.json'])
 +
 +    def test_linux_build_gets_a_linux_safe_name(self):
-+        s = self.secrets(platform='linux', appname='Rescue Client (Rob Paprocki)')
-+        self.assertEqual(s['appname'], 'rescue-client-rob-paprocki')
++        s = self.secrets(platform='linux', appname='Rescue Client (Example Name)')
++        self.assertEqual(s['appname'], 'rescue-client-example-name')
 +        custom = json.loads(base64.b64decode(s['custom']))
-+        self.assertEqual(custom['app-name'], 'rescue-client-rob-paprocki')
++        self.assertEqual(custom['app-name'], 'rescue-client-example-name')
 +        from rdgenerator.models import GithubRun
-+        self.assertEqual(GithubRun.objects.latest('id').label, 'Rescue Client (Rob Paprocki)')
++        self.assertEqual(GithubRun.objects.latest('id').label, 'Rescue Client (Example Name)')
 +
 +    def test_other_platforms_keep_the_name(self):
-+        s = self.secrets(platform='windows', appname='Rescue Client (Rob Paprocki)')
-+        self.assertEqual(s['appname'], 'Rescue Client (Rob Paprocki)')
++        s = self.secrets(platform='windows', appname='Rescue Client (Example Name)')
++        self.assertEqual(s['appname'], 'Rescue Client (Example Name)')
 +
 +    def test_default_and_already_safe_names_unchanged(self):
 +        self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
@@ -8278,7 +8278,7 @@ index a4d8e7e..0c32b66 100644
 +    RustDesk on Linux names its package, /usr/share and /etc folders, systemd
 +    unit and process after the lowercased app name, and the build's shell
 +    commands and dpkg/rpm reject spaces, brackets and underscores, so
-+    "Rescue Client (Rob Paprocki)" becomes "rescue-client-rob-paprocki".
++    "Rescue Client (Example Name)" becomes "rescue-client-example-name".
 +    """
 +    slug = re.sub(r'[^a-z0-9]+', '-', (name or '').lower()).strip('-')
 +    return slug if len(slug) >= 2 else 'rustdesk'

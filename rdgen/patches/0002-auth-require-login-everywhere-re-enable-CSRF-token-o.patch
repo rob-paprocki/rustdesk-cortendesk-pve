@@ -1,5 +1,5 @@
 From 22c48af70e06f709733303e5a1d1ecfe41ce7cdf Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
 Subject: [PATCH 02/33] auth: require login everywhere, re-enable CSRF, token
  or session for /api
@@ -23,8 +23,6 @@ Subject: [PATCH 02/33] auth: require login everywhere, re-enable CSRF, token
 - Use reversed URLs ({% url %}) in the templates this touches, so a
   sub-path mount (RDGEN_URL_PREFIX) keeps working.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgen/settings.py                             | 17 +++++-
  rdgen/urls.py                                 | 52 ++++++++-----------

@@ -1,5 +1,5 @@
 From e54c57749ff22bdc3a41614bc1b87f1be2afd73f Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 07:49:21 -0400
 Subject: [PATCH 24/33] builds: upstream's self-hosted update key passes both
  checks

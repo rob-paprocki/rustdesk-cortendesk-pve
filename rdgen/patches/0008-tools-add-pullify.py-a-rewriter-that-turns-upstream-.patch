@@ -1,5 +1,5 @@
 From 1b2deec5cd5e1ce5f5db6bb8cee1e9fc9e6ee692 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 01:03:12 -0400
 Subject: [PATCH 08/33] tools: add pullify.py, a rewriter that turns upstream
  workflows into pull-model ones
@@ -49,8 +49,6 @@ generator. An unknown action or a new callback step makes it exit 2, so
 an automated upstream sync stops instead of pushing a half-converted
 tree. --check only reports (exit 1 when a rewrite is pending).
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  tools/pullify.py | 1152 ++++++++++++++++++++++++++++++++++++++++++++++
  1 file changed, 1152 insertions(+)

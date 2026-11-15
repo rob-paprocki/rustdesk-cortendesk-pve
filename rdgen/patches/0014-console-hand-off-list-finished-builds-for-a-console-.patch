@@ -1,5 +1,5 @@
 From 4e57a2197716a1a6c0535f8fd2f3ffdc5e8a5b1f Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
 Subject: [PATCH 14/33] console hand-off: list finished builds for a console's
  client downloads
@@ -528,10 +528,10 @@ index 0000000..0fcd342
 +
 +    def test_password_in_other_settings_cannot_be_published(self):
 +        for line in ('default-connect-password=hunter2', 'proxy-password = x', 'preset-address-book-password=pw',
-+                     'proxy-url=socks5://user:pw@proxy.lan:1080'):
++                     'proxy-url=socks5://user:pw@proxy.example.com:1080'):
 +            r = self.generate(publish='published', overrideManual='enable-audio=N\n' + line)
 +            self.assertEqual(r.status_code, 400, line)
-+        r = self.generate(publish='published', defaultManual='proxy-url=socks5://proxy.lan:1080\nproxy-password=')
++        r = self.generate(publish='published', defaultManual='proxy-url=socks5://proxy.example.com:1080\nproxy-password=')
 +        self.assertEqual(r.status_code, 200)
 +        self.assertFalse(GithubRun.objects.get(uuid=r.json()['uuid']).has_password)
 +        r = self.generate(publish='hidden', defaultManual='default-connect-password=hunter2')

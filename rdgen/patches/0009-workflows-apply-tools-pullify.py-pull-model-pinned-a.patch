@@ -1,5 +1,5 @@
 From 1ccd82ddbbef5a1c9c9cfbb63910c79502333f13 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
 Subject: [PATCH 09/33] workflows: apply tools/pullify.py (pull model, pinned
  actions, unused workflows removed)
@@ -35,8 +35,6 @@ undefined matrix.job.arch. Shellcheck findings dropped from 68 to 54 (the
 removed curl steps).
 
 Rdgen-Mechanical: pullify
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  .github/workflows/bridge.yml                  |  24 +-
  .github/workflows/build-web.yml               |  69 --

@@ -1,6 +1,6 @@
 # Moves rdgen/patches to the newest upstream rdgen (bryangerlach/rdgen master) and opens a pull request. Started by
 # a CT whose daily update finds that the patches stop applying (rdgen-setup --patch-source dispatch-token), or by hand
-# (Run workflow). There is no schedule: GitHub skipped this private repository's cron runs (2026-10-19), and the CT
+# (Run workflow). There is no schedule: GitHub skipped this workflow's cron runs (2026-10-19), and the CT
 # notices the break the moment it matters anyway.
 #   - Clean rebase + every check passes (tools/rdgen-rebase.py: git am round trip, the CT's update path as a dry
 #     run, the test suite, actionlint)  -> pull request, merged right away (squash): nothing in it was edited by a
@@ -41,7 +41,7 @@ jobs:
       target: ${{ steps.plan.outputs.target }}
       branch: ${{ steps.plan.outputs.branch }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -99,7 +99,7 @@ jobs:
             cp "$RUNNER_TEMP/work/report.md" "$RUNNER_TEMP/pr-body.md"
           fi
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.run.outputs.status == 'clean'
         with:
           name: series
@@ -118,7 +118,7 @@ jobs:
     outputs:
       verified: ${{ steps.verify.outputs.verified }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -134,7 +134,7 @@ jobs:
           cat "$RUNNER_TEMP/work/report.md"
 
       - name: Repair with Claude Code
-        uses: anthropics/claude-code-action@f27be6b65a4652f08a2ba3cff79114829b588967 # v1.0.252
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -218,7 +218,7 @@ jobs:
             : > "$RUNNER_TEMP/series.diff"
           fi
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: series
@@ -239,14 +239,13 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      actions: write   # starts publish-public.yml: a merge by this token starts no push-triggered workflow
     outputs:
       url: ${{ steps.pr.outputs.url }}
       merged: ${{ steps.pr.outputs.merged }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: series
           path: ${{ runner.temp }}/series
@@ -293,7 +292,6 @@ jobs:
           if [ ${#draft[@]} -eq 0 ]; then   # clean, or a verified repair that nobody held
             gh pr merge "$BRANCH" --squash --delete-branch
             echo "merged=true" >> "$GITHUB_OUTPUT"
-            gh workflow run publish-public.yml --ref "$GITHUB_REF_NAME" || echo "::warning::publish-public.yml not started"
           fi
 
   notify:

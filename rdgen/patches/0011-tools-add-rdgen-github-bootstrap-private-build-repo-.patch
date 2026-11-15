@@ -1,5 +1,5 @@
 From e45b826b3405ab2353b80c5c7f932c63184cbf50 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 01:05:56 -0400
 Subject: [PATCH 11/33] tools: add rdgen-github-bootstrap (private build repo
  setup and upstream updates)
@@ -35,8 +35,6 @@ with the credential helper disabled, so it is not in the URL, argv,
 .git/config or a credential store. The state (upstream and pushed shas,
 branch) is kept in /etc/rdgen/bootstrap.json (0600).
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  tools/rdgen-github-bootstrap | 610 +++++++++++++++++++++++++++++++++++
  1 file changed, 610 insertions(+)

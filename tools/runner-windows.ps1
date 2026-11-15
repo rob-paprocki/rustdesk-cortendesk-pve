@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Make this Windows machine a self-hosted GitHub Actions runner for rdgen's Windows builds (rustdesk-server-pve).
+  Make this Windows machine a self-hosted GitHub Actions runner for rdgen's Windows builds (rustdesk-cortendesk-pve).
 
 .DESCRIPTION
   Copy this file to the Windows VM and run it in an elevated Windows PowerShell:

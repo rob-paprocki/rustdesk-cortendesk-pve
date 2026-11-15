@@ -1,5 +1,5 @@
 From 851569e4cdbefc18b56e47c700d6ad1461e46fd0 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
 Subject: [PATCH 15/33] ui: site defaults and hints for the server fields, a
  reference for the Other section
@@ -353,7 +353,7 @@ index 0000000..bfdb57e
 +   "key": "whitelist",
 +   "group": "Security/Access",
 +   "kind": "settings",
-+   "values": "\",\" (no filter) or comma-separated IPs/CIDRs, e.g. 192.168.1.0/24,10.0.0.5",
++   "values": "\",\" (no filter) or comma-separated IPs/CIDRs, e.g. 192.0.2.0/24,198.51.100.5",
 +   "choices": [],
 +   "default": ", (no filter)",
 +   "insert": "",

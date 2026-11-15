@@ -1,5 +1,5 @@
 From 32c18cb9a6c088d5f6d09ffccf1c0aeb1d10052b Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 19:11:10 -0400
 Subject: [PATCH 18/33] builds: delete a finished build from Recent builds
 
@@ -20,8 +20,6 @@ can tell an expected failure from a real one. The row stays until
 prune_local, so prune_remote still deletes a failed run on GitHub.
 Copies already in the console stay there.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  SETUP-PULL.md                                 |   2 +-
  .../management/commands/rdgen_publish.py      |   9 +-

@@ -1,5 +1,5 @@
 From a410d348f09e5a7334b725fc2c4e12ff54aa98e6 Mon Sep 17 00:00:00 2001
-From: "claude[bot]" <noreply@anthropic.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Sat, 14 Nov 2026 09:48:22 +0000
 Subject: [PATCH 33/33] theme colors: validate the new build config keys on
  both sides

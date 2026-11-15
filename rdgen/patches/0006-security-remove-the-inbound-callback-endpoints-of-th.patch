@@ -1,5 +1,5 @@
 From 74d995c3eacfdfb8bc7561369c2a5b0fb6d1b5d8 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
 Subject: [PATCH 06/33] security: remove the inbound callback endpoints of the
  push model
@@ -24,8 +24,6 @@ GitHub runners no longer call back into rdgen, so these are gone:
 Also dropped the unused helpers (save_png, resize_and_encode_icon) and
 the imports they needed.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgen/urls.py            |  12 +--
  rdgenerator/api_views.py |   2 -

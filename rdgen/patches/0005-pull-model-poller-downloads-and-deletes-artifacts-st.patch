@@ -1,5 +1,5 @@
 From 61e7624ca1554d1fa230326f1e84864386e81ed3 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
 Subject: [PATCH 05/33] pull model: poller downloads and deletes artifacts;
  status and downloads from the DB
@@ -53,8 +53,6 @@ were built before the failure, plus the poller's error.
 New /api/download (token or session) lets a console integration fetch
 builds.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgen/urls.py                                 |   1 +
  rdgenerator/api_views.py                      |  48 +--

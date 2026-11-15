@@ -1,4 +1,10 @@
-# Self-hosted RustDesk in one Proxmox LXC
+# rustdesk-cortendesk-pve
+
+A self-hosted RustDesk server, the CortenDesk web console and an optional hardened client builder, installed in one native Proxmox LXC.
+
+[![Release](https://img.shields.io/github/v/release/rob-paprocki/rustdesk-cortendesk-pve)](https://github.com/rob-paprocki/rustdesk-cortendesk-pve/releases)
+[![License](https://img.shields.io/github/license/rob-paprocki/rustdesk-cortendesk-pve)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/rob-paprocki/rustdesk-cortendesk-pve)](https://github.com/rob-paprocki/rustdesk-cortendesk-pve/commits/stable)
 
 This installs a self-hosted RustDesk stack in one unprivileged LXC, natively (no Docker), on Alpine 3.24 or Debian 13:
 
@@ -9,6 +15,24 @@ This installs a self-hosted RustDesk stack in one unprivileged LXC, natively (no
 | [rdgen](https://github.com/bryangerlach/rdgen) (optional) | Builds custom, preconfigured RustDesk clients for Windows, Linux, Android and macOS. The patches in `rdgen/patches/` add a login, CSRF, fixes for the file-path leaks, and a pull model: builds run in your private GitHub repo and the LXC downloads the results. GitHub never connects to the LXC, and rdgen is LAN only. Finished builds can go straight into CortenDesk's Client Downloads. |
 
 It uses the [community-scripts](https://community-scripts.org) framework. The container defaults to 2 cores, 2 GB RAM and a 16 GB disk; change them in Advanced mode.
+
+## Why
+
+- One command on the Proxmox host builds the whole stack: RustDesk server, web console and (optionally) a client builder.
+- It runs natively in one unprivileged LXC, with no Docker layer.
+- A daily update job keeps the server, console and rdgen current and can tell you through Discord or Apprise.
+- Custom clients come out preconfigured with your server address and key, so users install and connect.
+- Settings, helper commands and ports are documented in one place below.
+
+**Does not:** run in Docker, replace the RustDesk clients, or expose rdgen to the internet (it is LAN only).
+
+## Requirements
+| Item | Supported |
+|---|---|
+| Host | Proxmox VE, with root shell access and a storage for the container |
+| Container OS | Alpine 3.24 or Debian 13, unprivileged |
+| Default size | 2 cores, 2 GB RAM, 16 GB disk (Advanced mode changes them) |
+| rdgen (optional) | A private GitHub repository and two tokens, because builds run there |
 
 ## Install (on the Proxmox host, as root)
 Download the repo and run the ct script from it:
@@ -39,6 +63,77 @@ var_rd_rdgen=yes var_rd_rdgen_repo=<owner>/rdgen-build var_rd_rdgen_install_toke
 var_rd_rdgen_store_token=no \
 bash rustdesk-cortendesk-pve-stable/ct/rustdesk-cortendesk.sh
 ```
+
+## Quick start
+When the installer finishes, open a shell in the CT (`pct enter <CT_ID>`) and check the result:
+```bash
+cat ~/rustdesk-cortendesk.creds
+rustdesk-config --show
+```
+The first command prints the console login, the server key, the client settings and the rdgen URL. The second prints the addresses you chose, like this:
+```text
+public host: rd.example.com
+console URL: https://rustdesk.example.com
+proxy IP:    192.168.100.5
+```
+Then set up a client as described in [Client configuration](#client-configuration).
+
+## Contents
+- [Install](#install-on-the-proxmox-host-as-root)
+- [Quick start](#quick-start)
+- [Requirements](#requirements)
+- [Where settings live](#where-settings-live)
+- [Known limits](#known-limits)
+- [Repo map](#repo-map)
+- [Inside the CT](#inside-the-ct)
+- [Ports](#ports)
+- [Client configuration](#client-configuration)
+- [rdgen (custom clients)](#rdgen-custom-clients)
+- [When clients don't show up](#when-clients-dont-show-up)
+- [Unattended access](#unattended-access)
+- [Updates](#updates)
+- [Notifications](#notifications)
+- [Privacy and outbound connections](#privacy-and-outbound-connections)
+- [Layout](#layout)
+- [Updating an existing CT to a newer version of this repo](#updating-an-existing-ct-to-a-newer-version-of-this-repo)
+- [Development](#development)
+- [Credits and licenses](#credits-and-licenses)
+
+## Where settings live
+`ct/rustdesk-cortendesk.sh` reads the `var_` rows below on the Proxmox host, except the runner CT row, which `tools/runner-lxc.sh` reads.
+
+| Where | What it holds |
+|---|---|
+| Install prompts | Container OS (and size, in Advanced mode), console admin, addresses, notifications and rdgen. `ct/rustdesk-cortendesk.sh` asks on the Proxmox host, only in an interactive terminal. You can skip any of them and use the helper commands later. |
+| `PHS_SILENT=1` | Turns the prompts off for an unattended install. |
+| `var_os`, `var_cpu`, `var_ram`, `var_disk` | Container OS, cores, RAM in MB and disk in GB. The unattended example above also sets `var_ctid`, `var_net`, `var_gateway` and `var_pw`. |
+| `var_rd_admin_user`, `var_rd_admin_pass`, `var_rd_admin_email` | The console admin. |
+| `var_rd_public_host`, `var_rd_console_url`, `var_rd_proxy_ip` | The addresses. |
+| `var_rd_notify`, `var_rd_notify_url` | Notifications: `discord`, `apprise`, `apprise-api` or `none`, and the URL or URLs. |
+| `var_rd_rdgen`, `var_rd_rdgen_repo`, `var_rd_rdgen_install_token`, `var_rd_rdgen_runtime_token`, `var_rd_rdgen_store_token` | rdgen: `yes`, the build repo, the two tokens, and whether to keep the install token. |
+| `var_ctid`, `var_hostname`, `var_storage`, `var_cores`, `var_ram`, `var_disk`, `var_net`, `var_gateway` | The self-hosted Linux runner CT. Read by `tools/runner-lxc.sh` (see [Builds on machines of your own](#builds-on-machines-of-your-own)). |
+| Helper commands | `rustdesk-admin` (console and rdgen login), `rustdesk-config` (public host, console URL, proxy IP; `--show` prints the current values), `rustdesk-notify setup`, `rdgen-setup`, `cortendesk-alerts connect`. See [Inside the CT](#inside-the-ct). |
+| `/root/rustdesk-cortendesk.creds` | Logins, server key and client settings. Root-only. |
+| `/etc/rustdesk-server/hbbs.conf` | The hbbs settings, including the relay address. `rustdesk-config` changes it. |
+| `/etc/cortendesk/cortendesk.env` | The console's `.env`: `APP_URL`, `CORTENDESK_ID_SERVER`, `CORTENDESK_RELAY_SERVER`, `TRUSTED_PROXIES`, `APP_KEY`. `rustdesk-config` changes the address lines. |
+| `/etc/rustdesk-update.env` | The notification method, plus `UPDATE_SERVER`, `UPDATE_CORTENDESK`, `UPDATE_RDGEN` and `NOTIFY_UPTODATE` (see [Updates](#updates)). |
+| `/etc/rustdesk-apprise.conf` | Your Apprise URLs, one per line. Root-only. `rustdesk-notify setup` writes it. |
+| `/etc/rdgen/rdgen.env` | rdgen's settings and the runtime token. `rustdesk-config` and `rdgen-setup` write it. |
+| `/var/lib/rdgen-build/install.token` | The install token, only if you chose to keep it. |
+| Settings in the console | CortenDesk's own options, such as *Require device approval* and Notifications, are saved in its SQLite database. |
+
+## Known limits
+- Alpine 3.24 and Debian 13 are the only container choices.
+- rdgen's web UI is for your LAN only (see [Ports](#ports)).
+- Unless you add runners of your own ([Builds on machines of your own](#builds-on-machines-of-your-own)), rdgen builds run in your own private GitHub repository and use your Actions minutes.
+- Windows builds are unsigned and SmartScreen warns. Mac builds are ad-hoc signed unless you add Apple secrets (see [Signed and notarized Mac clients](#signed-and-notarized-mac-clients)).
+- Only installed Windows clients with Auto update on can update from your console. [Keeping Windows clients up to date](#keeping-windows-clients-up-to-date) has the details.
+- A client built with a password inside carries it in readable form (see [Unattended access](#unattended-access)).
+- Put no reverse proxy in front of port 21115, where hbbs accepts admin commands. Use a DNS-only name for 21115-21117.
+- The daily update does not upgrade OS packages. Run `update` for those.
+
+## Repo map
+`ct/` holds the script you run on the Proxmox host, and `install/` holds the generated script that runs inside the new CT. `rdgen/` holds the patches the host script copies into the CT. An install uses those three, plus `headers/`, which holds the banner the script prints. You can ignore the rest. `src/` holds the sources and `build.sh` turns them into the install script, so you only need them to change the installer. `.github/` holds GitHub Actions workflows for maintaining the repo. `tools/` holds optional helpers: `refresh-ct.sh` brings an existing CT up to a newer checkout, `runner-lxc.sh`, `runner-windows.ps1` and `runner-mac.sh` set up build machines of your own, and `rdgen-rebase.py` moves the patches to a newer upstream. `LICENSE` and `NOTICE` are the license texts. The [Layout](#layout) section below lists paths inside the CT.
 
 ## Inside the CT
 | Command | What it does |
@@ -217,7 +312,7 @@ The daily job does not upgrade OS packages; run `update` for those.
 Upstream rdgen changes often, and now and then a change stops the patches from applying. The daily update then keeps the current version and warns you. If this repository lives on GitHub, `.github/workflows/rdgen-upstream.yml` repairs the series:
 - It moves `rdgen/patches` to the newest upstream rdgen with `tools/rdgen-rebase.py` and checks the result the way a CT would: the patches apply, the CT's update path passes, the test suite passes, and actionlint finds nothing new.
 - When everything passes, it opens a pull request and merges it right away. When a patch conflicts or a check fails, Claude Code repairs the series in a read-only job, and the tool checks the repair again on its own. A repair that passes every check merges the same way, and its pull request explains every decision. A repair stays a **draft** when a check fails, or when Claude Code holds it because the only fix it found would weaken rdgen's hardening. To review every repair yourself before it merges, set the repository variable `RDGEN_REPAIR_REVIEW` to `true`.
-- A CT that follows the repository (below) starts it in two cases: when its daily update finds that the patches stop applying or fail the tests, and after a successful update to an upstream newer than the series, so the repository keeps up with what runs. You can also start it with "Run workflow". There is no schedule: GitHub never ran this workflow's schedule in the private repository it was built in.
+- A CT that follows the repository (below) starts it in two cases: when its daily update finds that the patches stop applying or fail the tests, and after a successful update to an upstream newer than the series, so the repository keeps up with what runs. You can also start it with "Run workflow". There is no schedule, because GitHub never ran the one this workflow had.
 - One-time setup in the repository: add the secret `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token` on any machine with Claude Code; runs count against your Claude plan), and enable Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests". With the optional secret `RDGEN_DISCORD_WEBHOOK` (a Discord webhook URL), the workflow posts its outcome there: merged, repaired and merged, waiting as a draft with the link, incomplete, or failed. A clean run takes about 3 minutes of Actions time, a repair 6 to 10.
 
 To have a CT follow the repository:
@@ -229,8 +324,6 @@ rdgen-setup --patch-source status                   # or: off
 Its daily update then fetches `rdgen/patches` from that branch (default `main`) over SSH, trusting only GitHub's pinned host keys. A new series is checked (only patch files, a matching MANIFEST), built, tested and pushed like an upstream update, and it replaces the installed patches only after that worked. Notifications then show the version as `<upstream>+<series commit>`. Changes to the tools themselves (`src/files`) still need `tools/refresh-ct.sh`.
 
 The dispatch token is a fine-grained token for that repository only, with Actions: Read and write. The CT stores it root-only and uses it for nothing but starting `rdgen-upstream.yml`. When it asks for a repair, the update notification says "repair requested", or why it couldn't.
-
-`.github/workflows/publish-public.yml` can mirror the repository to a public copy: one new commit there per change here, without this repository's history. It needs the secret `PUBLIC_DEPLOY_KEY` (a write deploy key of the public repository); set `PUBLIC_REPO` in the workflow to yours.
 
 ## Notifications
 `rustdesk-notify` sends the updater's messages and rdgen's results. It runs as root, and its settings (`/etc/rustdesk-update.env`, `/etc/rustdesk-apprise.conf`) are root-only, so the console never sees your webhook. Change them with `rustdesk-notify setup`.
@@ -264,7 +357,7 @@ Installs and updates reach `github.com`, `api.github.com` (release digests), `ra
 - Alert relay: `/etc/nginx/rustdesk-alert-relay.conf`, `/usr/local/lib/cortendesk/alert-relay.php`, `/etc/cortendesk/alert-relay.key`, queue `/var/spool/cortendesk-alerts`
 
 ## Updating an existing CT to a newer version of this repo
-The daily `rustdesk-update` updates the RustDesk server, CortenDesk and rdgen, but not this repo's own tools. To bring a CT up to a newer checkout without reinstalling, run this on the Proxmox host:
+The daily `rustdesk-update` updates the RustDesk server, CortenDesk and rdgen, but not this repo's own tools. To bring a CT up to a newer checkout without reinstalling, download the newer checkout first, the same way as in [Install](#install-on-the-proxmox-host-as-root), then run this on the Proxmox host:
 ```bash
 bash rustdesk-cortendesk-pve-stable/tools/refresh-ct.sh <ctid>
 ```
@@ -288,3 +381,9 @@ This repo is licensed under the GNU GPL, version 3 or later (see LICENSE). It bu
 - [AllenMGu/rdgen](https://github.com/AllenMGu/rdgen) by AllenMGu: the artifact poller in patch 0005 is adapted from its `github_artifacts.py`. GPL-3.0.
 - [community-scripts](https://github.com/community-scripts/ProxmoxVE): the framework this installer runs on, and the `rustdeskserver` script by tremor021 that it started from (Copyright (c) 2021-2026 community-scripts ORG). MIT.
 - [Apprise](https://github.com/caronc/apprise) by caronc: the optional notification backend. BSD-2-Clause.
+
+## Help and contributing
+Ask questions or report bugs in [Issues](https://github.com/rob-paprocki/rustdesk-cortendesk-pve/issues). Development happens in a separate repository. Releases and upgrade notes are in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+[GPL-3.0-or-later](LICENSE) (c) 2026 the rustdesk-cortendesk-pve contributors. Third-party notices are in [NOTICE](NOTICE).

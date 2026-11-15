@@ -1,5 +1,5 @@
 From 5cc25fe425058690a40d948c1a63157fe65eb267 Mon Sep 17 00:00:00 2001
-From: Rob Paprocki <hi@rpaprocki.com>
+From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
 Subject: [PATCH 04/33] pull model: dispatch the encrypted config as a workflow
  input
@@ -44,8 +44,6 @@ be reachable from the internet. This commit keeps everything outbound:
 - Dispatch failures are shown on the form or returned as JSON (502/503)
   instead of a bare JsonResponse page. Oversized API bodies get 413 JSON.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01AG6wkRApDVwXPoE7rdKoh6
 ---
  rdgen/settings.py                         |  19 +-
  rdgenerator/api_views.py                  |  16 +-

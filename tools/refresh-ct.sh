@@ -5,7 +5,7 @@
 # token is stored (rdgen-setup --push). Data, the console, logins, keys and tokens stay.
 # Settings written only at install time (nginx, PHP, env files) are not changed, apart from what newer versions add:
 # the console's links for rdgen clients (/clients/, /share/) and the relay for CortenDesk's own alerts.
-# Run on the Proxmox host as root, from anywhere: bash /path/to/rustdesk-server-pve/tools/refresh-ct.sh 103
+# Run on the Proxmox host as root, from anywhere: bash /path/to/rustdesk-cortendesk-pve/tools/refresh-ct.sh 103
 set -euo pipefail
 id=${1:?usage: refresh-ct.sh <ctid>}
 root=$(cd "$(dirname "$0")/.." && pwd)
