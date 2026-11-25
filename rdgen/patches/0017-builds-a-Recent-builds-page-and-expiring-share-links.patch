@@ -1,4 +1,4 @@
-From 580e226aa743c5c83ae11e5c45fcc4e9b6e4f4a1 Mon Sep 17 00:00:00 2001
+From 4c75d92761e69555731287fb324b3318caeafea7 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 16:17:32 -0400
@@ -386,10 +386,10 @@ index cc6b6fd..a921556 100644
      </div>
  
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index c2f7c1d..7b734a4 100644
+index d8ed822..0186f58 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -426,6 +426,7 @@
+@@ -619,6 +619,7 @@
  <body>
      <form method="post" action="{% url 'logout' %}" style="position:absolute;top:10px;right:14px;margin:0;font-size:.85em;">
          {% csrf_token %}
@@ -622,10 +622,10 @@ index 0000000..4ebf0ea
 +        prune_local()
 +        self.assertFalse(ShareLink.objects.exists())
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 71c5035..15bf1c0 100644
+index f6968f4..48c5241 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -4,18 +4,23 @@ import json
+@@ -4,19 +4,24 @@ import json
  import logging
  import os
  import re
@@ -645,13 +645,14 @@ index 71c5035..15bf1c0 100644
 +from django.views.decorators.http import require_http_methods, require_safe
  
  from . import buildcfg, github
+ from .advanced_keys import ADVANCED_KEYS
  from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
 -from .models import GithubRun
 +from .models import GithubRun, ShareLink
  from .poller import allowed_output_name, valid_uuid
  from .validation import linux_app_name, linux_app_name_problem, sanitize_filename, validate_build_fields
  
-@@ -488,6 +493,23 @@ def check_for_file(request):
+@@ -493,6 +498,23 @@ def check_for_file(request):
      return render(request, 'waiting.html', context)
  
  
@@ -675,7 +676,7 @@ index 71c5035..15bf1c0 100644
  def serve_build_file(request):
      """Stream one stored build output.
  
-@@ -500,14 +522,10 @@ def serve_build_file(request):
+@@ -505,14 +527,10 @@ def serve_build_file(request):
      """
      uuid_val = request.GET.get('uuid', '')
      filename = request.GET.get('filename', '')
@@ -693,7 +694,7 @@ index 71c5035..15bf1c0 100644
          raise Http404("Not found")
      return FileResponse(open(path, 'rb'), as_attachment=True, filename=filename,
                          content_type='application/octet-stream')
-@@ -515,3 +533,145 @@ def serve_build_file(request):
+@@ -520,3 +538,145 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)

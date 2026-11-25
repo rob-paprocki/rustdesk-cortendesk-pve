@@ -1,4 +1,4 @@
-From f100fe3c6899c5353c924182aec6f32e2592be7b Mon Sep 17 00:00:00 2001
+From d20a225abb29b9d495dd87ff87512b839e75c3b4 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
@@ -209,10 +209,10 @@ index ac55054..a94aa5b 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 90a9b84..94a5566 100644
+index 2032669..8b4f5c1 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -87,8 +87,12 @@ def generate_custom_client(params, full_url=None):
+@@ -88,8 +88,12 @@ def generate_custom_client(params, full_url=None):
      # without changing the git tag that version selects. If left empty, the
      # RustDesk build's own version (from the checked-out tag) is used.
      mac_arch = params.get('macArch') or 'both'
@@ -227,7 +227,7 @@ index 90a9b84..94a5566 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -370,6 +374,10 @@ def generate_custom_client(params, full_url=None):
+@@ -371,6 +375,10 @@ def generate_custom_client(params, full_url=None):
          # only when needed: a build repo whose workflow predates mac_arch keeps accepting the default
          if platform == 'macos' and mac_arch != 'both':
              result["mac_arch"] = mac_arch

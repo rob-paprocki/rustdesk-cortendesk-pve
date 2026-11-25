@@ -1,4 +1,4 @@
-From 62c3dfd1ee319125483d836a7b1e8d544d7ccacf Mon Sep 17 00:00:00 2001
+From 5453d7c51720f6e372d86a4ce075dfd7a3b40c50 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
@@ -750,7 +750,7 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 1e89462..e08c5da 100644
+index 4be43dc..030ea47 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,7 +1,9 @@
@@ -764,15 +764,15 @@ index 1e89462..e08c5da 100644
  from django.shortcuts import render, get_object_or_404
  from django.core.files.base import ContentFile
  import os
-@@ -17,6 +19,7 @@ from django.db.models import Q
- from .forms import GenerateForm, HEX_COLOR_RE
+@@ -18,6 +20,7 @@ from .forms import GenerateForm, HEX_COLOR_RE
+ from .advanced_keys import ADVANCED_KEYS
  from .validation import sanitize_filename, validate_build_fields
  from . import buildcfg, github
 +from .poller import allowed_output_name, valid_uuid
  from django.utils import timezone
  import logging
  
-@@ -397,48 +400,37 @@ def generate_custom_client(params, full_url=None):
+@@ -398,48 +401,37 @@ def generate_custom_client(params, full_url=None):
  
  def _get_run_status(uuid_val):
      """
@@ -843,8 +843,8 @@ index 1e89462..e08c5da 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -460,105 +452,55 @@ def generator_view(request):
-     return render(request, 'generator.html', {'form': form})
+@@ -464,105 +456,55 @@ def generator_view(request):
+     })
  
  
 -def _expected_files_for_platform(filename, platform):

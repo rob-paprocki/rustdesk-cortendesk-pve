@@ -1,4 +1,4 @@
-From 3546afbba013f7bccee713b9b7a25c2235b9026b Mon Sep 17 00:00:00 2001
+From e79547d6dee5d91d89bf0fd70167f2565e9d47bb Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
@@ -27,8 +27,8 @@ Actions access only), but it can see where jobs ran.
  rdgenerator/tests/ghstub.py                   |  8 +++
  rdgenerator/tests/test_pull.py                | 17 ++++++
  rdgenerator/tests/test_ui.py                  | 31 ++++++++++
- rdgenerator/views.py                          | 32 +++++++++-
- 8 files changed, 171 insertions(+), 19 deletions(-)
+ rdgenerator/views.py                          | 30 ++++++++++
+ 8 files changed, 170 insertions(+), 18 deletions(-)
  create mode 100644 rdgenerator/migrations/0007_githubrun_runners.py
 
 diff --git a/rdgenerator/migrations/0007_githubrun_runners.py b/rdgenerator/migrations/0007_githubrun_runners.py
@@ -306,10 +306,10 @@ index a94aa5b..f1155e8 100644
      def test_reference_data_is_consistent(self):
          data = views.client_settings()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 94a5566..afcee0f 100644
+index 8b4f5c1..5cd983d 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -459,6 +459,35 @@ def client_settings():
+@@ -460,6 +460,35 @@ def client_settings():
          return json.load(fh)
  
  
@@ -345,13 +345,11 @@ index 94a5566..afcee0f 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -479,7 +508,8 @@ def generator_view(request):
-     #return render(request, 'maintenance.html')
-     return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
-                                               'client_settings': client_settings(),
--                                              'update_base': _settings.RDGEN_UPDATE_BASE})
-+                                              'update_base': _settings.RDGEN_UPDATE_BASE,
-+                                              'runner_notes': last_runners()})
+@@ -484,6 +513,7 @@ def generator_view(request):
+         'publish_target': _settings.RDGEN_PUBLISH_TARGET,
+         'client_settings': client_settings(),
+         'update_base': _settings.RDGEN_UPDATE_BASE,
++        'runner_notes': last_runners(),
+     })
  
  
- def check_for_file(request):

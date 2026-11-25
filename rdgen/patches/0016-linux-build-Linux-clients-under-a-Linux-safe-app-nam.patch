@@ -1,4 +1,4 @@
-From 273812b5ed3da91928c5ce7d9ef94b0fba3a15e0 Mon Sep 17 00:00:00 2001
+From 1b4e709941d95367ee50d9806ede11e70a6558a1 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
@@ -8144,10 +8144,10 @@ index 0000000..25ba407
 +})();
 +</script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 562080e..c2f7c1d 100644
+index 5449d98..d8ed822 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -467,12 +467,8 @@
+@@ -660,12 +660,8 @@
                      <i class="fab fa-apple platform-icon" data-platform="macos"></i>
                  </div>
                  <select name="platform" id="id_platform">
@@ -8162,18 +8162,18 @@ index 562080e..c2f7c1d 100644
                  <label for="{{ form.version.id_for_label }}">Rustdesk Version:</label>
                  {{ form.version }}
                  {% if form.version.help_text %}
-@@ -489,7 +485,7 @@
-                     <label for="{{ form.exename.id_for_label }}">Name of the configuration (no spaces or special characters, English characters only):</label>
+@@ -682,7 +678,7 @@
+                     <label for="{{ form.exename.id_for_label }}">Name of the configuration (used for the downloaded file names; no spaces or special characters, English characters only):</label>
                      {{ form.exename }}<span id="filenameError" class="error"></span><br><br>
-                     <label for="{{ form.appname.id_for_label }}">Custom Application Name (leave blank to use default):</label>
+                     <label for="{{ form.appname.id_for_label }}">Custom Application Name (shown in the app, under the icon and in the Android installer; leave blank to keep RustDesk):</label>
 -                    {{ form.appname }}<br><br>
 +                    {{ form.appname }}{% include '_linux_name.html' %}<br>
                      <label for="{{ form.direction.id_for_label }}">Connection Type:</label>
                      {{ form.direction }}<br><br>
                      <label for="{{ form.installation.id_for_label }}">Disable Installation:</label>
-@@ -664,6 +660,9 @@
-         </div>
+@@ -886,6 +882,9 @@
      </form>
+     {{ advanced_keys|json_script:"advanced-keys-data" }}
      <script>
 +        // after a refused build the form comes back with its platform: show the matching icon
 +        document.querySelectorAll('.platform-icon').forEach(i =>
@@ -8316,10 +8316,10 @@ index a4d8e7e..72a371b 100644
      """Upstream's rule, minus the \\s hole that let tabs/newlines through."""
      value = (value or '').strip()
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 8a79274..71c5035 100644
+index aae1477..f6968f4 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -17,7 +17,7 @@ from . import buildcfg, github
+@@ -18,7 +18,7 @@ from .advanced_keys import ADVANCED_KEYS
  from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
@@ -8328,7 +8328,7 @@ index 8a79274..71c5035 100644
  
  log = logging.getLogger(__name__)
  
-@@ -161,6 +161,12 @@ def generate_custom_client(params, full_url=None):
+@@ -162,6 +162,12 @@ def generate_custom_client(params, full_url=None):
      # workflow's directory rename stay in sync.
      if appname.lower() == "rustdesk":
          appname = "rustdesk"

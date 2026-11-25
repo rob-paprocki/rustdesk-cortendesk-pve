@@ -1,4 +1,4 @@
-From e85ba9e808c5ade74dc4181a0a50602d07d470f9 Mon Sep 17 00:00:00 2001
+From e7c453332fdc3ba760f38addf7608c92ce44e4c1 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
 Date: Mon, 23 Nov 2026 04:16:31 +0000
 Subject: [PATCH 38/38] websocket: WebSocket builds get wss://, the site's
@@ -50,9 +50,9 @@ rdgen.env.example describe the setting.
  rdgenerator/forms.py                 |   5 +
  rdgenerator/templates/generator.html |   2 +-
  rdgenerator/tests/test_websocket.py  | 304 +++++++++++++++++++++++++++
- rdgenerator/views.py                 |  12 +-
+ rdgenerator/views.py                 |  13 +-
  rdgenerator/websocket.py             | 172 +++++++++++++++
- 9 files changed, 506 insertions(+), 2 deletions(-)
+ 9 files changed, 507 insertions(+), 2 deletions(-)
  create mode 100644 rdgenerator/tests/test_websocket.py
  create mode 100644 rdgenerator/websocket.py
 
@@ -144,10 +144,10 @@ index 8cc0ac5..07f4b81 100644
          if message and 'publish' not in self.errors:
              self.add_error('publish', message)
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index bb71629..97bc010 100644
+index 21fe60e..e140164 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -501,7 +501,7 @@
+@@ -694,7 +694,7 @@
              <div class="section">
                  <h2><i class="fas fa-server"></i> Custom Server</h2>
                      <label for="{{ form.serverIP.id_for_label }}">Host:</label>
@@ -467,7 +467,7 @@ index 0000000..b5bba26
 +        self.assertEqual((custom['override-settings']['api-server'], custom['override-settings']['relay-server']),
 +                         (API, WS))
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 67db95a..e510662 100644
+index 7441144..b44a163 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -18,7 +18,7 @@ from django.urls import reverse
@@ -476,10 +476,10 @@ index 67db95a..e510662 100644
  
 -from . import buildcfg, github
 +from . import buildcfg, github, websocket
+ from .advanced_keys import ADVANCED_KEYS
  from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun, ShareLink
- from .poller import allowed_output_name, discard_build, valid_uuid
-@@ -110,6 +110,13 @@ def generate_custom_client(params, full_url=None):
+@@ -111,6 +111,13 @@ def generate_custom_client(params, full_url=None):
      urlLink = params.get('urlLink', '')
      downloadLink = params.get('downloadLink', '')
      defaults = site_defaults()
@@ -493,7 +493,7 @@ index 67db95a..e510662 100644
      if not server:
          server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
      if not serverPort:
-@@ -326,6 +333,7 @@ def generate_custom_client(params, full_url=None):
+@@ -327,6 +334,7 @@ def generate_custom_client(params, full_url=None):
  
      if overrideManual:
          apply_manual_settings(overrideManual, decodedCustom['override-settings'])
@@ -501,17 +501,22 @@ index 67db95a..e510662 100644
      
      decodedCustomJson = json.dumps(decodedCustom)
  
-@@ -509,9 +517,11 @@ def generator_view(request):
+@@ -510,6 +518,7 @@ def generator_view(request):
              form.add_error(None, result['error'])
      else:
          form = GenerateForm(initial=site_defaults())
 +    raw_server, ws_server = websocket.site_names()
      #return render(request, 'maintenance.html')
-     return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
-                                               'client_settings': client_settings(),
-+                                              'raw_server': raw_server, 'ws_server': ws_server,
-                                               'update_base': _settings.RDGEN_UPDATE_BASE,
-                                               'runner_notes': last_runners()})
+     return render(request, 'generator.html', {
+         'form': form,
+@@ -517,6 +526,8 @@ def generator_view(request):
+         'publish_target': _settings.RDGEN_PUBLISH_TARGET,
+         'client_settings': client_settings(),
+         'update_base': _settings.RDGEN_UPDATE_BASE,
++        'raw_server': raw_server,
++        'ws_server': ws_server,
+         'runner_notes': last_runners(),
+     })
  
 diff --git a/rdgenerator/websocket.py b/rdgenerator/websocket.py
 new file mode 100644

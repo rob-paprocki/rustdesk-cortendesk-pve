@@ -1,4 +1,4 @@
-From 82fe6bb8c200c86cba66858960763570881ec7c5 Mon Sep 17 00:00:00 2001
+From 25bdedcee3db3df89a3f3ea1821bf8b242845416 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Fri, 30 Oct 2026 08:56:56 +0000
@@ -28,10 +28,10 @@ index 2e06f08..c378c61 100644
      def test_default_and_already_safe_names_unchanged(self):
          self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index afcee0f..9db37e4 100644
+index 5cd983d..091e831 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -175,10 +175,11 @@ def generate_custom_client(params, full_url=None):
+@@ -176,10 +176,11 @@ def generate_custom_client(params, full_url=None):
          appname = "rustdesk"
      if platform == 'linux' and appname != 'rustdesk':
          # one name for the package, folders, service and the client's own config (see linux_app_name)

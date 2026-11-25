@@ -1,4 +1,4 @@
-From d23170225148fb7038dca3f9ec03fe4654e26304 Mon Sep 17 00:00:00 2001
+From 115734c318b90fcd7080483af0af6c44198a00b3 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
@@ -33,12 +33,12 @@ permissions.
  deploy/rdgen.env.example                   |    8 +
  rdgen/settings.py                          |    9 +
  rdgenerator/client_settings.json           | 1996 ++++++++++++++++++++
- rdgenerator/templates/_other_settings.html |  204 ++
+ rdgenerator/templates/_other_settings.html |  194 ++
  rdgenerator/templates/_update_link.html    |   96 +
- rdgenerator/templates/generator.html       |   32 +-
+ rdgenerator/templates/generator.html       |   23 +-
  rdgenerator/tests/test_ui.py               |   92 +
- rdgenerator/views.py                       |   24 +-
- 9 files changed, 2440 insertions(+), 25 deletions(-)
+ rdgenerator/views.py                       |   22 +-
+ 9 files changed, 2431 insertions(+), 13 deletions(-)
  create mode 100644 rdgenerator/client_settings.json
  create mode 100644 rdgenerator/templates/_other_settings.html
  create mode 100644 rdgenerator/templates/_update_link.html
@@ -2110,24 +2110,14 @@ index 0000000..754eb55
 \ No newline at end of file
 diff --git a/rdgenerator/templates/_other_settings.html b/rdgenerator/templates/_other_settings.html
 new file mode 100644
-index 0000000..1f749d7
+index 0000000..43aba21
 --- /dev/null
 +++ b/rdgenerator/templates/_other_settings.html
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,194 @@
 +<div class="rd-hint" style="margin:10px 0 12px;">
-+    Any other client option, one <code>key=value</code> per line, for example <code>enable-udp-punch=N</code>
-+    (on/off options take Y or N).<br>
-+    <b>Default settings</b> are starting values: users can still change them in the client.<br>
-+    <b>Override settings</b> are enforced: users cannot change them.<br>
 +    A line in Override settings replaces what a control above sets for the same key. A line in Default settings
 +    does too, unless that control is set to Override, because an override always wins.
 +</div>
-+<label for="{{ form.defaultManual.id_for_label }}">Default settings</label>
-+{{ form.defaultManual }}
-+<div class="rd-lint" id="rd-lint-defaultManual" aria-live="polite"></div>
-+<label for="{{ form.overrideManual.id_for_label }}">Override settings</label>
-+{{ form.overrideManual }}
-+<div class="rd-lint" id="rd-lint-overrideManual" aria-live="polite"></div>
 +<button type="button" id="rd-ref-open" class="rd-ref-open">Browse client options&hellip;</button>
 +<div class="rd-hint" id="rd-ref-summary"></div>
 +<dialog id="rd-ref-dialog" class="rd-ref" aria-labelledby="rd-ref-title">
@@ -2421,10 +2411,10 @@ index 0000000..0b99f44
 +</script>
 +{% endif %}
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 6ed4b8b..562080e 100644
+index 56f1594..5449d98 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -355,6 +355,12 @@
+@@ -548,6 +548,12 @@
              100% { opacity: 1; }
          }
  
@@ -2437,7 +2427,7 @@ index 6ed4b8b..562080e 100644
          .help-text {
              color: #ffd700;
              font-style: italic;
-@@ -497,19 +503,19 @@
+@@ -690,19 +696,19 @@
              <div class="section">
                  <h2><i class="fas fa-server"></i> Custom Server</h2>
                      <label for="{{ form.serverIP.id_for_label }}">Host:</label>
@@ -2464,21 +2454,16 @@ index 6ed4b8b..562080e 100644
              </div>
  
              <div class="section">
-@@ -632,17 +638,7 @@
-             <div class="section section--wide">
-                 <h2><i class="fas fa-cog"></i> Other</h2>
-                     <label for="{{ form.removeWallpaper.id_for_label }}">{{ form.removeWallpaper }} Remove wallpaper during incoming sessions</label><br>
--                    <a href="https://rustdesk.com/docs/en/self-host/client-configuration/advanced-settings/">Click here for a list of Default/Override settings</a>
--                    <div class="split-grid">
--                        <div>
--                            <label for="{{ form.defaultManual.id_for_label }}">Default settings</label>
--                            {{ form.defaultManual }}
--                        </div>
--                        <div>
--                            <label for="{{ form.overrideManual.id_for_label }}">Override settings</label>
--                            {{ form.overrideManual }}
--                        </div>
--                    </div>
+@@ -847,10 +853,13 @@
+                         <div class="adv-boxes">
+                             <label for="{{ form.defaultManual.id_for_label }}">Default settings</label>
+                             {{ form.defaultManual }}
++                            <div class="rd-lint" id="rd-lint-defaultManual" aria-live="polite"></div>
+                             <label for="{{ form.overrideManual.id_for_label }}">Override settings <span class="hint">(locked, highest priority)</span></label>
+                             {{ form.overrideManual }}
++                            <div class="rd-lint" id="rd-lint-overrideManual" aria-live="polite"></div>
+                         </div>
+                     </div>
 +                    {% include '_other_settings.html' %}
              </div>
          </div>
@@ -2582,7 +2567,7 @@ index 0000000..97bc1ce
 +            self.assertNotIn('enable-lan-discovery', custom[section])
 +            self.assertNotIn('allow-auto-disconnect', custom[section])
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 63e5608..8a79274 100644
+index 67d067d..aae1477 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
 @@ -1,4 +1,5 @@
@@ -2591,7 +2576,7 @@ index 63e5608..8a79274 100644
  import json
  import logging
  import os
-@@ -30,8 +31,12 @@ def site_defaults():
+@@ -31,8 +32,12 @@ def site_defaults():
      """
      values = {
          'serverIP': _settings.RDGEN_DEFAULTS.get('server', ''),
@@ -2604,7 +2589,7 @@ index 63e5608..8a79274 100644
      }
      key_file = _settings.RDGEN_DEFAULTS.get('key_file', '')
      if not values['key'] and key_file:
-@@ -96,15 +101,15 @@ def generate_custom_client(params, full_url=None):
+@@ -97,15 +102,15 @@ def generate_custom_client(params, full_url=None):
      if not server:
          server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
      if not serverPort:
@@ -2623,7 +2608,7 @@ index 63e5608..8a79274 100644
      direction = params.get('direction', 'both')
      installation = params.get('installation', 'installationY')
      settings = params.get('settings', 'settingsY')
-@@ -115,7 +120,7 @@ def generate_custom_client(params, full_url=None):
+@@ -116,7 +121,7 @@ def generate_custom_client(params, full_url=None):
      filename = params.get('exename', 'rustdesk')
      compname = params.get('compname', '')
      if not compname:
@@ -2632,7 +2617,7 @@ index 63e5608..8a79274 100644
      androidappid = params.get('androidappid', '')
      if not androidappid:
          androidappid = "com.carriez.flutter_hbb"
-@@ -422,6 +427,13 @@ def build_files(gh_run, url_name='download'):
+@@ -423,6 +428,13 @@ def build_files(gh_run, url_name='download'):
      return files
  
  
@@ -2646,14 +2631,12 @@ index 63e5608..8a79274 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -440,7 +452,9 @@ def generator_view(request):
-     else:
-         form = GenerateForm(initial=site_defaults())
-     #return render(request, 'maintenance.html')
--    return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET})
-+    return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
-+                                              'client_settings': client_settings(),
-+                                              'update_base': _settings.RDGEN_UPDATE_BASE})
+@@ -445,6 +457,8 @@ def generator_view(request):
+         'form': form,
+         'advanced_keys': ADVANCED_KEYS,
+         'publish_target': _settings.RDGEN_PUBLISH_TARGET,
++        'client_settings': client_settings(),
++        'update_base': _settings.RDGEN_UPDATE_BASE,
+     })
  
  
- def check_for_file(request):

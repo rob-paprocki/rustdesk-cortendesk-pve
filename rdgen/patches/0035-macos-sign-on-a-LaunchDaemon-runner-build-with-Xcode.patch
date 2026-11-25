@@ -1,4 +1,4 @@
-From 8234c98f6884e23d48961cdfb4d8bab3342a7644 Mon Sep 17 00:00:00 2001
+From 0add39af99b01cb9a325d9ad38bd69fd2fa5e7b8 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
 Date: Wed, 18 Nov 2026 01:23:21 +0000
 Subject: [PATCH 35/38] macos: sign on a LaunchDaemon runner, build with Xcode

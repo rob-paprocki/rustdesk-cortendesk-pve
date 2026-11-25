@@ -1,4 +1,4 @@
-From 05861d8b58cd308bbfef824c769c8650847229d8 Mon Sep 17 00:00:00 2001
+From 3ade9834d5d67dce5bb32514f08bb882c17c97b5 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
@@ -25,11 +25,11 @@ GitHub runners no longer call back into rdgen, so these are gone:
 Also dropped the unused helpers (save_png, resize_and_encode_icon) and
 the imports they needed.
 ---
- rdgen/urls.py            |  12 +--
+ rdgen/urls.py            |  12 +-
  rdgenerator/api_views.py |   2 -
  rdgenerator/forms.py     |   1 -
- rdgenerator/views.py     | 227 +++------------------------------------
- 4 files changed, 20 insertions(+), 222 deletions(-)
+ rdgenerator/views.py     | 229 +++------------------------------------
+ 4 files changed, 21 insertions(+), 223 deletions(-)
 
 diff --git a/rdgen/urls.py b/rdgen/urls.py
 index 274bbfd..e593015 100644
@@ -90,10 +90,10 @@ index d689190..886030e 100644
  from django import forms
  from PIL import Image
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index e08c5da..3801b07 100644
+index 030ea47..e36ec1b 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -1,27 +1,22 @@
+@@ -1,28 +1,23 @@
 -import io
 +import base64
 +import json
@@ -117,6 +117,7 @@ index e08c5da..3801b07 100644
  from django.conf import settings as _settings
 -from django.db.models import Q
 -from .forms import GenerateForm, HEX_COLOR_RE
+-from .advanced_keys import ADVANCED_KEYS
 -from .validation import sanitize_filename, validate_build_fields
 +from django.http import FileResponse, Http404
 +from django.shortcuts import render
@@ -124,6 +125,7 @@ index e08c5da..3801b07 100644
 +from django.utils import timezone
 +
  from . import buildcfg, github
++from .advanced_keys import ADVANCED_KEYS
 +from .forms import GenerateForm, HEX_COLOR_RE
 +from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
@@ -133,7 +135,7 @@ index e08c5da..3801b07 100644
  
  log = logging.getLogger(__name__)
  
-@@ -47,23 +42,6 @@ def site_defaults():
+@@ -48,23 +43,6 @@ def site_defaults():
              values['key'] = ''
      bad = validate_build_fields(values)
      return {k: v for k, v in values.items() if v and k not in bad}
@@ -157,7 +159,7 @@ index e08c5da..3801b07 100644
  
  
  def _norm_hex_color(value):
-@@ -333,6 +311,10 @@ def generate_custom_client(params, full_url=None):
+@@ -334,6 +312,10 @@ def generate_custom_client(params, full_url=None):
          "logolink_url":logolink_url,
          "privacylink_url":privacylink_url,
          "appname":appname,
@@ -168,7 +170,7 @@ index e08c5da..3801b07 100644
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -500,180 +482,3 @@ def serve_build_file(request):
+@@ -504,180 +486,3 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)

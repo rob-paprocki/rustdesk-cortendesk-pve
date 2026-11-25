@@ -1,3 +1,3 @@
 upstream: https://github.com/bryangerlach/rdgen
-base-commit: b821812308f97179b33305caf10f0fa8fd82881b (master, 2026-11-17, "Github Actions: Bump fjogeleit/http-request-action from 1 to 2 (#352)")
+base-commit: 5a461bea14832a64a50aac078a4b6e66221c719d (master, 2026-11-24, "testing advanced settings change")
 patches: 38 (0009 carries "Rdgen-Mechanical: pullify": regenerate with tools/pullify.py instead of applying on a newer upstream)

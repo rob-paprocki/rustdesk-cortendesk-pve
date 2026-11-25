@@ -1,4 +1,4 @@
-From 44ef82ccb69f6be9c87cadba3c28f43f0032ed2c Mon Sep 17 00:00:00 2001
+From e711ea6c513a877a6e4740635eaedb871a124f23 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
@@ -303,10 +303,10 @@ index 920ba18..40482d2 100644
  
      <script>
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 320d3eb..7d5df53 100644
+index 052a5ff..ef9bb85 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -418,8 +418,14 @@
+@@ -611,8 +611,14 @@
        </style>
  </head>
  <body>
@@ -322,7 +322,7 @@ index 320d3eb..7d5df53 100644
          <div class="save-load-section-container">
              <div class="section">
                  <h2 id="saveLoadTitle">Save/Load Configuration <i class="fas fa-chevron-down"></i></h2>  
-@@ -958,6 +964,10 @@
+@@ -1167,6 +1173,10 @@
                  if (value instanceof File) {
                      return;
                  }
@@ -333,7 +333,7 @@ index 320d3eb..7d5df53 100644
                  formData[key] = value; // Add each key/value pair to the formData object.
              });
  
-@@ -1077,6 +1087,11 @@
+@@ -1286,6 +1296,11 @@
                              carriedUnknownFields = {};
                              const skippedKeys = [];
                              for (const key in formData) {

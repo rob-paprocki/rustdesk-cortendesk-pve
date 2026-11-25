@@ -1,4 +1,4 @@
-From fd67b9ccb45a3d0f648650c0fbf7253c19ce73ae Mon Sep 17 00:00:00 2001
+From e158cb550ee32efdc994422cac66248a06d93abc Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
 Date: Wed, 18 Nov 2026 18:09:47 +0000
 Subject: [PATCH 37/38] build repo: leave upstream's Dependabot config out

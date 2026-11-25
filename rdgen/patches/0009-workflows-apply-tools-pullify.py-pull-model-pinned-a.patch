@@ -1,4 +1,4 @@
-From aa710276e877d97e5f70fb5bcbc7252a62053332 Mon Sep 17 00:00:00 2001
+From c604b9790eefab16151c16f07da5fd148672fa40 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 23:22:22 -0400
@@ -359,7 +359,7 @@ index e780e6b..239e409 100644
        - name: Decode cfg input
          shell: bash
 diff --git a/.github/workflows/generator-android.yml b/.github/workflows/generator-android.yml
-index 65997a0..aa8d735 100644
+index 5c1a1de..acda854 100644
 --- a/.github/workflows/generator-android.yml
 +++ b/.github/workflows/generator-android.yml
 @@ -1,5 +1,5 @@
@@ -604,7 +604,7 @@ index 65997a0..aa8d735 100644
              mv ./res/32x32.png ./res/32x32.png.bak
              mv ./res/64x64.png ./res/64x64.png.bak
              mv ./res/128x128.png ./res/128x128.png.bak
-@@ -512,25 +503,25 @@ jobs:
+@@ -579,25 +570,25 @@ jobs:
            sed -i -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./src/ui/index.tis
  
        - name: allow custom.txt
@@ -635,7 +635,7 @@ index 65997a0..aa8d735 100644
            python themeColors.py
  
        - name: Remove scam alert on Android
-@@ -555,19 +546,19 @@ jobs:
+@@ -622,19 +613,19 @@ jobs:
  
        - name: use X for offline display instead of orange circle
          if: env.xOffline == 'true'
@@ -658,7 +658,7 @@ index 65997a0..aa8d735 100644
          with:
            timeout_minutes: 5
            max_attempts: 3
-@@ -575,7 +566,7 @@ jobs:
+@@ -642,7 +633,7 @@ jobs:
            shell: bash
            continue_on_error: true
            command: |
@@ -667,7 +667,7 @@ index 65997a0..aa8d735 100644
              git apply hidecm.diff
  
        - name: removeNewVersionNotif
-@@ -626,8 +617,9 @@ jobs:
+@@ -693,8 +684,9 @@ jobs:
            esac
  
        - name: Upload Rustdesk library to Artifacts
@@ -678,16 +678,16 @@ index 65997a0..aa8d735 100644
            name: librustdesk.so.${{ matrix.job.target }}
            path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
  
-@@ -701,7 +693,7 @@ jobs:
-           mv ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk ./${{ env.filename }}-${{ matrix.job.arch }}.apk
-           popd
-       
+@@ -801,7 +793,7 @@ jobs:
+           echo "sign_enabled=true" >> "$GITHUB_OUTPUT"
+           echo "Android signing key found; alias=$KS_ALIAS"
+ 
 -      - uses: r0adkll/sign-android-release@v1
 +      - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
          name: Sign app APK
-         continue-on-error: true
-         if: env.ANDROID_SIGNING_KEY != null
-@@ -735,36 +727,25 @@ jobs:
+         if: steps.signcheck.outputs.sign_enabled == 'true'
+         id: sign-rustdesk
+@@ -846,36 +838,25 @@ jobs:
            fi
            ls -l ./signed-apk/
  
@@ -734,7 +734,7 @@ index 65997a0..aa8d735 100644
          with:
            name: encrypted-secrets-zip
  
-@@ -773,27 +754,7 @@ jobs:
+@@ -884,27 +865,7 @@ jobs:
          with:
            zip_password: ${{ secrets.ZIP_PASSWORD }}
  
@@ -763,7 +763,7 @@ index 65997a0..aa8d735 100644
          continue-on-error: true
          with:
              name: ${{ env.filename }}-*.deb
-@@ -805,6 +766,6 @@ jobs:
+@@ -916,6 +877,6 @@ jobs:
      if: always()
      steps:
        - name: Delete secrets artifact

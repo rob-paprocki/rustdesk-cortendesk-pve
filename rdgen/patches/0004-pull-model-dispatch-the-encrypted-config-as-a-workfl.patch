@@ -1,4 +1,4 @@
-From a46957c43e338ad9ecc74dfb6bbe90be81d860dd Mon Sep 17 00:00:00 2001
+From a6c6689101ec7d5c25815d69362d30377cbc8a29 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
@@ -535,13 +535,13 @@ index 2c64e3a..a4d8e7e 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index b7ac2b2..1e89462 100644
+index 0c63738..4be43dc 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -15,7 +15,35 @@ import pyzipper
- from django.conf import settings as _settings
+@@ -16,7 +16,35 @@ from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm, HEX_COLOR_RE
+ from .advanced_keys import ADVANCED_KEYS
 -from .validation import sanitize_filename
 +from .validation import sanitize_filename, validate_build_fields
 +from . import buildcfg, github
@@ -575,7 +575,7 @@ index b7ac2b2..1e89462 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -48,31 +76,19 @@ def _norm_hex_color(value):
+@@ -49,31 +77,19 @@ def _norm_hex_color(value):
      return '#' + value.lstrip('#').upper()
  
  
@@ -610,7 +610,7 @@ index b7ac2b2..1e89462 100644
      platform = params.get('platform', 'windows')
      version = params.get('version', '1.5.3')
      app_version = params.get('app_version', '')
-@@ -95,14 +111,15 @@ def generate_custom_client(params, full_url):
+@@ -96,14 +112,15 @@ def generate_custom_client(params, full_url):
      apiServer = params.get('apiServer', '')
      urlLink = params.get('urlLink', '')
      downloadLink = params.get('downloadLink', '')
@@ -629,7 +629,7 @@ index b7ac2b2..1e89462 100644
      if not urlLink:
          urlLink = "https://rustdesk.com"
      if not downloadLink:
-@@ -160,36 +177,22 @@ def generate_custom_client(params, full_url):
+@@ -161,36 +178,22 @@ def generate_custom_client(params, full_url):
          appname = "rustdesk"
      myuuid = str(uuid.uuid4())
  
@@ -681,7 +681,7 @@ index b7ac2b2..1e89462 100644
  
      ###create the custom.txt json here and send in as inputs below
      decodedCustom = {}
-@@ -316,24 +319,6 @@ def generate_custom_client(params, full_url):
+@@ -317,24 +320,6 @@ def generate_custom_client(params, full_url):
      base64_bytes = base64.b64encode(string_bytes)
      encodedCustom = base64_bytes.decode("ascii")
  
@@ -706,7 +706,7 @@ index b7ac2b2..1e89462 100644
      inputs_raw = {
          "server":server,
          "serverPort":serverPort,
-@@ -342,20 +327,9 @@ def generate_custom_client(params, full_url):
+@@ -343,20 +328,9 @@ def generate_custom_client(params, full_url):
          "custom":encodedCustom,
          "uuid":myuuid,
          "iconlink_url":iconlink_url,
@@ -727,7 +727,7 @@ index b7ac2b2..1e89462 100644
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -368,74 +342,57 @@ def generate_custom_client(params, full_url):
+@@ -369,74 +343,57 @@ def generate_custom_client(params, full_url):
          "filename":filename
      }
  
@@ -847,7 +847,7 @@ index b7ac2b2..1e89462 100644
  
  
  def _get_run_status(uuid_val):
-@@ -487,8 +444,7 @@ def generator_view(request):
+@@ -488,8 +445,7 @@ def generator_view(request):
          form = GenerateForm(request.POST, request.FILES)
          if form.is_valid():
              params = form.cleaned_data
@@ -857,7 +857,7 @@ index b7ac2b2..1e89462 100644
              if result['success']:
                  return render(request, 'waiting.html', {
                      'filename': result['filename'],
-@@ -497,10 +453,9 @@ def generator_view(request):
+@@ -498,10 +454,9 @@ def generator_view(request):
                      'platform': result['platform'],
                      'log_url': result['log_url']
                  })
@@ -868,5 +868,5 @@ index b7ac2b2..1e89462 100644
 -        form = GenerateForm()
 +        form = GenerateForm(initial=site_defaults())
      #return render(request, 'maintenance.html')
-     return render(request, 'generator.html', {'form': form})
- 
+     return render(request, 'generator.html', {
+         'form': form,

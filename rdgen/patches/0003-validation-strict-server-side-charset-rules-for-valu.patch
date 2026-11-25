@@ -1,4 +1,4 @@
-From 61d1f896e31f9c176507a278f05ea1c1d48435bd Mon Sep 17 00:00:00 2001
+From e327a1bf4a1f7fcd8d51d7e56323cd39438a12e1 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
@@ -211,10 +211,10 @@ index 08f0fcf..068bda3 100644
 +                self.add_error(field, message)
 +        return cleaned
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 7d5df53..46ced7b 100644
+index ef9bb85..ce30d0d 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -436,10 +436,12 @@
+@@ -629,10 +629,12 @@
                  </div>
              </div>
          </div>
@@ -329,18 +329,18 @@ index 0000000..2c64e3a
 +            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
 +    return errors
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index f799ba4..b7ac2b2 100644
+index 54139d6..0c63738 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -15,6 +15,7 @@ import pyzipper
- from django.conf import settings as _settings
+@@ -16,6 +16,7 @@ from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm, HEX_COLOR_RE
+ from .advanced_keys import ADVANCED_KEYS
 +from .validation import sanitize_filename
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -150,11 +151,7 @@ def generate_custom_client(params, full_url):
+@@ -151,11 +152,7 @@ def generate_custom_client(params, full_url):
      enableCamera = params.get('enableCamera', True)
      enableTerminal = params.get('enableTerminal', True)
  

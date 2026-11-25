@@ -1,4 +1,4 @@
-From 0236ae1a6273a0d975e191effa810a64a9ce2eb7 Mon Sep 17 00:00:00 2001
+From c8e8b78f5332f0f9defdc9cd03040beba6c93ef2 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
@@ -36,8 +36,8 @@ and the pending list reports such builds as hidden.
  rdgenerator/templates/generated.html          |   1 +
  rdgenerator/templates/generator.html          |   1 +
  rdgenerator/tests/test_publish.py             | 130 ++++++++++++++++++
- rdgenerator/views.py                          |  17 ++-
- 15 files changed, 386 insertions(+), 3 deletions(-)
+ rdgenerator/views.py                          |  16 ++-
+ 15 files changed, 386 insertions(+), 2 deletions(-)
  create mode 100644 rdgenerator/management/commands/rdgen_publish.py
  create mode 100644 rdgenerator/migrations/0004_publish.py
  create mode 100644 rdgenerator/templates/_publish_field.html
@@ -428,10 +428,10 @@ index 2afcd43..cc6b6fd 100644
      </div>
  
 diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
-index 46ced7b..6ed4b8b 100644
+index ce30d0d..56f1594 100644
 --- a/rdgenerator/templates/generator.html
 +++ b/rdgenerator/templates/generator.html
-@@ -474,6 +474,7 @@
+@@ -667,6 +667,7 @@
                  {% endif %}
                  <div class="help-text">{{ form.version.help_text }}</div>
                  <label for="{{ form.delayFix.id_for_label }}">{{ form.delayFix }} Fix connection delay when using third-party API</label>
@@ -576,19 +576,19 @@ index 0000000..ad732a6
 +        from django.contrib.auth import get_user_model
 +        return get_user_model().objects.create_user('tester', password='x' * 16)
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 3801b07..63e5608 100644
+index e36ec1b..67d067d 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -13,7 +13,7 @@ from django.urls import reverse
- from django.utils import timezone
+@@ -14,7 +14,7 @@ from django.utils import timezone
  
  from . import buildcfg, github
+ from .advanced_keys import ADVANCED_KEYS
 -from .forms import GenerateForm, HEX_COLOR_RE
 +from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
  from .models import GithubRun
  from .poller import allowed_output_name, valid_uuid
  from .validation import sanitize_filename, validate_build_fields
-@@ -156,6 +156,12 @@ def generate_custom_client(params, full_url=None):
+@@ -157,6 +157,12 @@ def generate_custom_client(params, full_url=None):
      # workflow's directory rename stay in sync.
      if appname.lower() == "rustdesk":
          appname = "rustdesk"
@@ -601,7 +601,7 @@ index 3801b07..63e5608 100644
      myuuid = str(uuid.uuid4())
  
      # Images travel inside the encrypted cfg input (pull model): no /get_png
-@@ -355,6 +361,9 @@ def generate_custom_client(params, full_url=None):
+@@ -356,6 +362,9 @@ def generate_custom_client(params, full_url=None):
          platform=platform,
          filename=filename,
          version=version,
@@ -611,16 +611,15 @@ index 3801b07..63e5608 100644
      )
      try:
          run_id, html_url = github.GitHub().dispatch(platform, inputs)
-@@ -431,7 +440,7 @@ def generator_view(request):
-     else:
-         form = GenerateForm(initial=site_defaults())
-     #return render(request, 'maintenance.html')
--    return render(request, 'generator.html', {'form': form})
-+    return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET})
+@@ -435,6 +444,7 @@ def generator_view(request):
+     return render(request, 'generator.html', {
+         'form': form,
+         'advanced_keys': ADVANCED_KEYS,
++        'publish_target': _settings.RDGEN_PUBLISH_TARGET,
+     })
  
  
- def check_for_file(request):
-@@ -447,6 +456,10 @@ def check_for_file(request):
+@@ -451,6 +461,10 @@ def check_for_file(request):
          'log_url': result['github_log_url'],
          'files': build_files(gh_run),
          'last_error': gh_run.last_error,

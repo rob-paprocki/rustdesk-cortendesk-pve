@@ -1,4 +1,4 @@
-From effab1939972fbdb2bada39bb800a088a0039111 Mon Sep 17 00:00:00 2001
+From fa314392c1ead4a05043ced47c85123c4c837c35 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
 Date: Wed, 18 Nov 2026 15:02:21 +0000
 Subject: [PATCH 36/38] windows: build the MSI on a machine that cannot start

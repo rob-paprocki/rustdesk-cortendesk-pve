@@ -1,4 +1,4 @@
-From 8721523ab0b179d39fe7a6ad53f61ca2746376d4 Mon Sep 17 00:00:00 2001
+From 21dc45613caf9fcd3f7b5e55b3e6ffb504f89241 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 23:35:10 -0400
@@ -223,10 +223,10 @@ index a8ebaad..ac55054 100644
      def test_invalid_site_default_is_dropped(self):
          with override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS, port='21116; rm -rf /')):
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 57705ff..90a9b84 100644
+index 30be2d0..2032669 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -86,6 +86,9 @@ def generate_custom_client(params, full_url=None):
+@@ -87,6 +87,9 @@ def generate_custom_client(params, full_url=None):
      # app_version overrides the version string embedded in the built client
      # without changing the git tag that version selects. If left empty, the
      # RustDesk build's own version (from the checked-out tag) is used.
@@ -236,7 +236,7 @@ index 57705ff..90a9b84 100644
      delayFix = params.get('delayFix', True)
      xOffline = params.get('xOffline', False)
      hidecm = params.get('hidecm', False)
-@@ -364,6 +367,9 @@ def generate_custom_client(params, full_url=None):
+@@ -365,6 +368,9 @@ def generate_custom_client(params, full_url=None):
              # validated by validation.py (digits and dots only): the
              # workflows paste this input into a sed command
              result["app_version"] = app_version

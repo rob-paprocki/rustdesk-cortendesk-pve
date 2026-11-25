@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-25
+
+**Upgrading:** nothing to do.
+
+### Changed
+- The rdgen patches now apply to upstream rdgen commit `5a461bea1483`.
+
 ## [0.2.0] - 2026-11-25
 **Upgrading:** run `tools/refresh-ct.sh <ctid>` on the Proxmox host to get the new patch-source messages. The build repository's new README, CHANGELOG and NOTICE arrive with the next rdgen update. If a Mac of your own signs builds, add Apple's Developer ID G2 intermediate to its System keychain once; SETUP-PULL.md in the build repository has the command. If you added a public name for rdgen to `/etc/rdgen/rdgen.env` by hand, the refresh keeps it when `CSRF_TRUSTED_ORIGINS` is set to that name; otherwise run `rdgen-setup --public-url https://<name>` once. The refresh also gives the console's WebSocket bridge the proxies from `TRUSTED_PROXIES`, so it sees real client addresses.
 

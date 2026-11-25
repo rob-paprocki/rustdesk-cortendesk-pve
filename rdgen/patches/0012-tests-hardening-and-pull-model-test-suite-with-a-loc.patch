@@ -1,4 +1,4 @@
-From d6f4e6f8af5ec724f2ee03e75e633bb31f9154b5 Mon Sep 17 00:00:00 2001
+From 91e96432a3a73a20574a0d4bc881f5afd097afb8 Mon Sep 17 00:00:00 2001
 From: rustdesk-cortendesk-pve release
  <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 01:11:23 -0400
@@ -42,17 +42,19 @@ rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with
   rejection of a replayed cfg, a protocol mismatch, an injection and a
   flag/image mismatch).
 ---
- rdgenerator/tests.py                | 136 -----------
- rdgenerator/tests/__init__.py       |   0
- rdgenerator/tests/ghstub.py         | 360 ++++++++++++++++++++++++++++
- rdgenerator/tests/test_bootstrap.py | 178 ++++++++++++++
- rdgenerator/tests/test_pull.py      | 239 ++++++++++++++++++
- rdgenerator/tests/test_security.py  | 197 +++++++++++++++
- rdgenerator/tests/test_workflows.py | 356 +++++++++++++++++++++++++++
- 7 files changed, 1330 insertions(+), 136 deletions(-)
+ rdgenerator/tests.py                    | 153 ----------
+ rdgenerator/tests/__init__.py           |   0
+ rdgenerator/tests/ghstub.py             | 360 ++++++++++++++++++++++++
+ rdgenerator/tests/test_advanced_keys.py |  19 ++
+ rdgenerator/tests/test_bootstrap.py     | 178 ++++++++++++
+ rdgenerator/tests/test_pull.py          | 239 ++++++++++++++++
+ rdgenerator/tests/test_security.py      | 197 +++++++++++++
+ rdgenerator/tests/test_workflows.py     | 356 +++++++++++++++++++++++
+ 8 files changed, 1349 insertions(+), 153 deletions(-)
  delete mode 100644 rdgenerator/tests.py
  create mode 100644 rdgenerator/tests/__init__.py
  create mode 100644 rdgenerator/tests/ghstub.py
+ create mode 100644 rdgenerator/tests/test_advanced_keys.py
  create mode 100644 rdgenerator/tests/test_bootstrap.py
  create mode 100644 rdgenerator/tests/test_pull.py
  create mode 100644 rdgenerator/tests/test_security.py
@@ -60,10 +62,10 @@ rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with
 
 diff --git a/rdgenerator/tests.py b/rdgenerator/tests.py
 deleted file mode 100644
-index 486e8fc..0000000
+index 3bd5d56..0000000
 --- a/rdgenerator/tests.py
 +++ /dev/null
-@@ -1,136 +0,0 @@
+@@ -1,153 +0,0 @@
 -import base64
 -import json
 -import os
@@ -75,6 +77,7 @@ index 486e8fc..0000000
 -from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 -
 -from .api_views import validate_generate_params
+-from .advanced_keys import ADVANCED_KEYS
 -from .forms import GenerateForm
 -from .views import get_full_url, _norm_hex_color
 -
@@ -200,6 +203,22 @@ index 486e8fc..0000000
 -            secrets = json.loads(zf.read('secrets.json'))
 -        custom = json.loads(base64.b64decode(secrets['custom']))
 -        self.assertEqual(custom['override-settings']['hide-powered-by-me'], 'Y')
+-
+-
+-class AdvancedKeysCatalogTests(SimpleTestCase):
+-    def test_catalog_entries_are_complete_and_unique(self):
+-        keys = [item['key'] for item in ADVANCED_KEYS]
+-        self.assertEqual(len(keys), len(set(keys)), 'duplicate advanced settings key')
+-        for item in ADVANCED_KEYS:
+-            for field in ('group', 'key', 'values', 'default', 'sample', 'hint'):
+-                self.assertIn(field, item, f'{item.get("key", "?")} is missing {field}')
+-            self.assertNotIn('=', item['key'], 'key must be a bare option name')
+-
+-    def test_owned_sections_match_the_form(self):
+-        sections = {'General', 'Security', 'Permissions', 'Visual', 'Other'}
+-        for item in ADVANCED_KEYS:
+-            if item.get('owned'):
+-                self.assertIn(item['owned'], sections, item['key'])
 diff --git a/rdgenerator/tests/__init__.py b/rdgenerator/tests/__init__.py
 new file mode 100644
 index 0000000..e69de29
@@ -569,6 +588,31 @@ index 0000000..501026e
 +            fh.write(stub.api_url)
 +    while True:
 +        time.sleep(3600)
+diff --git a/rdgenerator/tests/test_advanced_keys.py b/rdgenerator/tests/test_advanced_keys.py
+new file mode 100644
+index 0000000..293b8c9
+--- /dev/null
++++ b/rdgenerator/tests/test_advanced_keys.py
+@@ -0,0 +1,19 @@
++from django.test import SimpleTestCase
++
++from rdgenerator.advanced_keys import ADVANCED_KEYS
++
++
++class AdvancedKeysCatalogTests(SimpleTestCase):
++    def test_catalog_entries_are_complete_and_unique(self):
++        keys = [item['key'] for item in ADVANCED_KEYS]
++        self.assertEqual(len(keys), len(set(keys)), 'duplicate advanced settings key')
++        for item in ADVANCED_KEYS:
++            for field in ('group', 'key', 'values', 'default', 'sample', 'hint'):
++                self.assertIn(field, item, f'{item.get("key", "?")} is missing {field}')
++            self.assertNotIn('=', item['key'], 'key must be a bare option name')
++
++    def test_owned_sections_match_the_form(self):
++        sections = {'General', 'Security', 'Permissions', 'Visual', 'Other'}
++        for item in ADVANCED_KEYS:
++            if item.get('owned'):
++                self.assertIn(item['owned'], sections, item['key'])
 diff --git a/rdgenerator/tests/test_bootstrap.py b/rdgenerator/tests/test_bootstrap.py
 new file mode 100644
 index 0000000..c8d4c9b
