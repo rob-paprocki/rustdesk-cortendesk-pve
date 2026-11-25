@@ -4,7 +4,8 @@
 # into the CT, then rebuilds rdgen from them if it is installed and pushes that to the build repo when an install
 # token is stored (rdgen-setup --push). Data, the console, logins, keys and tokens stay.
 # Settings written only at install time (nginx, PHP, env files) are not changed, apart from what newer versions add:
-# the console's links for rdgen clients (/clients/, /share/) and the relay for CortenDesk's own alerts.
+# the console's links for rdgen clients (/clients/, /share/), the relay for CortenDesk's own alerts and real client
+# addresses on the WebSocket bridge.
 # Run on the Proxmox host as root, from anywhere: bash /path/to/rustdesk-cortendesk-pve/tools/refresh-ct.sh 103
 set -euo pipefail
 id=${1:?usage: refresh-ct.sh <ctid>}
@@ -27,6 +28,16 @@ pct exec "$id" -- sh -c 'site=/etc/nginx/http.d/cortendesk.conf; [ -f "$site" ] 
   awk "{ print } /^ *index index.php;\$/ { print \"    include /etc/nginx/rustdesk-clients.conf;   # self-update links for rdgen clients\" }" \
     /root/cortendesk-nginx.bak >"$site"
   if ! nginx -t -q; then cp /root/cortendesk-nginx.bak "$site"; echo "!! nginx rejected the change; left as it was" >&2; exit 1; fi'
+echo "==> nginx: real client addresses on the WebSocket bridge (/ws/id, /ws/relay)"
+# installs from before the include: write the trusted proxies, then include them in both WebSocket locations
+pct exec "$id" -- bash -c '. /usr/local/lib/rustdesk-cortendesk/common.sh; site=/etc/nginx/http.d/cortendesk.conf
+  [ -f "$site" ] || site=/etc/nginx/sites-available/cortendesk
+  ws_realip_conf || exit 1
+  grep -q rustdesk-ws-realip.conf "$site" && exit 0
+  cp "$site" /root/cortendesk-nginx-ws.bak
+  awk "{ print } /^ *location = \/ws\/(id|relay) \{\$/ { print \"        include /etc/nginx/rustdesk-ws-realip.conf;\" }" \
+    /root/cortendesk-nginx-ws.bak >"$site"
+  if ! nginx -t -q; then cp /root/cortendesk-nginx-ws.bak "$site"; echo "!! nginx rejected the change; left as it was" >&2; exit 1; fi'
 pct exec "$id" -- sh -c 'nginx -t -q || { echo "!! nginx rejects the new snippets; nothing reloaded" >&2; exit 1; }
   if command -v systemctl >/dev/null; then systemctl reload nginx; systemctl restart php8.4-fpm
   else rc-service --quiet nginx reload; rc-service --quiet php-fpm84 restart; fi'   # opcache: re-read the PHP scripts

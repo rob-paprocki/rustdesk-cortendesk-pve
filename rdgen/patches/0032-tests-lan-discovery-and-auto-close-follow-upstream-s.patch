@@ -1,7 +1,8 @@
-From c20f303cd67ec863da7d33b2837a353905925410 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 930d1a342a71486db802c8eecc7a68b323c328df Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Fri, 13 Nov 2026 09:49:34 +0000
-Subject: [PATCH 32/33] tests: lan discovery and auto close follow upstream's
+Subject: [PATCH 32/38] tests: lan discovery and auto close follow upstream's
  override-settings
 
 ---
@@ -9,7 +10,7 @@ Subject: [PATCH 32/33] tests: lan discovery and auto close follow upstream's
  1 file changed, 9 insertions(+), 8 deletions(-)
 
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index c82b5f0..dccd539 100644
+index 683c708..694be7f 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -127,18 +127,19 @@ class LanAndAutoCloseTests(StubTestCase):

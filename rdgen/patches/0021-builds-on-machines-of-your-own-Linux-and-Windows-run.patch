@@ -1,7 +1,8 @@
-From 9ff580550117d7c27e6f64fb7a046dab58b7b752 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From f100fe3c6899c5353c924182aec6f32e2592be7b Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Fri, 2 Oct 2026 00:16:06 -0400
-Subject: [PATCH 21/33] builds on machines of your own: Linux and Windows
+Subject: [PATCH 21/38] builds on machines of your own: Linux and Windows
  runners, Linux choices
 
 Self-hosted runners cost no Actions minutes. The workflow side
@@ -21,7 +22,6 @@ linuxArch and linuxFormats.
 
 SETUP-PULL.md: the runner variables, what a Linux and a Windows runner
 need, and the costs per platform.
-
 ---
  SETUP-PULL.md                          | 23 +++++++++++++++++++++--
  rdgenerator/api_views.py               |  3 +++
@@ -101,10 +101,10 @@ index 45bf24f..57a3f1e 100644
      for field, (choices, default) in choice_validations.items():
          value = data.get(field, default)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 0b3fe75..e8e5902 100644
+index fd0fe55..8cc0ac5 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -16,6 +16,11 @@ class GenerateForm(forms.Form):
+@@ -21,6 +21,11 @@ class GenerateForm(forms.Form):
      # which Mac jobs run (workflow input mac_arch); sent only for macOS builds, and only when it is not 'both'
      macArch = forms.ChoiceField(choices=[('both', 'Intel and Apple Silicon'), ('x86_64', 'Intel only'),
                                           ('aarch64', 'Apple Silicon only')], initial='both', required=False)
@@ -195,7 +195,7 @@ index b9320f3..1066c50 100644
          r = self.generate(serverIP='rd.example.com', key='OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=',
                            permanentPassword='hunter2-long', iconbase64=png_uri((512, 512)),
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index ecb02b1..7beb1e9 100644
+index ac55054..a94aa5b 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -51,6 +51,9 @@ class FormPageTests(TestCase):

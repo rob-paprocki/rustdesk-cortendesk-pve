@@ -31,4 +31,9 @@
 0031-tests-follow-upstream-s-move-of-the-Apple-Silicon-ru.patch
 0032-tests-lan-discovery-and-auto-close-follow-upstream-s.patch
 0033-theme-colors-validate-the-new-build-config-keys-on-b.patch
+0034-docs-a-README-CHANGELOG-and-NOTICE-for-the-build-rep.patch
+0035-macos-sign-on-a-LaunchDaemon-runner-build-with-Xcode.patch
+0036-windows-build-the-MSI-on-a-machine-that-cannot-start.patch
+0037-build-repo-leave-upstream-s-Dependabot-config-out.patch
+0038-websocket-WebSocket-builds-get-wss-the-site-s-WebSoc.patch
 UPSTREAM

@@ -1,7 +1,8 @@
-From 61e7624ca1554d1fa230326f1e84864386e81ed3 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 62c3dfd1ee319125483d836a7b1e8d544d7ccacf Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:47:49 -0400
-Subject: [PATCH 05/33] pull model: poller downloads and deletes artifacts;
+Subject: [PATCH 05/38] pull model: poller downloads and deletes artifacts;
  status and downloads from the DB
 
 New `manage.py rdgen_poll` (run as a supervised service) and
@@ -52,7 +53,6 @@ were built before the failure, plus the poller's error.
 /api/status adds ready, finished, error and files[{name,size,sha256,url}].
 New /api/download (token or session) lets a console integration fetch
 builds.
-
 ---
  rdgen/urls.py                                 |   1 +
  rdgenerator/api_views.py                      |  48 +--
@@ -63,8 +63,8 @@ builds.
  rdgenerator/templates/failure.html            |  34 +-
  rdgenerator/templates/generated.html          |  21 +-
  rdgenerator/templates/waiting.html            |   6 +-
- rdgenerator/views.py                          | 195 ++++------
- 10 files changed, 547 insertions(+), 206 deletions(-)
+ rdgenerator/views.py                          | 194 ++++-----
+ 10 files changed, 547 insertions(+), 205 deletions(-)
  create mode 100644 rdgenerator/management/commands/rdgen_poll.py
  create mode 100644 rdgenerator/management/commands/rdgen_prune.py
  create mode 100644 rdgenerator/poller.py
@@ -750,11 +750,12 @@ index 726451a..eb1f801 100644
      </script>
  </body>
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index ebece84..63b0442 100644
+index 1e89462..e08c5da 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -1,6 +1,8 @@
+@@ -1,7 +1,9 @@
  import io
+ import logging
  from pathlib import Path
 -from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
 +from django.http import FileResponse, Http404, HttpResponse, JsonResponse, HttpResponseForbidden
@@ -763,7 +764,7 @@ index ebece84..63b0442 100644
  from django.shortcuts import render, get_object_or_404
  from django.core.files.base import ContentFile
  import os
-@@ -16,6 +18,7 @@ from django.db.models import Q
+@@ -17,6 +19,7 @@ from django.db.models import Q
  from .forms import GenerateForm, HEX_COLOR_RE
  from .validation import sanitize_filename, validate_build_fields
  from . import buildcfg, github
@@ -771,7 +772,7 @@ index ebece84..63b0442 100644
  from django.utils import timezone
  import logging
  
-@@ -394,48 +397,37 @@ def generate_custom_client(params, full_url=None):
+@@ -397,48 +400,37 @@ def generate_custom_client(params, full_url=None):
  
  def _get_run_status(uuid_val):
      """
@@ -815,7 +816,7 @@ index ebece84..63b0442 100644
 -                    gh_run.status = gh_data['conclusion']
 -                    gh_run.save()
 -        except Exception as e:
--            print(f"Error checking GitHub: {e}")
+-            logger.warning(f"Error checking GitHub: {e}")
 -
      return {
          "found": True,
@@ -842,7 +843,7 @@ index ebece84..63b0442 100644
  def generator_view(request):
      if request.method == 'POST':
          form = GenerateForm(request.POST, request.FILES)
-@@ -457,106 +449,55 @@ def generator_view(request):
+@@ -460,105 +452,55 @@ def generator_view(request):
      return render(request, 'generator.html', {'form': form})
  
  
@@ -862,7 +863,6 @@ index ebece84..63b0442 100644
 -            f"{filename}-aarch64.deb",
 -            f"{filename}-aarch64.rpm",
 -            f"{filename}-suse-aarch64.rpm",
--            f"{filename}-aarch64.pkg.tar.zst",
 -            f"{filename}-x86_64.AppImage",
 -            f"{filename}-aarch64.AppImage",
 -            f"{filename}-x86_64.flatpak",

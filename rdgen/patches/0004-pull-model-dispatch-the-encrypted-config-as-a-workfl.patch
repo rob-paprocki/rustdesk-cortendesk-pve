@@ -1,7 +1,8 @@
-From 5cc25fe425058690a40d948c1a63157fe65eb267 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From a46957c43e338ad9ecc74dfb6bbe90be81d860dd Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:44:13 -0400
-Subject: [PATCH 04/33] pull model: dispatch the encrypted config as a workflow
+Subject: [PATCH 04/38] pull model: dispatch the encrypted config as a workflow
  input
 
 Upstream wrote the config to temp_zips/, gave GitHub a URL pointing back
@@ -43,7 +44,6 @@ be reachable from the internet. This commit keeps everything outbound:
   last_error, poll_failures (migration 0003).
 - Dispatch failures are shown on the form or returned as JSON (502/503)
   instead of a bare JsonResponse page. Oversized API bodies get 413 JSON.
-
 ---
  rdgen/settings.py                         |  19 +-
  rdgenerator/api_views.py                  |  16 +-
@@ -60,7 +60,7 @@ be reachable from the internet. This commit keeps everything outbound:
  create mode 100644 rdgenerator/migrations/0003_pull_model.py
 
 diff --git a/rdgen/settings.py b/rdgen/settings.py
-index f7c3100..4e90663 100644
+index b799062..832fe05 100644
 --- a/rdgen/settings.py
 +++ b/rdgen/settings.py
 @@ -116,10 +116,20 @@ if not re.match(r'^(https://|http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(/|$)
@@ -292,10 +292,10 @@ index 0000000..75a5fe8
 +        'Use simpler PNGs (flat colours, no photos), drop the privacy image, '
 +        'or shorten the default/override settings.')
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index f146702..74d5434 100644
+index 068bda3..d689190 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -13,7 +13,6 @@ MAX_PNG_BYTES = 4 * 1024 * 1024
+@@ -16,7 +16,6 @@ MAX_PNG_BYTES = 4 * 1024 * 1024
  HEX_COLOR_RE = re.compile(r'^#?[0-9A-Fa-f]{6}$')
  
  class GenerateForm(forms.Form):
@@ -535,10 +535,10 @@ index 2c64e3a..a4d8e7e 100644
                       'a Java package name such as com.example.remote'),
  }
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 6e0d7c4..ebece84 100644
+index b7ac2b2..1e89462 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -14,7 +14,35 @@ import pyzipper
+@@ -15,7 +15,35 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm, HEX_COLOR_RE
@@ -575,7 +575,7 @@ index 6e0d7c4..ebece84 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -45,31 +73,19 @@ def _norm_hex_color(value):
+@@ -48,31 +76,19 @@ def _norm_hex_color(value):
      return '#' + value.lstrip('#').upper()
  
  
@@ -610,7 +610,7 @@ index 6e0d7c4..ebece84 100644
      platform = params.get('platform', 'windows')
      version = params.get('version', '1.5.3')
      app_version = params.get('app_version', '')
-@@ -92,14 +108,15 @@ def generate_custom_client(params, full_url):
+@@ -95,14 +111,15 @@ def generate_custom_client(params, full_url):
      apiServer = params.get('apiServer', '')
      urlLink = params.get('urlLink', '')
      downloadLink = params.get('downloadLink', '')
@@ -629,7 +629,7 @@ index 6e0d7c4..ebece84 100644
      if not urlLink:
          urlLink = "https://rustdesk.com"
      if not downloadLink:
-@@ -157,36 +174,22 @@ def generate_custom_client(params, full_url):
+@@ -160,36 +177,22 @@ def generate_custom_client(params, full_url):
          appname = "rustdesk"
      myuuid = str(uuid.uuid4())
  
@@ -642,7 +642,7 @@ index 6e0d7c4..ebece84 100644
 -            iconfile = params.get('iconbase64')
 -        iconlink_url, iconlink_uuid, iconlink_file = save_png(iconfile,myuuid,full_url,"icon.png")
 -    except:
--        print("failed to get icon, using default")
+-        logger.info("failed to get icon, using default")
 -        iconlink_url = "false"
 -        iconlink_uuid = "false"
 -        iconlink_file = "false"
@@ -652,7 +652,7 @@ index 6e0d7c4..ebece84 100644
 -            logofile = params.get('logobase64')
 -        logolink_url, logolink_uuid, logolink_file = save_png(logofile,myuuid,full_url,"logo.png")
 -    except:
--        print("failed to get logo")
+-        logger.info("failed to get logo")
 -        logolink_url = "false"
 -        logolink_uuid = "false"
 -        logolink_file = "false"
@@ -662,7 +662,7 @@ index 6e0d7c4..ebece84 100644
 -            privacyfile = params.get('privacybase64')
 -        privacylink_url, privacylink_uuid, privacylink_file = save_png(privacyfile,myuuid,full_url,"privacy.png")
 -    except:
--        print("failed to get logo")
+-        logger.info("failed to get privacy screen")
 -        privacylink_url = "false"
 -        privacylink_uuid = "false"
 -        privacylink_file = "false"
@@ -681,7 +681,7 @@ index 6e0d7c4..ebece84 100644
  
      ###create the custom.txt json here and send in as inputs below
      decodedCustom = {}
-@@ -313,24 +316,6 @@ def generate_custom_client(params, full_url):
+@@ -316,24 +319,6 @@ def generate_custom_client(params, full_url):
      base64_bytes = base64.b64encode(string_bytes)
      encodedCustom = base64_bytes.decode("ascii")
  
@@ -706,7 +706,7 @@ index 6e0d7c4..ebece84 100644
      inputs_raw = {
          "server":server,
          "serverPort":serverPort,
-@@ -339,20 +324,9 @@ def generate_custom_client(params, full_url):
+@@ -342,20 +327,9 @@ def generate_custom_client(params, full_url):
          "custom":encodedCustom,
          "uuid":myuuid,
          "iconlink_url":iconlink_url,
@@ -727,7 +727,7 @@ index 6e0d7c4..ebece84 100644
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -365,74 +339,57 @@ def generate_custom_client(params, full_url):
+@@ -368,74 +342,57 @@ def generate_custom_client(params, full_url):
          "filename":filename
      }
  
@@ -738,14 +738,14 @@ index 6e0d7c4..ebece84 100644
 -
 -    with open(temp_json_path, "w") as f:
 -        json.dump(inputs_raw, f)
--
--    with pyzipper.AESZipFile(zip_path, 'w', compression=pyzipper.ZIP_LZMA, encryption=pyzipper.WZ_AES) as zf:
--        zf.setpassword(_settings.ZIP_PASSWORD.encode())
--        zf.write(temp_json_path, arcname="secrets.json")
 +    if not github.configured():
 +        return {"success": False, "status_code": 503,
 +                "error": "The GitHub build repository is not configured (GHUSER/REPONAME/GHBEARER)."}
  
+-    with pyzipper.AESZipFile(zip_path, 'w', compression=pyzipper.ZIP_LZMA, encryption=pyzipper.WZ_AES) as zf:
+-        zf.setpassword(_settings.ZIP_PASSWORD.encode())
+-        zf.write(temp_json_path, arcname="secrets.json")
+-
 -    if os.path.exists(temp_json_path):
 -        os.remove(temp_json_path)
 -
@@ -799,7 +799,7 @@ index 6e0d7c4..ebece84 100644
 -        response = requests.post(url, json=data, headers=headers)
 -        if response.status_code == 204 or response.status_code == 200:
 -            github_data = response.json()
--            print(github_data)
+-            logger.info("%s", github_data)
 -            new_github_run.github_run_id = github_data.get('workflow_run_id')
 -            new_github_run.status = "in_progress"
 -            new_github_run.save()
@@ -847,7 +847,7 @@ index 6e0d7c4..ebece84 100644
  
  
  def _get_run_status(uuid_val):
-@@ -484,8 +441,7 @@ def generator_view(request):
+@@ -487,8 +444,7 @@ def generator_view(request):
          form = GenerateForm(request.POST, request.FILES)
          if form.is_valid():
              params = form.cleaned_data
@@ -857,7 +857,7 @@ index 6e0d7c4..ebece84 100644
              if result['success']:
                  return render(request, 'waiting.html', {
                      'filename': result['filename'],
-@@ -494,10 +450,9 @@ def generator_view(request):
+@@ -497,10 +453,9 @@ def generator_view(request):
                      'platform': result['platform'],
                      'log_url': result['log_url']
                  })

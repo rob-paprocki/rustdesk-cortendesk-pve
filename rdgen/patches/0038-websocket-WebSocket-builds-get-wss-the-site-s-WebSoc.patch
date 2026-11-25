@@ -1,0 +1,693 @@
+From e85ba9e808c5ade74dc4181a0a50602d07d470f9 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
+Date: Mon, 23 Nov 2026 04:16:31 +0000
+Subject: [PATCH 38/38] websocket: WebSocket builds get wss://, the site's
+ WebSocket name and their relay
+
+A client with allow-websocket=Y (an option under Other) reaches hbbs and
+hbbr as wss://<Host>/ws/id and /ws/relay. On a site whose ID server name
+forwards only the raw ports while the console (behind a tunnel, say)
+bridges /ws/id and /ws/relay, such a build needs the console's name as
+Host: with the pre-filled raw name it got the console's HTML page instead
+of a WebSocket and never registered, although the console showed it
+online through the API heartbeat. A normal client can't use the console's
+name either, and a WebSocket client and a normal one can't connect.
+
+The client also picks wss:// only when its api-server OPTION starts with
+https (hbb_common check_ws; the API server built into the client does not
+count), and rdgen sets that option only for Incoming Only builds. Other
+WebSocket builds used ws://<Host>/ws/id, a tunnel answered with a redirect
+to https the client can't follow, and they never registered either.
+
+For every build whose effective allow-websocket is Y (override-settings
+first, then default-settings, as RustDesk reads them): with an https://
+API server it gets api-server=<it> in the map that turns WebSocket on,
+unless it sets one (Incoming Only already has it in override-settings);
+with another API server it is refused when its Host is a public name (not
+an IP address, reached as ws://<ip>:21118, nor a LAN-only name).
+
+RDGEN_DEFAULT_WS_SERVER names the WebSocket host. When it is set, valid
+and not the same name as RDGEN_DEFAULT_SERVER, a WebSocket build
+- gets the WebSocket name for an empty Host (form and /api/generate);
+- is refused with the raw name as Host, relay-server or
+  custom-rendezvous-server, with a message on that field;
+- gets relay-server=<Host> in the map that turns WebSocket on unless it
+  sets a relay-server itself, because a client's own relay-server wins
+  over the relay hbbs names, which is the raw name.
+Any other build is refused with the WebSocket name. The form explains the
+two names under Host. Unset, invalid or the same name: these name rules
+are off.
+
+api-server and relay-server live in the custom settings, inside the base64
+custom value, so the runner's validate.py sees no new key. Tests for each
+rule, the dispatched configs against validate.py, and SETUP-PULL.md and
+rdgen.env.example describe the setting.
+---
+ SETUP-PULL.md                        |   2 +
+ deploy/rdgen.env.example             |   4 +
+ rdgen/settings.py                    |   3 +
+ rdgenerator/api_views.py             |   4 +
+ rdgenerator/forms.py                 |   5 +
+ rdgenerator/templates/generator.html |   2 +-
+ rdgenerator/tests/test_websocket.py  | 304 +++++++++++++++++++++++++++
+ rdgenerator/views.py                 |  12 +-
+ rdgenerator/websocket.py             | 172 +++++++++++++++
+ 9 files changed, 506 insertions(+), 2 deletions(-)
+ create mode 100644 rdgenerator/tests/test_websocket.py
+ create mode 100644 rdgenerator/websocket.py
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index 2476c01..5054c48 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -136,6 +136,8 @@ Notes:
+   - `GHBRANCH`: the branch `init` pushed to, which is the repository's default branch (`init` prints it)
+   - `GHBEARER`: the runtime token
+ - Optional defaults: `RDGEN_DEFAULT_SERVER`, `RDGEN_DEFAULT_PORT`, `RDGEN_DEFAULT_API_SERVER` and `RDGEN_DEFAULT_KEY_FILE` (the hbbs `id_ed25519.pub` in the same LXC) prefill the form, as do `RDGEN_DEFAULT_URL_LINK`, `RDGEN_DEFAULT_DOWNLOAD_LINK` and `RDGEN_DEFAULT_COMPANY`. Installed Windows clients download the update URL and run it, so it has to be a direct link to an installer. With `RDGEN_UPDATE_BASE` set, the form suggests `<base>/<windows-x86_64|windows-x86>/<version>/<name>.exe` for Windows builds of a 1.4.x version; the RustDesk LXC answers it with the newest published build of that name with a newer version, or 404.
++- `RDGEN_DEFAULT_WS_SERVER`: when WebSocket clients (`allow-websocket=Y` under Other) reach the server through another name than `RDGEN_DEFAULT_SERVER`, such as a console behind a tunnel that bridges only `/ws/id` and `/ws/relay`. A WebSocket build then gets that name for an empty Host and is refused with `RDGEN_DEFAULT_SERVER` as Host (or as `relay-server`/`custom-rendezvous-server`); a normal build is refused with the WebSocket name. A WebSocket build without its own `relay-server` gets `relay-server=<Host>` in the settings map that turns WebSocket on, because the client's own option wins over the relay hbbs names. Unset, invalid or the same name: these name rules are off.
++- WebSocket builds and the API server: the client picks `wss://` only when its `api-server` option starts with `https` (the API server built into the client does not count), and rdgen sets that option itself only for Incoming Only builds. So every WebSocket build whose API server is `https://` gets `api-server=<it>` in the settings map that turns WebSocket on, unless it sets one; one whose API server is not `https://` is refused when its Host is a public name, since `ws://` through a tunnel or an https-only proxy gets a redirect the client cannot follow. IP addresses (`ws://<ip>:21118`) and LAN-only names are left alone.
+ - To serve rdgen under a sub-path instead of a port, set `RDGEN_URL_PREFIX=/rdgen` and include `deploy/nginx/rdgen-subpath.conf` in an existing server block. Keep its allow/deny list if that server block is reachable from the internet.
+ - Memory, measured on Alpine: gunicorn master about 18 MB, worker about 57 MB, poller about 57 MB. Add about 2 MB for nginx.
+ - Disk: a Windows build (exe + msi) is 50-60 MB. Builds are pruned after `RDGEN_RETENTION_DAYS` (default 30).
+diff --git a/deploy/rdgen.env.example b/deploy/rdgen.env.example
+index 3fe5d05..979bfb0 100644
+--- a/deploy/rdgen.env.example
++++ b/deploy/rdgen.env.example
+@@ -42,6 +42,10 @@ RDGEN_FAILED_RUN_KEEP_HOURS=48
+ 
+ # --- form defaults for this site (optional) ------------------------------
+ RDGEN_DEFAULT_SERVER=
++# The name WebSocket clients (allow-websocket=Y) reach the server through, when it differs from
++# RDGEN_DEFAULT_SERVER, e.g. console.example.com behind a tunnel that bridges /ws/id and /ws/relay only.
++# Then WebSocket builds must use it (an empty Host means it) and other builds must not.
++RDGEN_DEFAULT_WS_SERVER=
+ RDGEN_DEFAULT_API_SERVER=
+ RDGEN_DEFAULT_KEY_FILE=/var/lib/rustdesk-server/id_ed25519.pub
+ RDGEN_DEFAULT_PORT=21116
+diff --git a/rdgen/settings.py b/rdgen/settings.py
+index b2692b9..6754d58 100644
+--- a/rdgen/settings.py
++++ b/rdgen/settings.py
+@@ -133,6 +133,9 @@ RDGEN_DEFAULTS = {
+     'url_link': env('RDGEN_DEFAULT_URL_LINK', ''),
+     'download_link': env('RDGEN_DEFAULT_DOWNLOAD_LINK', ''),
+     'company': env('RDGEN_DEFAULT_COMPANY', ''),
++    # the name WebSocket clients (allow-websocket=Y) reach the server through, when it is not the server's own
++    # name, e.g. a console behind a tunnel that bridges /ws/id and /ws/relay (rdgenerator/websocket.py)
++    'ws_server': env('RDGEN_DEFAULT_WS_SERVER', ''),
+ }
+ # Base of the self-update links for Windows builds, e.g. https://console.example.com/clients (the console answers
+ # /clients/<arch>/<version>/<name>.exe). Empty: the form does not suggest an update URL.
+diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
+index 57a3f1e..7104944 100644
+--- a/rdgenerator/api_views.py
++++ b/rdgenerator/api_views.py
+@@ -7,6 +7,7 @@ from django.http import JsonResponse
+ from django.middleware.csrf import CsrfViewMiddleware
+ from django.views.decorators.csrf import csrf_exempt
+ from .forms import GenerateForm, HEX_COLOR_RE, publish_choice
++from . import websocket
+ from .validation import validate_build_fields
+ from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
+ 
+@@ -124,6 +125,9 @@ def validate_generate_params(data):
+     # Values that reach the build scripts (same rules as GenerateForm).
+     for field, message in validate_build_fields(cleaned).items():
+         errors.setdefault(field, message)
++    # the Host, API server and server options a WebSocket or normal build can use (rdgenerator/websocket.py)
++    for field, message in websocket.problems(cleaned).items():
++        errors.setdefault(field, message)
+ 
+     # Theme colors flow into Dart 0xAARRGGBB literals in the workflow patch.
+     # Accept #RRGGBB/RRGGBB and store the canonical form; blank = stock.
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index 8cc0ac5..07f4b81 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -5,6 +5,7 @@ from django import forms
+ from django.conf import settings as _settings
+ from PIL import Image
+ 
++from . import websocket
+ from .validation import validate_build_fields
+ 
+ logger = logging.getLogger(__name__)
+@@ -228,6 +229,10 @@ class GenerateForm(forms.Form):
+         for field, message in validate_build_fields(cleaned).items():
+             if field in self.fields and field not in self.errors:
+                 self.add_error(field, message)
++        # the Host, API server and server options a WebSocket or normal build can use (rdgenerator/websocket.py)
++        for field, message in websocket.problems(cleaned).items():
++            if field in self.fields and field not in self.errors:
++                self.add_error(field, message)
+         message = publish_problem(cleaned)
+         if message and 'publish' not in self.errors:
+             self.add_error('publish', message)
+diff --git a/rdgenerator/templates/generator.html b/rdgenerator/templates/generator.html
+index bb71629..97bc010 100644
+--- a/rdgenerator/templates/generator.html
++++ b/rdgenerator/templates/generator.html
+@@ -501,7 +501,7 @@
+             <div class="section">
+                 <h2><i class="fas fa-server"></i> Custom Server</h2>
+                     <label for="{{ form.serverIP.id_for_label }}">Host:</label>
+-                    {{ form.serverIP }}<div class="rd-hint">The host name or IP of your ID/relay server (hbbs and hbbr), without a port. If empty, rdgen uses this site's default and, without one, RustDesk's public servers.</div><br>
++                    {{ form.serverIP }}<div class="rd-hint">The host name or IP of your ID/relay server (hbbs and hbbr), without a port. If empty, rdgen uses this site's default and, without one, RustDesk's public servers.</div>{% if ws_server %}<div class="rd-hint" id="rd-ws-names">This server has two names. Normal clients use <b>{{ raw_server|default:"the server's own name" }}</b>. WebSocket clients (allow-websocket=Y under Other) reach it only through <b>{{ ws_server }}</b>: use that as Host for them, or leave Host empty, with an https:// API server. A WebSocket client and a normal one can't connect to each other.</div>{% endif %}<br>
+                     <label for="{{ form.serverPort.id_for_label }}">Port:</label>
+                     {{ form.serverPort }}<div class="rd-hint">The ID server port; empty means 21116. The relay uses the next port, and the WebSocket ports the two after that (21116 gives 21117, 21118 and 21119).</div><br>
+                     <label for="{{ form.key.id_for_label }}">Key:</label>
+diff --git a/rdgenerator/tests/test_websocket.py b/rdgenerator/tests/test_websocket.py
+new file mode 100644
+index 0000000..b5bba26
+--- /dev/null
++++ b/rdgenerator/tests/test_websocket.py
+@@ -0,0 +1,304 @@
++"""WebSocket builds: their API server, and a site whose server has two names (rdgenerator/websocket.py).
++
++rd.example.com forwards the raw ports (RDGEN_DEFAULT_SERVER); console.example.com bridges only /ws/id and /ws/relay
++(RDGEN_DEFAULT_WS_SERVER). A client with allow-websocket=Y must use the second, every other client the first.
++A WebSocket client uses wss:// only with an https api-server option.
++"""
++import base64
++import json
++import os
++import subprocess
++import sys
++
++from django.conf import settings
++from django.contrib.auth import get_user_model
++from django.test import Client, TestCase, override_settings
++
++from rdgen import settings as rdgen_settings
++from rdgenerator import views, websocket
++from rdgenerator.tests.test_pull import StubTestCase, decrypt_cfg
++from rdgenerator.tests.test_workflows import load_validate
++
++RAW, WS = 'rd.example.com', 'console.example.com'
++API = 'https://console.example.com'
++WS_ON = 'allow-websocket=Y'
++
++
++def two_names(**over):
++    # like CortenDesk's: the API server is the console URL
++    return override_settings(RDGEN_DEFAULTS=dict(rdgen_settings.RDGEN_DEFAULTS,
++                                                 **dict({'server': RAW, 'ws_server': WS, 'api_server': API}, **over)))
++
++
++class SiteNamesTests(TestCase):
++    def test_read_from_the_env(self):
++        env = {k: v for k, v in os.environ.items() if k not in ('RDGEN_ENV_FILE',)}
++        env.update(SECRET_KEY='s' * 60, ZIP_PASSWORD='z' * 40, DJANGO_SETTINGS_MODULE='rdgen.settings',
++                   RDGEN_DEFAULT_SERVER=RAW, RDGEN_DEFAULT_WS_SERVER=WS)
++        code = ('import django; django.setup(); from django.conf import settings; '
++                'print(settings.RDGEN_DEFAULTS["server"], settings.RDGEN_DEFAULTS["ws_server"])')
++        r = subprocess.run([sys.executable, '-c', code], cwd=settings.BASE_DIR, env=env, capture_output=True, text=True)
++        self.assertEqual(r.stdout.split(), [RAW, WS], r.stderr)
++
++    def test_off_unless_a_valid_different_name(self):
++        with two_names():
++            self.assertEqual(websocket.site_names(), (RAW, WS))
++        for ws in ('', RAW, RAW.upper(), 'console.example.com; id', 'https://console.example.com'):
++            with two_names(ws_server=ws):
++                self.assertEqual(websocket.site_names(), (RAW, ''), ws)
++
++    def test_websocket_section_follows_rustdesks_order(self):
++        sec = websocket.websocket_section
++        self.assertEqual(sec({'default-settings': {'allow-websocket': 'Y'}}), 'default-settings')
++        self.assertEqual(sec({'override-settings': {'allow-websocket': 'Y'}, 'default-settings': {}}), 'override-settings')
++        # override-settings wins over default-settings, and only "Y" turns an allow-* option on
++        self.assertEqual(sec({'override-settings': {'allow-websocket': 'N'},
++                              'default-settings': {'allow-websocket': 'Y'}}), '')
++        self.assertEqual(sec({'default-settings': {'allow-websocket': 'y'}}), '')
++        self.assertEqual(websocket.manual_settings(' allow-websocket = Y \nfoo\nallow-websocket=N=x'),
++                         {'allow-websocket': 'N=x'})
++        for value, host in (('rd.example.com', RAW), ('rd.example.com:21117', RAW), ('wss://rd.example.com/ws/relay', RAW),
++                            ('[2001:db8::1]:21117', '[2001:db8::1]'), ('2001:db8::1', '2001:db8::1')):
++            self.assertEqual(websocket.host_of(value), host, value)
++
++
++class WebSocketBuildTests(StubTestCase):
++    def setUp(self):
++        super().setUp()
++        self.names = two_names()
++        self.names.enable()
++
++    def tearDown(self):
++        self.names.disable()
++        super().tearDown()
++
++    def secrets(self, **body):
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 200, r.content)
++        req = [x for x in self.stub.requests if x['path'].endswith('/dispatches')][-1]
++        s = json.loads(decrypt_cfg(req['body']['inputs']['cfg'])['secrets.json'])
++        return s, json.loads(base64.b64decode(s['custom']))
++
++    def refused(self, field, **body):
++        before = len([x for x in self.stub.requests if x['path'].endswith('/dispatches')])
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 400, r.content)
++        self.assertEqual(len([x for x in self.stub.requests if x['path'].endswith('/dispatches')]), before)
++        return r.json()['details'][field]
++
++    def test_empty_host_means_the_websocket_name(self):
++        s, custom = self.secrets(defaultManual=WS_ON)
++        self.assertEqual(s['server'], WS)
++        # hbbs names the raw relay: the build relays through its Host, set in the map that turns WebSocket on
++        self.assertEqual(custom['default-settings']['relay-server'], WS)
++        self.assertNotIn('relay-server', custom['override-settings'])
++        s, custom = self.secrets(overrideManual='enable-audio=Y\n' + WS_ON)
++        self.assertEqual(s['server'], WS)
++        self.assertEqual(custom['override-settings']['relay-server'], WS)
++        self.assertNotIn('relay-server', custom['default-settings'])
++
++    def test_websocket_build_with_another_name_relays_through_it(self):
++        s, custom = self.secrets(serverIP='ws.example.org', overrideManual=WS_ON)
++        self.assertEqual((s['server'], custom['override-settings']['relay-server']), ('ws.example.org', 'ws.example.org'))
++        # a relay-server the build sets itself stays, in either map
++        s, custom = self.secrets(defaultManual='relay-server=relay.example.org', overrideManual=WS_ON)
++        self.assertEqual(custom['default-settings']['relay-server'], 'relay.example.org')
++        self.assertNotIn('relay-server', custom['override-settings'])
++        # an empty one means "the relay hbbs names": replaced
++        s, custom = self.secrets(defaultManual=WS_ON, overrideManual='relay-server=')
++        self.assertEqual(custom['default-settings']['relay-server'], WS)
++        self.assertNotIn('relay-server', custom['override-settings'])
++
++    def test_websocket_build_with_the_raw_name_is_refused(self):
++        for host in (RAW, RAW.upper()):
++            for box in ('defaultManual', 'overrideManual'):
++                msg = self.refused('serverIP', serverIP=host, **{box: WS_ON})
++                self.assertIn(f'WebSocket clients (allow-websocket=Y under Other) reach the server only through {WS}', msg)
++                self.assertIn(f'Use {WS} as Host', msg)
++
++    def test_the_build_itself_checks_too(self):
++        # generate_custom_client, behind the form and the API, refuses the same builds
++        r = views.generate_custom_client({'serverIP': RAW, 'defaultManual': WS_ON})
++        self.assertEqual((r['success'], r['status_code']), (False, 400))
++        self.assertIn(f'only through {WS}', r['error'])
++        self.assertFalse([x for x in self.stub.requests if x['path'].endswith('/dispatches')])
++
++    def test_websocket_build_with_a_raw_server_option_is_refused(self):
++        for opt in ('relay-server=rd.example.com', 'relay-server=rd.example.com:21117',
++                    'custom-rendezvous-server=rd.example.com'):
++            msg = self.refused('overrideManual', serverIP=WS, overrideManual=f'{WS_ON}\n{opt}')
++            self.assertIn(f'reach the server only through {WS}', msg)
++            self.assertIn(f'Set it to {WS} or remove the line', msg)
++            msg = self.refused('defaultManual', defaultManual=opt, overrideManual=WS_ON)
++            self.assertIn(opt, msg)
++
++    def test_normal_build_with_the_websocket_name_is_refused(self):
++        for body in ({'serverIP': WS}, {'serverIP': WS.upper(), 'defaultManual': 'allow-websocket=N'},
++                     # override-settings wins: this client does not use WebSocket
++                     {'serverIP': WS, 'defaultManual': WS_ON, 'overrideManual': 'allow-websocket=N'}):
++            msg = self.refused('serverIP', **body)
++            self.assertIn(f'{WS} reaches the server only over WebSocket', msg)
++            self.assertIn(f'Use {RAW} as Host', msg)
++        msg = self.refused('defaultManual', defaultManual=f'relay-server={WS}')
++        self.assertIn(f'Set it to {RAW} or remove the line', msg)
++
++    def test_normal_builds_keep_the_raw_name(self):
++        for body in ({}, {'serverIP': RAW}, {'overrideManual': 'allow-websocket=N'}):
++            s, custom = self.secrets(**body)
++            self.assertEqual(s['server'], RAW, body)
++            self.assertFalse({'relay-server'} & (set(custom['default-settings']) | set(custom['override-settings'])))
++
++    def test_websocket_config_passes_the_runner_check(self):
++        v = load_validate()
++        for body in ({'defaultManual': WS_ON}, {'overrideManual': WS_ON, 'platform': 'linux', 'appname': 'acme-rescue'},
++                     {'serverIP': WS, 'overrideManual': WS_ON, 'direction': 'incoming', 'platform': 'macos'}):
++            s, custom = self.secrets(**body)
++            self.assertEqual(v.validate_secrets(s), [], body)
++        self.assertEqual(custom['override-settings']['custom-rendezvous-server'], WS)
++
++    def test_the_form_says_which_name_to_use(self):
++        self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++        page = self.c.get('/').content.decode()
++        self.assertRegex(page, r'name="serverIP"[^>]*value="rd\.example\.com"')
++        self.assertIn('<div class="rd-hint" id="rd-ws-names">This server has two names. Normal clients use '
++                      f'<b>{RAW}</b>. WebSocket clients (allow-websocket=Y under Other) reach it only through <b>{WS}</b>', page)
++        # the pre-filled Host with allow-websocket=Y: the Host field says which name to use
++        form = {'platform': 'linux', 'version': '1.5.3', 'exename': 'acme', 'serverIP': RAW, 'defaultManual': WS_ON,
++                'direction': 'both', 'installation': 'installationY', 'settings': 'settingsY', 'theme': 'system',
++                'themeDorO': 'default', 'passApproveMode': 'password-click', 'permissionsType': 'custom'}
++        r = self.c.post('/', form)
++        self.assertEqual(r.status_code, 200)
++        self.assertEqual(r.context['form'].errors['serverIP'],
++                         [f'WebSocket clients (allow-websocket=Y under Other) reach the server only through {WS}, '
++                          f'not {RAW}, which is for normal clients. Use {WS} as Host, or leave Host empty.'])
++        self.assertFalse([x for x in self.stub.requests if x['path'].endswith('/dispatches')])
++        r = self.c.post('/', dict(form, serverIP=''))
++        self.assertTemplateUsed(r, 'waiting.html')
++        r = self.c.post('/', dict(form, defaultManual=''))
++        self.assertTemplateUsed(r, 'waiting.html')
++        r = self.c.post('/', dict(form, defaultManual='', serverIP=WS))
++        self.assertIn('reaches the server only over WebSocket', r.context['form'].errors['serverIP'][0])
++
++
++class OneNameTests(StubTestCase):
++    """Without a separate WebSocket name the name rules are off: Host and relay as before, for WebSocket builds too
++    (their api-server option: ApiServerTests)."""
++
++    def secrets(self, **body):
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 200, r.content)
++        req = [x for x in self.stub.requests if x['path'].endswith('/dispatches')][-1]
++        s = json.loads(decrypt_cfg(req['body']['inputs']['cfg'])['secrets.json'])
++        return s, json.loads(base64.b64decode(s['custom']))
++
++    def test_unset_same_or_invalid_websocket_name(self):
++        for ws in ('', RAW, 'console.example.com/ws'):
++            with two_names(ws_server=ws):
++                for body, server in (({'defaultManual': WS_ON}, RAW), ({'serverIP': RAW, 'overrideManual': WS_ON}, RAW),
++                                     ({'serverIP': WS}, WS), ({'serverIP': WS, 'defaultManual': WS_ON}, WS)):
++                    s, custom = self.secrets(**body)
++                    self.assertEqual(s['server'], server, (ws, body))
++                    self.assertFalse({'relay-server'} & (set(custom['default-settings']) |
++                                                         set(custom['override-settings'])), (ws, body))
++        # no server defaults at all: RustDesk's public server, as upstream
++        with two_names(server='', ws_server=''):
++            s, _ = self.secrets(defaultManual=WS_ON)
++        self.assertEqual(s['server'], 'rs-ny.rustdesk.com')
++
++    def test_no_hint_without_a_websocket_name(self):
++        c = Client()
++        c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++        with two_names(ws_server=''):
++            self.assertNotIn('rd-ws-names', c.get('/').content.decode())
++
++
++class ApiServerTests(StubTestCase):
++    """hbb_common check_ws uses wss:// only when the api-server OPTION starts with https; rdgen sets that option
++    itself only for Incoming Only builds. These rules hold for every WebSocket build, two names or one."""
++
++    def setUp(self):
++        super().setUp()
++        self.names = two_names(ws_server='')   # one name: only the API rules apply
++        self.names.enable()
++
++    def tearDown(self):
++        self.names.disable()
++        super().tearDown()
++
++    def custom(self, **body):
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 200, r.content)
++        req = [x for x in self.stub.requests if x['path'].endswith('/dispatches')][-1]
++        s = json.loads(decrypt_cfg(req['body']['inputs']['cfg'])['secrets.json'])
++        self.assertEqual(load_validate().validate_secrets(s), [], body)   # still passes the runner's check
++        return json.loads(base64.b64decode(s['custom']))
++
++    def refused(self, field, **body):
++        r = self.generate(**body)
++        self.assertEqual(r.status_code, 400, r.content)
++        self.assertFalse([x for x in self.stub.requests if x['path'].endswith('/dispatches')])
++        return r.json()['details'][field]
++
++    def test_websocket_build_gets_an_https_api_server_option(self):
++        custom = self.custom(defaultManual=WS_ON)
++        self.assertEqual(custom['default-settings']['api-server'], API)
++        self.assertNotIn('api-server', custom['override-settings'])
++        custom = self.custom(serverIP=RAW, apiServer='https://console.example.com/sub', overrideManual=WS_ON)
++        self.assertEqual(custom['override-settings']['api-server'], 'https://console.example.com/sub')
++        self.assertNotIn('api-server', custom['default-settings'])
++        # one name: no relay-server pin
++        self.assertNotIn('relay-server', custom['override-settings'])
++
++    def test_incoming_only_keeps_its_own_and_one_set_by_hand_stays(self):
++        custom = self.custom(direction='incoming', defaultManual=WS_ON)
++        self.assertEqual(custom['override-settings']['api-server'], API)
++        self.assertNotIn('api-server', custom['default-settings'])
++        custom = self.custom(defaultManual=f'{WS_ON}\napi-server=https://api.example.org')
++        self.assertEqual(custom['default-settings']['api-server'], 'https://api.example.org')
++        self.assertNotIn('api-server', custom['override-settings'])
++        # empty means "the client's default", and in override-settings it would hide the pinned one
++        custom = self.custom(defaultManual=WS_ON, overrideManual='api-server=')
++        self.assertEqual(custom['default-settings']['api-server'], API)
++        self.assertNotIn('api-server', custom['override-settings'])
++
++    def test_websocket_build_without_https_is_refused(self):
++        for body in ({'apiServer': 'http://console.example.com'}, {'apiServer': 'console.example.com'},
++                     {'direction': 'incoming', 'apiServer': 'http://console.example.com'}):
++            msg = self.refused('apiServer', defaultManual=WS_ON, **body)
++            self.assertIn('connect with wss:// only when their API server starts with https://', msg)
++            self.assertIn(f'ws://{RAW}/ws/id', msg)
++            self.assertIn('as API server', msg)
++        with two_names(ws_server='', api_server=''):   # no API server anywhere: rdgen would use <host>:21114
++            msg = self.refused('apiServer', overrideManual=WS_ON)
++            self.assertIn(f'ws://{RAW}/ws/id', msg)
++        msg = self.refused('overrideManual', overrideManual=f'{WS_ON}\napi-server=http://console.example.com')
++        self.assertTrue(msg.startswith('api-server=http://console.example.com: WebSocket clients'), msg)
++        self.assertIn('or remove the line', msg)
++        msg = self.refused('defaultManual', defaultManual=f'{WS_ON}\napi-server=http://console.example.com')
++        self.assertIn('or remove the line', msg)
++
++    def test_the_form_refuses_it_on_the_api_field(self):
++        self.c.force_login(get_user_model().objects.create_user('tester', password='x' * 16))
++        r = self.c.post('/', {'platform': 'macos', 'version': '1.5.3', 'exename': 'acme', 'serverIP': WS,
++                              'apiServer': 'http://console.example.com', 'overrideManual': WS_ON,
++                              'direction': 'both', 'installation': 'installationY', 'settings': 'settingsY',
++                              'theme': 'system', 'themeDorO': 'default', 'passApproveMode': 'password-click',
++                              'permissionsType': 'custom'})
++        self.assertIn('never registers', r.context['form'].errors['apiServer'][0])
++        self.assertFalse([x for x in self.stub.requests if x['path'].endswith('/dispatches')])
++
++    def test_direct_and_normal_builds_are_left_alone(self):
++        # an IP is reached as ws://<ip>:21118, a LAN name without a proxy: plain http is fine there, no option
++        for host in ('192.0.2.10', 'rustdesk', 'rustdesk.lan', 'rd.home.arpa'):
++            custom = self.custom(serverIP=host, apiServer='http://192.0.2.10:8080', defaultManual=WS_ON)
++            self.assertNotIn('api-server', custom['default-settings'], host)
++        # normal builds: no option, and http:// stays allowed as before
++        for body in ({}, {'apiServer': 'http://console.example.com'}, {'overrideManual': 'allow-websocket=N'}):
++            custom = self.custom(**body)
++            self.assertFalse({'api-server'} & (set(custom['default-settings']) | set(custom['override-settings'])))
++
++    def test_two_name_site_pins_both(self):
++        with two_names():
++            custom = self.custom(overrideManual=WS_ON)
++        self.assertEqual((custom['override-settings']['api-server'], custom['override-settings']['relay-server']),
++                         (API, WS))
+diff --git a/rdgenerator/views.py b/rdgenerator/views.py
+index 67db95a..e510662 100644
+--- a/rdgenerator/views.py
++++ b/rdgenerator/views.py
+@@ -18,7 +18,7 @@ from django.urls import reverse
+ from django.utils import timezone
+ from django.views.decorators.http import require_http_methods, require_safe
+ 
+-from . import buildcfg, github
++from . import buildcfg, github, websocket
+ from .forms import GenerateForm, HEX_COLOR_RE, embeds_secret, publish_choice, publish_problem
+ from .models import GithubRun, ShareLink
+ from .poller import allowed_output_name, discard_build, valid_uuid
+@@ -110,6 +110,13 @@ def generate_custom_client(params, full_url=None):
+     urlLink = params.get('urlLink', '')
+     downloadLink = params.get('downloadLink', '')
+     defaults = site_defaults()
++    # WebSocket builds (websocket.py): the form and the API refuse a Host or API server they cannot use, and on a
++    # site with a separate WebSocket name an empty Host means that name
++    problem = websocket.problems(params)
++    if problem:
++        return {"success": False, "error": next(iter(problem.values())), "status_code": 400}
++    if not server:
++        server = websocket.default_host(params)
+     if not server:
+         server = defaults.get('serverIP') or 'rs-ny.rustdesk.com' #default rustdesk server
+     if not serverPort:
+@@ -326,6 +333,7 @@ def generate_custom_client(params, full_url=None):
+ 
+     if overrideManual:
+         apply_manual_settings(overrideManual, decodedCustom['override-settings'])
++    websocket.pin_options(decodedCustom, server, apiServer)   # a WebSocket build's api-server and relay-server
+     
+     decodedCustomJson = json.dumps(decodedCustom)
+ 
+@@ -509,9 +517,11 @@ def generator_view(request):
+             form.add_error(None, result['error'])
+     else:
+         form = GenerateForm(initial=site_defaults())
++    raw_server, ws_server = websocket.site_names()
+     #return render(request, 'maintenance.html')
+     return render(request, 'generator.html', {'form': form, 'publish_target': _settings.RDGEN_PUBLISH_TARGET,
+                                               'client_settings': client_settings(),
++                                              'raw_server': raw_server, 'ws_server': ws_server,
+                                               'update_base': _settings.RDGEN_UPDATE_BASE,
+                                               'runner_notes': last_runners()})
+ 
+diff --git a/rdgenerator/websocket.py b/rdgenerator/websocket.py
+new file mode 100644
+index 0000000..aec571b
+--- /dev/null
++++ b/rdgenerator/websocket.py
+@@ -0,0 +1,172 @@
++"""WebSocket builds: their API server, and a site whose server has two names.
++
++A client with allow-websocket=Y (an option under Other) reaches hbbs and hbbr as wss://<host>/ws/id and
++wss://<host>/ws/relay, so its host must be the name whose web server bridges those paths (a console behind a
++tunnel, for example), while a normal client needs the name that forwards the raw ports (21116/21117). The site
++names the first RDGEN_DEFAULT_WS_SERVER and the second RDGEN_DEFAULT_SERVER. A client's own relay-server option
++wins over the relay hbbs names, which is the raw name, so a WebSocket build relays through its Host unless it sets
++relay-server itself. A WebSocket client and a normal one can't connect to each other. These name rules are off
++while RDGEN_DEFAULT_WS_SERVER is unset, invalid or the same name as RDGEN_DEFAULT_SERVER.
++
++The client picks wss:// only when its api-server OPTION starts with https (hbb_common check_ws reads the option,
++not the API server built into the client), and generate_custom_client sets that option only for Incoming Only
++builds. With ws:// a tunnel or an https-only proxy answers with a redirect the client can't follow, so it never
++registers. So every WebSocket build with an https:// API server gets api-server=<it> unless it sets one, and one
++whose API server is not https:// is refused when its Host is a public name (one that goes through a web server).
++"""
++import re
++
++from django.conf import settings as _settings
++
++from .validation import RULES
++
++SECTIONS = ('default-settings', 'override-settings')
++FIELDS = {'default-settings': 'defaultManual', 'override-settings': 'overrideManual'}
++# options that take the place of Host (the ID server) and of the relay hbbs names
++SERVER_OPTIONS = ('custom-rendezvous-server', 'relay-server')
++_IPV4 = re.compile(r'[0-9]{1,3}(?:\.[0-9]{1,3}){3}')
++# the form's http:// API warning (_api_server.html) treats the same names as reached directly, without a proxy
++_LAN = re.compile(r'localhost|[^.]+|.+\.(?:lan|local|home\.arpa|internal|localdomain)', re.I)
++
++
++def same_host(a, b):
++    return bool(a) and a.lower() == (b or '').lower()
++
++
++def host_of(value):
++    """The host of an option value such as host, host:port or wss://host/ws/relay."""
++    value = (value or '').strip().split('://', 1)[-1].split('/', 1)[0]
++    if value.startswith('['):
++        return value[:value.find(']') + 1] if ']' in value else value
++    return value.split(':', 1)[0] if value.count(':') == 1 else value
++
++
++def public_name(host):
++    """A name a WebSocket client reaches through a web server (wss://<name>/ws/id): not an IP address (ws://<ip>:21118,
++    straight to hbbs) and not a LAN-only name."""
++    return bool(host) and not host.startswith('[') and not _IPV4.fullmatch(host) and not _LAN.fullmatch(host)
++
++
++def site_names():
++    """(raw, ws): the site's default Host and its WebSocket name, invalid values dropped like the other site
++    defaults. ws is '' when the name rules are off."""
++    rx = RULES['serverIP'][0]
++    raw, ws = (v if isinstance(v, str) and rx.fullmatch(v) else ''
++               for v in (_settings.RDGEN_DEFAULTS.get('server', ''), _settings.RDGEN_DEFAULTS.get('ws_server', '')))
++    return raw, ('' if same_host(ws, raw) else ws)
++
++
++def manual_settings(text):
++    """The options an Other box puts into its settings map, as generate_custom_client's apply_manual_settings
++    reads them: the key is the text before the first '=', both sides stripped, and the last line wins."""
++    out = {}
++    for line in text.splitlines() if isinstance(text, str) else ():
++        key, sep, value = line.partition('=')
++        if sep:
++            out[key.strip()] = value.strip()
++    return out
++
++
++def websocket_section(maps):
++    """The settings map whose allow-websocket=Y makes the client use WebSocket, or ''. maps: {section: options}.
++    RustDesk reads override-settings first and default-settings last, and an allow-* option is on only as "Y"."""
++    override, default = maps.get('override-settings') or {}, maps.get('default-settings') or {}
++    if 'allow-websocket' in override:
++        return 'override-settings' if override['allow-websocket'] == 'Y' else ''
++    return 'default-settings' if default.get('allow-websocket') == 'Y' else ''
++
++
++def _boxes(data):
++    return {s: manual_settings(data.get(FIELDS[s])) for s in SECTIONS}
++
++
++def _build_servers(data):
++    """(Host, API server) as generate_custom_client fills them in."""
++    host = (data.get('serverIP') or '').strip() or default_host(data) or site_names()[0] or 'rs-ny.rustdesk.com'
++    api = (data.get('apiServer') or '').strip()
++    if not api:
++        api = _settings.RDGEN_DEFAULTS.get('api_server', '')
++        if not (isinstance(api, str) and api and RULES['apiServer'][0].fullmatch(api)):
++            api = host + ':21114'
++    return host, api
++
++
++def _api_option(data, boxes, api):
++    """(field, value): the client's api-server option and the form field it comes from."""
++    if boxes['override-settings'].get('api-server'):
++        return FIELDS['override-settings'], boxes['override-settings']['api-server']
++    if data.get('direction') != 'incoming' and boxes['default-settings'].get('api-server'):
++        return FIELDS['default-settings'], boxes['default-settings']['api-server']
++    # Incoming Only: generate_custom_client writes the API server into override-settings; otherwise pin_options does
++    # when it is https
++    return 'apiServer', api
++
++
++def problems(data):
++    """{field: message} for a Host, API server or server option a WebSocket or normal build cannot reach the server
++    through (form field names: serverIP, apiServer, defaultManual, overrideManual)."""
++    boxes = _boxes(data)
++    errors = {}
++    if websocket_section(boxes):
++        host, api = _build_servers(data)
++        field, value = _api_option(data, boxes, api)
++        if not value.startswith('https://') and public_name(host):
++            line = f'api-server={value[:80]}: ' if field != 'apiServer' else ''
++            errors[field] = (f'{line}WebSocket clients (allow-websocket=Y under Other) connect with wss:// only when '
++                             f'their API server starts with https://. This one would use ws://{host}/ws/id, which a '
++                             'tunnel or an https-only proxy answers with a redirect the client cannot follow, so it '
++                             'never registers. Use the console\'s https:// URL'
++                             + (' or remove the line.' if line else ' as API server.'))
++    raw, ws = site_names()
++    if not ws:
++        return errors
++    host = (data.get('serverIP') or '').strip()
++    if websocket_section(boxes):
++        wrong, right = raw, ws
++        why = (f'WebSocket clients (allow-websocket=Y under Other) reach the server only through {ws}, '
++               f'not {raw}, which is for normal clients.')
++        if same_host(host, raw):
++            errors['serverIP'] = f'{why} Use {ws} as Host, or leave Host empty.'
++    else:
++        wrong, right = ws, raw or "the ID server's own name"
++        why = (f'{ws} reaches the server only over WebSocket, so a normal client (TCP/UDP, no allow-websocket=Y '
++               'under Other) cannot connect through it.')
++        if same_host(host, ws):
++            errors['serverIP'] = (f'{why} Use {right} as Host, or add allow-websocket=Y under Other to build a '
++                                  'WebSocket client.')
++    for section, options in boxes.items():
++        for key in SERVER_OPTIONS:
++            if same_host(host_of(options.get(key)), wrong):
++                errors.setdefault(FIELDS[section], f'{key}={options[key][:80]}: {why} Set it to {right} or remove the line.')
++    return errors
++
++
++def default_host(data):
++    """The Host a build with an empty Host field gets here: the WebSocket name for a WebSocket build, else ''
++    (the usual defaults)."""
++    ws = site_names()[1]
++    return ws if ws and websocket_section(_boxes(data)) else ''
++
++
++def _pin(custom, key, value):
++    """Put key=value into the map that turns WebSocket on, unless either map sets the key. An empty value counts as
++    unset: it means the client's default, and in override-settings it would hide ours."""
++    maps = {s: custom.get(s) for s in SECTIONS}
++    if not all(isinstance(m, dict) for m in maps.values()):
++        return
++    section = websocket_section(maps)
++    if not section or any(m.get(key) for m in maps.values()):
++        return
++    for m in maps.values():
++        m.pop(key, None)
++    maps[section][key] = value
++
++
++def pin_options(custom, host, api):
++    """A WebSocket build's own options: api-server=<API server> when it is https (wss:// instead of ws://; an
++    Incoming Only build has it in override-settings already) and, on a two-name site, relay-server=<Host> (else
++    it relays through the raw name hbbs sends)."""
++    if api.startswith('https://'):
++        _pin(custom, 'api-server', api)
++    if site_names()[1]:
++        _pin(custom, 'relay-server', host)

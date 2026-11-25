@@ -5,12 +5,15 @@
 #   rustdesk-config --stdin    lines: public host, console URL, reverse-proxy IP (empty lines keep the current value;
 #                              "none" clears the proxy)
 #   rustdesk-config --show     print the current values
-#   rustdesk-config --check    test the console URL the way clients and the web client use it
-#  public host   DNS name or IP clients use for the ID/relay server (ports 21115-21117; never behind a proxy)
+#   rustdesk-config --check    test the console URL the way clients, WebSocket clients and the web client use it
+#  public host   DNS name or IP clients use for the ID/relay server (ports 21115-21117; never behind a proxy). When
+#                every client uses WebSocket, the console's name: clients then reach hbbs and hbbr only through it
+#                (wss://<name>/ws/id and /ws/relay), e.g. through a Cloudflare Tunnel (README: "Only through your tunnel")
 #  console URL   what browsers and the clients' "API server" use, e.g. https://rustdesk.example.com or http://<LAN IP>
-#  proxy IP      your reverse proxy / tunnel connector (e.g. cloudflared). Needed when the console URL is https
-#                through a proxy on another host (CortenDesk only trusts X-Forwarded-Proto from it; without it pages
-#                load http:// assets that browsers block); also makes the logs show real client IPs
+#  proxy IP      your reverse proxy / tunnel connector (e.g. cloudflared), or all of them (a,b or a subnet) when a
+#                tunnel has replicas. Needed when the console URL is https through a proxy on another host
+#                (CortenDesk only trusts X-Forwarded-Proto from it; without it pages load http:// assets that
+#                browsers block, and Livewire actions fail); also makes the logs show real client IPs
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 
@@ -28,13 +31,31 @@ check_url() {  # check_url <console url>
     000) echo "client check-ins:  no answer from $url here (this LXC may not reach its own public name)" ;;
     *)   echo "client check-ins:  HTTP $code from $url/api/heartbeat" ;;
   esac
-  # after a 101 curl keeps the socket open until -m runs out and exits non-zero; the status it printed still counts
-  code=$(curl -s -o /dev/null -m 4 --http1.1 -w '%{http_code}' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-           -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$url/ws/id" 2>/dev/null || true)
-  case "$code" in
-    101) echo "web client:        OK (${url/#http/ws}/ws/id)" ;;
-    *)   echo "web client:        ${url/#http/ws}/ws/id answered HTTP ${code:-000} instead of switching to a WebSocket" ;;
-  esac
+  # the web client and WebSocket clients: hbbs on /ws/id, hbbr on /ws/relay. After a 101 curl keeps the socket open
+  # until -m runs out and exits non-zero; the status it printed still counts
+  local p
+  for p in id relay; do
+    code=$(curl -s -o /dev/null -m 4 --http1.1 -w '%{http_code}' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+             -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$url/ws/$p" 2>/dev/null || true)
+    case "$code" in
+      101) printf '%-18s OK (%s)\n' "WebSocket $p:" "${url/#http/ws}/ws/$p" ;;
+      *)   printf '%-18s %s answered HTTP %s instead of switching to a WebSocket\n' "WebSocket $p:" "${url/#http/ws}/ws/$p" "${code:-000}" ;;
+    esac
+  done
+  # an https console must build https links on every request; a proxy hop it doesn't trust (one tunnel replica of
+  # several, say) gets http:// links, so some pages break (mixed content) and some don't
+  [[ "$url" == https://* ]] || return 0
+  local h=${url#https://} n=0 s=0
+  for _ in 1 2 3 4 5 6 7 8; do
+    case "$(curl -s -o /dev/null -m 10 -w '%{redirect_url}' "$url/devices" 2>/dev/null || true)" in
+      "http://$h/"*) n=$((n + 1)) ;; "https://$h/"*) s=$((s + 1)) ;;
+    esac
+  done
+  if [ "$n" -gt 0 ]; then
+    echo "https links:       BROKEN: $n of $((n + s)) answers linked to http://. A proxy or tunnel connector is not in"
+    echo "                   TRUSTED_PROXIES. Give rustdesk-config all of their IPs (a,b) or their subnet."
+  elif [ "$s" -gt 0 ]; then echo "https links:       OK ($s of $s)"
+  else echo "https links:       not tested (no redirect from $url/devices)"; fi
 }
 cur_host=$(env_get "$CD_ENV" CORTENDESK_ID_SERVER); cur_host=${cur_host%:21116}
 cur_url=$(env_get "$CD_ENV" APP_URL)
@@ -46,9 +67,9 @@ if [ "${1:-}" = --check ]; then check_url "$cur_url"; exit 0; fi
 if [ "${1:-}" = --stdin ]; then
   IFS= read -r host || true; IFS= read -r url || true; IFS= read -r proxy || true
 else
-  read -r -p "Public host for the ID/relay server (DNS-only name or IP) [$cur_host]: " host
+  read -r -p "Public host for the ID/relay server (DNS-only name or IP; the console's name if all clients use WebSocket) [$cur_host]: " host
   read -r -p "Console URL (browsers + the clients' API server) [$cur_url]: " url
-  read -r -p "Reverse proxy / tunnel IP, or 'none' [${cur_proxy:-none}]: " proxy
+  read -r -p "Reverse proxy / tunnel IPs (all connectors, a,b or a subnet), or 'none' [${cur_proxy:-none}]: " proxy
 fi
 host=${host:-$cur_host}; url=${url:-$cur_url}; url=${url%/}; proxy=${proxy:-$cur_proxy}
 [ "$proxy" = none ] && proxy=""
@@ -85,19 +106,13 @@ art config:cache >/dev/null
 jq -n --arg i "$host:21116" --arg r "$host:21117" '{id_server:$i, relay_server:$r}' |
   cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
 svc restart "$FPM"   # opcache.validate_timestamps=0
+if ws_realip_conf; then svc reload nginx; fi   # the WebSocket bridge trusts the same proxies for client addresses
 
-# rdgen: form defaults, the hosts it answers to, the key copy it can read, and the console's link to it
+# rdgen: form defaults, the names it answers to (its public URL included), the key copy, the console's link to it
 if [ -f "$RDGEN_ENV" ]; then
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$host"
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$url"
-  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "${url%/}/clients"
-  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "${url%/}/share"
-  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1"
+  rdgen_site_env
   server_pub_copy || true
-  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "http://$(lan_ip):8190"
-  art config:cache >/dev/null
-  jq -n --arg u "http://$(lan_ip):8190" '{rdgen_url:$u}' | cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
-  svc restart "$FPM"
+  rdgen_link_console
   svc restart rdgen
 fi
 

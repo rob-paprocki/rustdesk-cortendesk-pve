@@ -245,9 +245,11 @@ __V6_LISTEN__
     client_max_body_size 260m;
     access_log off;
 
-    # WebSocket bridge for the web client -> hbbs (21118) / hbbr (21119). Those ports trust X-Real-IP /
-    # X-Forwarded-For from whoever connects, so always overwrite them with the real peer.
+    # WebSocket bridge for the web client and WebSocket clients -> hbbs (21118) / hbbr (21119). Those ports trust
+    # X-Real-IP / X-Forwarded-For from whoever connects, so always overwrite them with the peer; behind a trusted
+    # proxy (TRUSTED_PROXIES) that is the client it forwarded for (rustdesk-ws-realip.conf).
     location = /ws/id {
+        include /etc/nginx/rustdesk-ws-realip.conf;
         proxy_pass http://127.0.0.1:21118/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -258,6 +260,7 @@ __V6_LISTEN__
         proxy_send_timeout 3600s;
     }
     location = /ws/relay {
+        include /etc/nginx/rustdesk-ws-realip.conf;
         proxy_pass http://127.0.0.1:21119/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -336,6 +339,8 @@ CORTENDESK_DOWNLOADS_PATH=/var/lib/cortendesk/downloads
 CORTENDESK_DOWNLOADS_MAX_KB=262144
 EOF
   fi
+  # the WebSocket bridge's trusted proxies (the console's server block includes them; rustdesk-config rewrites them)
+  bash -c '. /usr/local/lib/rustdesk-cortendesk/common.sh; ws_realip_conf'
   [ -f /etc/rustdesk-update.env ] || cat <<'EOF' >/etc/rustdesk-update.env
 # rustdesk-update settings. Notifications: run `rustdesk-notify setup` (Discord, Apprise, Apprise API).
 NOTIFY_METHOD=none

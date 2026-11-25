@@ -263,4 +263,12 @@ else
   echo
   echo "Installed, not registered. To register: bash $0 --register --repo $REPO"
 fi
+G2_SHA256=F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A   # DeveloperIDG2CA.cer (pullify pins it too)
+if ! security find-certificate -a -Z -c "Developer ID Certification Authority" /Library/Keychains/System.keychain 2>/dev/null |
+    grep -qi "SHA-256 hash: $G2_SHA256"; then
+  echo
+  echo "Signed builds (MACOS_P12_BASE64) need Apple's Developer ID G2 intermediate in the System keychain; the build"
+  echo "checks for it first. Add it once (this script uses no sudo):"
+  echo "  curl -fsSLo /tmp/g2.cer https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer && sudo security add-certificates -k /Library/Keychains/System.keychain /tmp/g2.cer"
+fi
 echo "Keep this user logged in and the Mac awake while builds may run (System Settings > Energy, or: sudo pmset -c sleep 0)."

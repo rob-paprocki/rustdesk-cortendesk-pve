@@ -1,7 +1,8 @@
-From 1efb5be0d1cd86e9bd91933c0111b4f33ccd8ddd Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From a19ce8c8c97e624220e69a16c2703b7f57e94236 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Tue, 20 Oct 2026 08:52:53 +0000
-Subject: [PATCH 27/33] tests: follow upstream's 1.5.0-only form (Windows names
+Subject: [PATCH 27/38] tests: follow upstream's 1.5.0-only form (Windows names
  with spaces are refused on 1.5.0) and the slug_appname key
 
 ---
@@ -11,7 +12,7 @@ Subject: [PATCH 27/33] tests: follow upstream's 1.5.0-only form (Windows names
  3 files changed, 9 insertions(+), 8 deletions(-)
 
 diff --git a/rdgenerator/tests/test_publish.py b/rdgenerator/tests/test_publish.py
-index 0fcd342..8f74e46 100644
+index ad732a6..0e44cae 100644
 --- a/rdgenerator/tests/test_publish.py
 +++ b/rdgenerator/tests/test_publish.py
 @@ -41,15 +41,15 @@ class PublishTests(StubTestCase):
@@ -34,7 +35,7 @@ index 0fcd342..8f74e46 100644
          self.assertEqual(entry['files'][0]['size'], 102)
          self.assertEqual(len(entry['files'][0]['sha256']), 64)
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index b6484bf..47bfccd 100644
+index f1155e8..21b3187 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -157,7 +157,7 @@ class LinuxAppNameTests(StubTestCase):

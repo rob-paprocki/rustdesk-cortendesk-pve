@@ -1,7 +1,8 @@
-From a410d348f09e5a7334b725fc2c4e12ff54aa98e6 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 58622179c04225084ca5743a7cccebbe3dd54ef8 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Sat, 14 Nov 2026 09:48:22 +0000
-Subject: [PATCH 33/33] theme colors: validate the new build config keys on
+Subject: [PATCH 33/38] theme colors: validate the new build config keys on
  both sides
 
 Upstream's theme color chooser adds themeColor, themeSurfaceLight,
@@ -11,10 +12,9 @@ form/API tests of upstream's removed tests.py move into the tests package,
 and forms.py imports re again (HEX_COLOR_RE).
 ---
  .github/actions/decrypt-secrets/validate.py |  8 +-
- rdgenerator/forms.py                        |  2 +
  rdgenerator/tests/test_theme.py             | 84 +++++++++++++++++++++
  rdgenerator/tests/test_workflows.py         |  8 +-
- 4 files changed, 98 insertions(+), 4 deletions(-)
+ 3 files changed, 96 insertions(+), 4 deletions(-)
  create mode 100644 rdgenerator/tests/test_theme.py
 
 diff --git a/.github/actions/decrypt-secrets/validate.py b/.github/actions/decrypt-secrets/validate.py
@@ -42,16 +42,6 @@ index f7ff83c..ec1fe7c 100644
  
  
  def validate_secrets(data):
-diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index e8e5902..d7c5fe5 100644
---- a/rdgenerator/forms.py
-+++ b/rdgenerator/forms.py
-@@ -1,3 +1,5 @@
-+import re
-+
- from django import forms
- from django.conf import settings as _settings
- from PIL import Image
 diff --git a/rdgenerator/tests/test_theme.py b/rdgenerator/tests/test_theme.py
 new file mode 100644
 index 0000000..d2bd261

@@ -1,7 +1,8 @@
-From 22c48af70e06f709733303e5a1d1ecfe41ce7cdf Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 44ef82ccb69f6be9c87cadba3c28f43f0032ed2c Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:38:19 -0400
-Subject: [PATCH 02/33] auth: require login everywhere, re-enable CSRF, token
+Subject: [PATCH 02/38] auth: require login everywhere, re-enable CSRF, token
  or session for /api
 
 - Add LoginRequiredMiddleware (Django >= 5.1; Alpine 3.24 ships 5.2.17).
@@ -22,7 +23,6 @@ Subject: [PATCH 02/33] auth: require login everywhere, re-enable CSRF, token
   12).
 - Use reversed URLs ({% url %}) in the templates this touches, so a
   sub-path mount (RDGEN_URL_PREFIX) keeps working.
-
 ---
  rdgen/settings.py                             | 17 +++++-
  rdgen/urls.py                                 | 52 ++++++++-----------
@@ -43,7 +43,7 @@ Subject: [PATCH 02/33] auth: require login everywhere, re-enable CSRF, token
  create mode 100644 rdgenerator/templates/registration/login.html
 
 diff --git a/rdgen/settings.py b/rdgen/settings.py
-index 3da6b3b..f7c3100 100644
+index b4373cc..b799062 100644
 --- a/rdgen/settings.py
 +++ b/rdgen/settings.py
 @@ -121,6 +121,16 @@ GENURL = ''

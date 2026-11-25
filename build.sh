@@ -1,12 +1,31 @@
 #!/usr/bin/env bash
 # Renders install/rustdesk-cortendesk-install.sh from src/install.tmpl, embedding every file under src/files/
-# (target path = path below src/files). The framework passes the install script to `bash -c` as ONE argument,
-# which Linux caps at 128 KiB (MAX_ARG_STRLEN), so the result must stay well below that.
+# (target path = path below src/files; the tools in /usr/local/bin without their header comment, see embedded()).
+# The framework passes the install script to `bash -c` as ONE argument, which Linux caps at 128 KiB
+# (MAX_ARG_STRLEN), so the result must stay well below that.
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 - <<'PY'
 import os
 MARK = "RDFILE_EOF"
+
+
+def embedded(dst, body):
+    # The comment block under a tool's shebang (usage, design notes) is for readers of this repository; the
+    # installer leaves it out to stay below the size limit. Tools that print it as their usage ("$0") keep it,
+    # and so does everything from a shellcheck directive on. tools/refresh-ct.sh copies the full files.
+    if not dst.startswith("/usr/local/bin/") or '"$0"' in body:
+        return body
+    lines = body.split("\n")
+    i = 1
+    while i < len(lines) and lines[i].startswith("#") and "shellcheck" not in lines[i]:
+        i += 1
+    if i == 1:
+        return body
+    note = f"# usage and notes: src/files{dst} in the project repository"
+    return "\n".join([lines[0], note] + lines[i:])
+
+
 parts = []
 for root, _, files in sorted(os.walk("src/files")):
     for name in sorted(files):
@@ -15,6 +34,7 @@ for root, _, files in sorted(os.walk("src/files")):
         body = open(src).read()
         assert MARK not in body, f"{src} contains the heredoc marker"
         assert not body.endswith("\n\n"), f"{src} ends with a blank line"
+        body = embedded(dst, body)
         mode = "755" if "/bin/" in dst else "644"
         parts.append(f'  mkdir -p "{os.path.dirname(dst)}"\n'
                      f"  cat <<'{MARK}' >\"{dst}\"\n{body.rstrip(chr(10))}\n{MARK}\n"

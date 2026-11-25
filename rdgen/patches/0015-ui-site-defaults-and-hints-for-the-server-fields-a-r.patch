@@ -1,7 +1,8 @@
-From 851569e4cdbefc18b56e47c700d6ad1461e46fd0 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From d23170225148fb7038dca3f9ec03fe4654e26304 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 22:38:06 -0400
-Subject: [PATCH 15/33] ui: site defaults and hints for the server fields, a
+Subject: [PATCH 15/38] ui: site defaults and hints for the server fields, a
  reference for the Other section
 
 Custom Server: RDGEN_DEFAULT_PORT, RDGEN_DEFAULT_URL_LINK,
@@ -84,7 +85,7 @@ index 7c2f7f8..a2c9e91 100644
  # --- hand-off to a console's client downloads (optional) -----------------
  # Empty: off. Otherwise the form offers "add the files to <target>'s Client
 diff --git a/rdgen/settings.py b/rdgen/settings.py
-index 2df970c..9cceab5 100644
+index 860b073..fc08a0d 100644
 --- a/rdgen/settings.py
 +++ b/rdgen/settings.py
 @@ -129,7 +129,16 @@ RDGEN_DEFAULTS = {
@@ -106,7 +107,7 @@ index 2df970c..9cceab5 100644
  # job outside rdgen (rdgen-publish in the RustDesk LXC) asks
 diff --git a/rdgenerator/client_settings.json b/rdgenerator/client_settings.json
 new file mode 100644
-index 0000000..bfdb57e
+index 0000000..754eb55
 --- /dev/null
 +++ b/rdgenerator/client_settings.json
 @@ -0,0 +1,1996 @@

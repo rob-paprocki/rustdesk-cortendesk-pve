@@ -1,0 +1,93 @@
+From 8234c98f6884e23d48961cdfb4d8bab3342a7644 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
+Date: Wed, 18 Nov 2026 01:23:21 +0000
+Subject: [PATCH 35/38] macos: sign on a LaunchDaemon runner, build with Xcode
+ 27
+
+A runner that runs as a LaunchDaemon signs in a background session, where
+codesign builds the certificate chain from the System keychain only, so
+every Developer ID signature failed with "unable to build chain to
+self-signed root" and errSecInternalComponent. The prepare step of a
+self-hosted Mac now checks for Apple's G2 intermediate there before a signed
+build starts, and says how to add it.
+
+Xcode 27 builds nothing for macOS older than 12.0, and RustDesk's CocoaPods
+targets ask for 10.13 and 10.14. A new step sets
+FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET=12.0 when Xcode is 27 or newer.
+
+The signing step records its keychain before anything can fail, so the
+cleanup step always removes it, together with its search-list entry.
+
+Tests for the three, and SETUP-PULL.md says what to add to a Mac.
+---
+ SETUP-PULL.md                       |  3 +++
+ rdgenerator/tests/test_workflows.py | 42 +++++++++++++++++++++++++++++
+ 2 files changed, 45 insertions(+)
+
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index bc25a2b..2808347 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -90,6 +90,9 @@ Jobs on a self-hosted runner cost no Actions minutes. The Mac jobs can run on yo
+ 2. Give the Mac a runner and the build tools. In the RustDesk LXC setup, `tools/runner-mac.sh --repo <owner>/<build repo>` does both under your account, without Homebrew or `sudo`, and registers the runner with the label `rdgen-mac`; it asks for a token from **Settings → Actions → Runners → New self-hosted runner** in the build repository. Otherwise follow that GitHub page, add `--labels rdgen-mac` to `./config.sh`, run `./svc.sh install` and `./svc.sh start`, and put these commands on the runner's PATH: `python` (3) and its `pip`, `magick` (ImageMagick 7), `potrace`, `create-dmg`, `pkg-config`, `cmake`, `ninja`, `wget`, `jq`, `pod` (CocoaPods) and `rustup`. The runner keeps going while that account is logged in.
+ 3. In the build repository: **Settings → Secrets and variables → Actions → Variables**: set `RDGEN_RUNNER_MACOS_X86_64` (Intel Mac) or `RDGEN_RUNNER_MACOS_AARCH64` (Apple Silicon Mac) to that label.
+ 4. On the form, set **Mac builds** to the kind of Mac the runner is.
++5. If the builds are signed (`MACOS_P12_BASE64` is set), add Apple's Developer ID G2 intermediate to the Mac's System keychain once: `curl -fsSLo /tmp/g2.cer https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer && sudo security add-certificates -k /Library/Keychains/System.keychain /tmp/g2.cer`. A runner that runs as a LaunchDaemon signs in a background session, where codesign looks for the certificate chain only in the System keychain, so without it every signature fails with `errSecInternalComponent`. The workflow checks for it before it builds.
++
++With Xcode 27 or later, the workflow raises the deployment target to macOS 12.0, the oldest version that Xcode builds for, so clients built there need macOS 12 or later.
+ 
+ On a self-hosted runner the workflow first checks for Xcode and those commands and says what is missing. It skips its `brew install` steps there, because Homebrew no longer has prebuilt packages for Intel Macs and they would compile LLVM, GCC and Ruby for hours. It puts the tools it downloads in a per-job directory instead of `sudo` into /usr/local, lays out the DMG without Finder (`create-dmg --skip-jenkins`), and always deletes its temporary signing keychain. On GitHub's machines it behaves as before. Without a Linux runner, the small Linux jobs of each build (setup, bridge, cleanup, about 10 minutes) still run on GitHub, so keep the Actions budget above $0 or set `RDGEN_RUNNER_LINUX` too. An Intel Mac cannot build Apple Silicon clients with this workflow; Intel clients do run on Apple Silicon Macs through Rosetta 2, which Apple supports fully through macOS 27. The first build compiles every dependency and is slow; later ones reuse the caches. Only you can start builds in a private repository, but the runner runs them with that account's rights, so don't use it for public repositories.
+ 
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index d00b603..e74b49f 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -143,6 +143,48 @@ class PullifyTests(SimpleTestCase):
+         keychain = text.split('- name: Remove the signing keychain', 1)[1].split('\n      - name:', 1)[0]
+         self.assertIn("if: always() && env.RDGEN_KEYCHAIN != ''", keychain)
+ 
++    def test_macos_signing_and_xcode_27_on_a_mac_of_your_own(self):
++        with open(os.path.join(WORKFLOWS, 'generator-macos.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++
++        def step(name):
++            return text.split(f'- name: {name}', 1)[1].split('\n      - name:', 1)[0]
++        names = re.findall(r'^\s*- name: (.+?)\s*$', text, re.M)
++        self.assertEqual(names[names.index('Prepare a self-hosted Mac') + 1], 'Match the deployment target to this Xcode')
++        # a LaunchDaemon runner signs only with Apple's G2 intermediate in the System keychain: checked before building
++        prep = step('Prepare a self-hosted Mac')
++        self.assertIn('SHA-256 hash: F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A', prep)
++        self.assertIn('sudo security add-certificates -k /Library/Keychains/System.keychain', prep)
++        # the keychain is recorded before anything can fail, so the cleanup always finds it
++        sign = step('Sign the app with the Developer ID')
++        self.assertLess(sign.index('echo "RDGEN_KEYCHAIN=$kc"'), sign.index('security import'))
++        self.assertEqual(sign.count('RDGEN_KEYCHAIN='), 1)
++        keychain = step('Remove the signing keychain')
++        self.assertIn('security delete-keychain "$RDGEN_KEYCHAIN"', keychain)
++        self.assertIn('security list-keychains -d user -s ${keep[@]+"${keep[@]}"}', keychain)
++        # Xcode 27 gets the deployment target it supports; older Xcode keeps RustDesk's
++        body = step('Match the deployment target to this Xcode').split('run: |\n', 1)[1]
++        script = []
++        for line in body.splitlines():   # the run block ends at the first line indented less (the next step)
++            if line.strip() and not line.startswith(' ' * 10):
++                break
++            script.append(line[10:])
++        script = '\n'.join(script)
++        for version, expected in (('16.4', ''), ('27.2', 'FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET=12.0\n')):
++            with tempfile.TemporaryDirectory() as tmp:
++                fake = os.path.join(tmp, 'xcodebuild')
++                with open(fake, 'w', encoding='utf-8') as fh:
++                    fh.write(f'#!/bin/sh\necho "Xcode {version}"\necho "Build version 0"\n')
++                os.chmod(fake, 0o755)
++                env_file = os.path.join(tmp, 'github_env')
++                open(env_file, 'w', encoding='utf-8').close()
++                r = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', script], cwd=tmp,
++                                   env=dict(os.environ, PATH=tmp + os.pathsep + os.environ.get('PATH', ''),
++                                            GITHUB_ENV=env_file), capture_output=True, text=True)
++                self.assertEqual(r.returncode, 0, r.stderr)
++                with open(env_file, encoding='utf-8') as fh:
++                    self.assertEqual(fh.read(), expected, version)
++
+     def test_linux_options_and_self_hosted_runners(self):
+         def read(name):
+             with open(os.path.join(ROOT, '.github', 'workflows', name), encoding='utf-8') as fh:

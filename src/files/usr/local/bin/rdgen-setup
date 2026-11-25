@@ -9,6 +9,8 @@
 #   rdgen-setup --local-only install locally without touching GitHub (testing)
 #   rdgen-setup --rebuild    rebuild the installed rdgen from the base commit + the patches in this CT (after new
 #                            patches were copied in, e.g. by tools/refresh-ct.sh); then --push (or --github) it
+#   rdgen-setup --public-url <https://name | off>   also answer on that public name (tunnel, proxy); the console's
+#                            Build Installers link follows it. rustdesk-config and rdgen-setup keep it
 #   rdgen-setup --patch-source <owner/repo> [branch] | off | status | dispatch-token   (see rdgen/patch-source)
 # GitHub never connects to this LXC: builds are dispatched with the encrypted config as a workflow input and the
 # poller downloads (then deletes) the artifacts. The web UI listens on http://<LAN IP>:8190/ (LAN only, login).
@@ -22,7 +24,7 @@ set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 MODE=full REPO="" ITOKEN="" RTOKEN="" STORE=""
 case "${1:-}" in --stdin) MODE=stdin ;; --github) MODE=github ;; --push) MODE=push ;; --local-only) MODE=local ;;
-  --rebuild) MODE=rebuild ;;
+  --rebuild) MODE=rebuild ;; --public-url) MODE=public PUB=${2:-} ;;
   --patch-source) PS=/usr/local/share/rustdesk-cortendesk/rdgen/patch-source
     case "${2:-status}" in off|status|dispatch-token) exec "$PS" "${2:-status}" ;; *) exec "$PS" setup "${@:2}" ;; esac ;;
 esac
@@ -145,14 +147,8 @@ rdgen_env() {  # secrets are created once; site values are (re)written
   # otherwise the form's key is blank and rdgen falls back to RustDesk's public key
   server_pub_copy
   env_set "$RDGEN_ENV" RDGEN_DEFAULT_KEY_FILE /etc/rdgen/server.pub
-  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1"
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$(env_get "$CD_ENV" CORTENDESK_ID_SERVER | sed 's/:21116$//')"
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$(env_get "$CD_ENV" APP_URL)"
+  rdgen_site_env   # form defaults, self-update and share links, ALLOWED_HOSTS (+ the public URL)
   env_set "$RDGEN_ENV" RDGEN_DEFAULT_PORT 21116   # hbbs here always listens on 21116 (relay 21117, WebSocket 21118/9)
-  # Windows clients' self-update links on the console (/etc/nginx/rustdesk-clients.conf, client-update.php)
-  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "$(env_get "$CD_ENV" APP_URL | sed 's#/*$##')/clients"
-  # share links from the Recent builds page work wherever the console does (/etc/nginx/rustdesk-clients.conf)
-  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "$(env_get "$CD_ENV" APP_URL | sed 's#/*$##')/share"
   # the form's "add to CortenDesk's Client Downloads" choice (rdgen-publish does the copy); an existing value,
   # even an empty one (= off), is kept
   grep -q '^RDGEN_PUBLISH_DEFAULT=' "$RDGEN_ENV" || env_set "$RDGEN_ENV" RDGEN_PUBLISH_DEFAULT hidden
@@ -234,15 +230,14 @@ github() {  # push the tree to the private repo + set ZIP_PASSWORD, as rdgenbuil
   return 0
 }
 
-link_cortendesk() {
-  local url; url="http://$(lan_ip):8190"
-  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "$url"
-  art config:cache >/dev/null
-  jq -n --arg u "$url" '{rdgen_url:$u}' | cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
-  svc restart "$FPM"
-  creds_set "rdgen URL" "$url/  (LAN only; the console's Build Installers link)"
-}
-
+if [ "$MODE" = public ]; then
+  PUB=${PUB%/}; [ "$PUB" = off ] && PUB=""
+  [[ "$PUB" =~ ^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$ ]] || { echo "rdgen-setup: --public-url https://name or off" >&2; exit 2; }
+  [ -f "$RDGEN_ENV" ] || { echo "rdgen is not installed; run rdgen-setup first" >&2; exit 1; }
+  env_set "$RDGEN_ENV" RDGEN_PUBLIC_URL "$PUB"; env_set "$RDGEN_ENV" CSRF_TRUSTED_ORIGINS "$PUB"
+  rdgen_site_env; rdgen_link_console; svc restart rdgen
+  echo "==> rdgen answers on ${PUB:-its LAN names only}"; exit 0
+fi
 ask
 if [ "$MODE" = push ]; then   # same as --github with the stored install token, the current repo and runtime token
   [ -x "$VENV_PY" ] || { echo "rdgen is not installed; run rdgen-setup first" >&2; exit 1; }
@@ -301,7 +296,7 @@ else
 fi
 services
 healthy
-link_cortendesk
+rdgen_link_console
 mkdir -p /var/lib/rustdesk-update
 if [ -n "$BUILT_BASE" ]; then echo "${BUILT_BASE:0:12}" >/var/lib/rustdesk-update/rdgen; fi
 if [ "$MODE" = local ]; then echo "==> rdgen installed locally (GitHub not configured)"; exit 0; fi

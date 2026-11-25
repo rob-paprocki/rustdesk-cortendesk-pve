@@ -1,7 +1,8 @@
-From f8fcc31b1937bf7ab0a679ebc0d1285c7cfafa02 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 3546afbba013f7bccee713b9b7a25c2235b9026b Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Mon, 5 Oct 2026 16:35:03 -0400
-Subject: [PATCH 22/33] builds: the cost note says where the last build of each
+Subject: [PATCH 22/38] builds: the cost note says where the last build of each
  kind ran
 
 The form's cost note quoted GitHub's prices for every build, including Mac
@@ -18,7 +19,6 @@ Actions access only), but it can see where jobs ran.
   last completed one ran. The note then says "your own Mac (runner) built it
   last time, so no GitHub Actions minutes", or GitHub's cost where it ran on
   GitHub's machines or nothing is known yet.
-
 ---
  .../migrations/0007_githubrun_runners.py      | 16 +++++
  rdgenerator/models.py                         |  3 +
@@ -251,7 +251,7 @@ index 1066c50..9f62b66 100644
          u = self.generate().json()['uuid']
          build = self.poll_until_terminal(u)
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index 7beb1e9..b6484bf 100644
+index a94aa5b..f1155e8 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -2,12 +2,16 @@

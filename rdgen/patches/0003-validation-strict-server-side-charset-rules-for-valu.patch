@@ -1,7 +1,8 @@
-From 680ef4054e5c8f7bad0a67314f2994a82ba5f898 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 61d1f896e31f9c176507a278f05ea1c1d48435bd Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:39:44 -0400
-Subject: [PATCH 03/33] validation: strict server-side charset rules for values
+Subject: [PATCH 03/38] validation: strict server-side charset rules for values
  that reach build scripts
 
 The generator workflows paste appname, compname, server, key, apiServer,
@@ -27,14 +28,13 @@ shell of the runner, which holds the signing secrets.
 - API: an omitted boolean now takes the web form's default. Upstream
   defaulted all 20 booleans to False (keyboard, clipboard, ... off),
   unlike the UI. Non-string values are rejected instead of crashing.
-
 ---
  rdgenerator/api_views.py             | 36 ++++++-----
- rdgenerator/forms.py                 | 59 ++++++++++++------
+ rdgenerator/forms.py                 | 58 ++++++++++++------
  rdgenerator/templates/generator.html |  8 ++-
  rdgenerator/validation.py            | 92 ++++++++++++++++++++++++++++
  rdgenerator/views.py                 |  7 +--
- 5 files changed, 159 insertions(+), 43 deletions(-)
+ 5 files changed, 159 insertions(+), 42 deletions(-)
  create mode 100644 rdgenerator/validation.py
 
 diff --git a/rdgenerator/api_views.py b/rdgenerator/api_views.py
@@ -116,28 +116,27 @@ index e9874d2..b12d53b 100644
      # Theme colors flow into Dart 0xAARRGGBB literals in the workflow patch.
      # Accept #RRGGBB/RRGGBB and store the canonical form; blank = stock.
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index ae24e06..f146702 100644
+index 08f0fcf..068bda3 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -3,10 +3,9 @@ import re
+@@ -4,12 +4,11 @@ import re
  from django import forms
  from PIL import Image
+ 
++from .validation import validate_build_fields
++
+ logger = logging.getLogger(__name__)
  
 -# App/company names are interpolated into single/double-quoted bash sed
 -# scripts in every generator workflow: & \ | corrupt the substitution
 -# silently, ' " $ ` break shell quoting, CR/LF break sed addressing.
 -UNSAFE_NAME_CHARS = re.compile(r'[&\\|\'"$`\r\n]')
-+from .validation import validate_build_fields
-+
 +MAX_PNG_BYTES = 4 * 1024 * 1024
  
  # Theme colours are interpolated into 0xAARRGGBB Dart literals by the
  # workflow patch. Accept the same forms a user types in a colour picker, but
-@@ -124,9 +123,10 @@ class GenerateForm(forms.Form):
-     removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
- 
-     def clean_iconfile(self):
--        print("checking icon")
+@@ -130,6 +129,8 @@ class GenerateForm(forms.Form):
+         logger.info("checking icon")
          image = self.cleaned_data['iconfile']
          if image:
 +            if image.size > MAX_PNG_BYTES:
@@ -145,7 +144,7 @@ index ae24e06..f146702 100644
              try:
                  # Open the image using Pillow
                  img = Image.open(image)
-@@ -141,27 +141,35 @@ class GenerateForm(forms.Form):
+@@ -144,27 +145,35 @@ class GenerateForm(forms.Form):
                  # Check for square dimensions
                  if width != height:
                      raise forms.ValidationError("Custom App Icon dimensions must be square.")
@@ -196,7 +195,7 @@ index ae24e06..f146702 100644
  
      def _clean_hex_color(self, field):
          """Accept #RRGGBB or RRGGBB; return canonical #RRGGBB or ''."""
-@@ -186,3 +194,14 @@ class GenerateForm(forms.Form):
+@@ -189,3 +198,14 @@ class GenerateForm(forms.Form):
  
      def clean_themeMeColor(self):
          return self._clean_hex_color('themeMeColor')
@@ -330,10 +329,10 @@ index 0000000..2c64e3a
 +            errors[field] = 'Must be a data:image/png;base64 URI of at most 4 MB.'
 +    return errors
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index e0b3837..6e0d7c4 100644
+index f799ba4..b7ac2b2 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -14,6 +14,7 @@ import pyzipper
+@@ -15,6 +15,7 @@ import pyzipper
  from django.conf import settings as _settings
  from django.db.models import Q
  from .forms import GenerateForm, HEX_COLOR_RE
@@ -341,7 +340,7 @@ index e0b3837..6e0d7c4 100644
  from .models import GithubRun
  from PIL import Image
  from urllib.parse import quote
-@@ -147,11 +148,7 @@ def generate_custom_client(params, full_url):
+@@ -150,11 +151,7 @@ def generate_custom_client(params, full_url):
      enableCamera = params.get('enableCamera', True)
      enableTerminal = params.get('enableTerminal', True)
  

@@ -1,7 +1,8 @@
-From ddaee04ca4eaf9812a3f82131c9105e921c12bcd Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 88e962ebbb6e83a802ff7b7dee25659969015e00 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 22:46:40 -0400
-Subject: [PATCH 19/33] ui: say what the API server, the connection type and
+Subject: [PATCH 19/38] ui: say what the API server, the connection type and
  the password are for
 
 A user's clients never appeared in the console: the form's API server
@@ -23,7 +24,6 @@ builds quietly used most of their GitHub Actions minutes.
   passwords and Accept clicks.
 - Platform: what a build costs in Actions minutes; a Mac build runs two
   Mac machines and uses roughly 600-700 of the Free plan's 2,000.
-
 ---
  rdgenerator/templates/_api_server.html | 61 ++++++++++++++++++++++++++
  rdgenerator/templates/_build_cost.html | 29 ++++++++++++
@@ -176,7 +176,7 @@ index 7b734a4..bb71629 100644
                      
                      <label for="{{ form.denyLan.id_for_label }}">{{ form.denyLan }} Deny LAN discovery</label><br>
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index 1d82e70..bd34d35 100644
+index 7dfa811..a8ebaad 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -37,6 +37,19 @@ class FormPageTests(TestCase):

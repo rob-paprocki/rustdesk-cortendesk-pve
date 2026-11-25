@@ -1,0 +1,187 @@
+From effab1939972fbdb2bada39bb800a088a0039111 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release <rustdesk-cortendesk-pve release>
+Date: Wed, 18 Nov 2026 15:02:21 +0000
+Subject: [PATCH 36/38] windows: build the MSI on a machine that cannot start
+ the client
+
+RustDesk's res/msi/preprocess.py starts the client it packages
+(<app>.exe --version and --build-date). On a Windows Server Core runner
+the client cannot start, because librustdesk.dll and flutter_windows.dll
+link desktop DLLs that Server Core leaves out (sas, dxva2, xpsprint,
+opengl32). preprocess.py failed, Includes.wxi stayed empty, WiX stopped
+with WIX0150, and "Build msi" continued on error, so every build since the
+Server Core runner finished with the .exe only.
+
+.github/patches/msiPreprocessFallback.py edits preprocess.py before the
+build: a version that does not look like one comes from Cargo.toml, a
+build date that does not stays the clock time preprocess.py starts with.
+It stops when preprocess.py no longer has the lines it edits. pullify
+(0008) runs it in a new step before "Build msi" and takes
+continue-on-error off that step.
+
+Tests run the helper against upstream's init_global_vars (1.5.3).
+SETUP-PULL.md says why.
+---
+ .github/patches/msiPreprocessFallback.py | 37 +++++++++++
+ SETUP-PULL.md                            |  2 +
+ rdgenerator/tests/test_workflows.py      | 83 ++++++++++++++++++++++++
+ 3 files changed, 122 insertions(+)
+ create mode 100644 .github/patches/msiPreprocessFallback.py
+
+diff --git a/.github/patches/msiPreprocessFallback.py b/.github/patches/msiPreprocessFallback.py
+new file mode 100644
+index 0000000..ecfb23e
+--- /dev/null
++++ b/.github/patches/msiPreprocessFallback.py
+@@ -0,0 +1,37 @@
++"""rdgen: let RustDesk's res/msi/preprocess.py build the MSI without starting the client it packages.
++
++preprocess.py runs <app>.exe --version and --build-date. A build machine without the desktop DLLs that RustDesk
++links (Windows Server Core has no sas, dxva2, xpsprint or opengl32) cannot start the client, and the MSI failed.
++After this, a version that does not look like one comes from the Cargo.toml the client was built from, and a
++build date that does not look like one stays the clock time preprocess.py sets when it starts. Run from the
++RustDesk checkout (generator-windows.yml, "Let the MSI build without starting the client").
++"""
++import pathlib
++
++p = pathlib.Path('res/msi/preprocess.py')
++s = p.read_text(encoding='utf-8')
++old_v = '        g_version = read_process_output("--version")\n'
++new_v = old_v + (
++    '        if not version_pattern_ok(g_version):  # rdgen: this build machine cannot start the client\n'
++    '            g_version = cargo_version()\n')
++old_d = '    g_build_date = read_process_output("--build-date")\n'
++new_d = (
++    '    _date = read_process_output("--build-date")\n'
++    '    if re.match(r"\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}", _date):  # rdgen: else the clock time set above\n'
++    '        g_build_date = _date\n')
++old_f = 'def init_global_vars(dist_dir, app_name, args):\n'
++new_f = (
++    'def version_pattern_ok(v):\n'
++    '    return re.match(r"\\d+\\.\\d+\\.\\d+", v) is not None\n'
++    '\n\n'
++    'def cargo_version():\n'
++    '    # rdgen: the version the client was built with, from the Cargo.toml it was built from\n'
++    '    text = (Path(__file__).resolve().parents[2] / "Cargo.toml").read_text(encoding="utf-8")\n'
++    '    m = re.search(r\'(?m)^version\\s*=\\s*"([^"]+)"\', text)\n'
++    '    return m.group(1).replace("-", ".") if m else ""\n'
++    '\n\n' + old_f)
++for old in (old_v, old_d, old_f):
++    assert s.count(old) == 1, f'preprocess.py changed upstream: {old.strip()}'
++s = s.replace(old_v, new_v).replace(old_d, new_d).replace(old_f, new_f)
++p.write_text(s, encoding='utf-8')
++print('preprocess.py: version and build date no longer need the client to run')
+diff --git a/SETUP-PULL.md b/SETUP-PULL.md
+index 2808347..2476c01 100644
+--- a/SETUP-PULL.md
++++ b/SETUP-PULL.md
+@@ -82,6 +82,8 @@ On a self-hosted runner the workflows skip the cleanup that frees disk on GitHub
+ 
+ **Windows:** Windows with Visual Studio 2022 Build Tools (C++), Git for Windows (`bash`), PowerShell 7, Python 3, Chocolatey, NuGet and the .NET SDK, and the runner service running as an administrator. In the RustDesk LXC setup, `tools/runner-windows.ps1` installs all of it on a Windows Server VM.
+ 
++A Windows Server Core runner builds the client but cannot start it, because Server Core leaves out desktop DLLs that RustDesk links. RustDesk's MSI script starts the client to read its version and build date, so the workflow gives it the version from Cargo.toml and the build date from the clock instead. A build whose MSI fails now fails as a whole rather than finishing with only the .exe.
++
+ ### Mac builds on a Mac of your own
+ 
+ Jobs on a self-hosted runner cost no Actions minutes. The Mac jobs can run on your own Mac:
+diff --git a/rdgenerator/tests/test_workflows.py b/rdgenerator/tests/test_workflows.py
+index e74b49f..ab38a92 100644
+--- a/rdgenerator/tests/test_workflows.py
++++ b/rdgenerator/tests/test_workflows.py
+@@ -21,6 +21,54 @@ ROOT = str(settings.BASE_DIR)
+ ACTION = os.path.join(ROOT, '.github', 'actions', 'decrypt-secrets')
+ WORKFLOWS = os.path.join(ROOT, '.github', 'workflows')
+ 
++# upstream RustDesk's res/msi/preprocess.py (1.5.3): the globals and init_global_vars that
++# .github/patches/msiPreprocessFallback.py edits
++PREPROCESS_FIXTURE = r'''import datetime
++import re
++import subprocess
++from pathlib import Path
++
++g_version = ""
++g_build_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
++
++
++def init_global_vars(dist_dir, app_name, args):
++    dist_app = dist_dir.joinpath(app_name + ".exe")
++
++    def read_process_output(args):
++        process = subprocess.Popen(
++            f"{dist_app} {args}",
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            shell=True,
++        )
++        output, _ = process.communicate()
++        return output.decode("utf-8").strip()
++
++    global g_version
++    global g_build_date
++    g_version = args.version.replace("-", ".")
++    if g_version == "":
++        g_version = read_process_output("--version")
++    version_pattern = re.compile(r"\d+\.\d+\.\d+.*")
++    if not version_pattern.match(g_version):
++        print(f"Error: version {g_version} not found in {dist_app}")
++        return False
++    if g_version.count(".") == 2:
++        # https://github.com/dotnet/runtime/blob/5535e31a712343a63f5d7d796cd874e563e5ac14/src/libraries/System.Private.CoreLib/src/System/Version.cs
++        if args.revision_version < 0 or args.revision_version > 2147483647:
++            raise ValueError(f"Invalid revision version: {args.revision_version}")    
++        g_version = f"{g_version}.{args.revision_version}"
++
++    g_build_date = read_process_output("--build-date")
++    build_date_pattern = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
++    if not build_date_pattern.match(g_build_date):
++        print(f"Error: build date {g_build_date} not found in {dist_app}")
++        return False
++
++    return True
++'''
++
+ 
+ def load_validate():
+     spec = importlib.util.spec_from_file_location('rdgen_runner_validate', os.path.join(ACTION, 'validate.py'))
+@@ -185,6 +233,41 @@ class PullifyTests(SimpleTestCase):
+                 with open(env_file, encoding='utf-8') as fh:
+                     self.assertEqual(fh.read(), expected, version)
+ 
++    def test_windows_msi_builds_without_starting_the_client(self):
++        import pathlib
++        import runpy
++        import types
++        with open(os.path.join(WORKFLOWS, 'generator-windows.yml'), encoding='utf-8') as fh:
++            text = fh.read()
++        names = re.findall(r'^\s*- name: (.+?)\s*$', text, re.M)
++        self.assertEqual(names[names.index('Build msi') - 1], 'Let the MSI build without starting the client')
++        msi = text.split('- name: Build msi', 1)[1].split('\n      - name:', 1)[0]
++        self.assertNotIn('continue-on-error', msi)   # a build without its MSI fails
++        prep = text.split('- name: Let the MSI build without starting the client', 1)[1].split('\n      - name:', 1)[0]
++        self.assertIn('python "$RUNNER_TEMP/rdgen-patches/msiPreprocessFallback.py"', prep)
++        helper = os.path.join(ROOT, '.github', 'patches', 'msiPreprocessFallback.py')
++        with tempfile.TemporaryDirectory() as tmp:
++            os.makedirs(os.path.join(tmp, 'res', 'msi'))
++            with open(os.path.join(tmp, 'Cargo.toml'), 'w', encoding='utf-8') as fh:
++                fh.write('[package]\nname = "rustdesk"\nversion = "1.5.3"\n')
++            with open(os.path.join(tmp, 'res', 'msi', 'preprocess.py'), 'w', encoding='utf-8') as fh:
++                fh.write(PREPROCESS_FIXTURE)
++            r = subprocess.run([sys.executable, helper], cwd=tmp, capture_output=True, text=True)
++            self.assertEqual(r.returncode, 0, r.stderr)
++            init = runpy.run_path(os.path.join(tmp, 'res', 'msi', 'preprocess.py'), run_name='fixture')['init_global_vars']
++            # no client that starts: the version comes from Cargo.toml, the build date from the clock
++            self.assertTrue(init(pathlib.Path(tmp), 'not-startable', types.SimpleNamespace(version='', revision_version=7)))
++            self.assertEqual(init.__globals__['g_version'].split('.'), ['1', '5', '3', '7'])
++            self.assertRegex(init.__globals__['g_build_date'], r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
++            # a version given on the command line still wins
++            self.assertTrue(init(pathlib.Path(tmp), 'not-startable', types.SimpleNamespace(version='1.6.0', revision_version=0)))
++            self.assertEqual(init.__globals__['g_version'].split('.'), ['1', '6', '0', '0'])
++            # preprocess.py changed upstream: the helper stops instead of building a wrong MSI
++            with open(os.path.join(tmp, 'res', 'msi', 'preprocess.py'), 'w', encoding='utf-8') as fh:
++                fh.write('def init_global_vars(dist_dir, app_name, args):\n    return True\n')
++            r = subprocess.run([sys.executable, helper], cwd=tmp, capture_output=True, text=True)
++            self.assertNotEqual(r.returncode, 0)
++
+     def test_linux_options_and_self_hosted_runners(self):
+         def read(name):
+             with open(os.path.join(ROOT, '.github', 'workflows', name), encoding='utf-8') as fh:

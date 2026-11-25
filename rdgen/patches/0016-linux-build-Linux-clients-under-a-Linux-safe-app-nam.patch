@@ -1,7 +1,8 @@
-From 3f15a7c3fe482fb19abe95d5c6c4c0815b8d240c Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 273812b5ed3da91928c5ce7d9ef94b0fba3a15e0 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 08:30:07 -0400
-Subject: [PATCH 16/33] linux: build Linux clients under a Linux-safe app name
+Subject: [PATCH 16/38] linux: build Linux clients under a Linux-safe app name
 
 A Linux build with the app name "Rescue Client (Example Name)" failed in
 build.py: the workflow writes the name into unquoted shell commands
@@ -8181,7 +8182,7 @@ index 562080e..c2f7c1d 100644
              icon.addEventListener('click', function() {
                  document.querySelectorAll('.platform-icon').forEach(i => i.classList.remove('active'));
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index 97bc1ce..1d82e70 100644
+index 97bc1ce..7dfa811 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -90,3 +90,52 @@ class LanAndAutoCloseTests(StubTestCase):
@@ -8256,7 +8257,7 @@ index b782d4b..64ae933 100644
          self.assertEqual(sorted(os.listdir(WORKFLOWS)), sorted([
              'bridge.yml', 'fetch-encrypted-secrets.yml', 'generator-android.yml', 'generator-linux.yml',
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index a4d8e7e..0c32b66 100644
+index a4d8e7e..72a371b 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -6,6 +6,8 @@ characters listed here are accepted; the decrypt step in the workflow

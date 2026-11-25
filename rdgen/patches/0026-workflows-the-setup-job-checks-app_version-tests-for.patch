@@ -1,7 +1,8 @@
-From 544bb61b85460d0bfb7e61f305fa2a08c4a1222b Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 4188518c29be7fcca7eaec0f385246bb6b8fec67 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Mon, 19 Oct 2026 00:15:11 -0400
-Subject: [PATCH 26/33] workflows: the setup job checks app_version; tests for
+Subject: [PATCH 26/38] workflows: the setup job checks app_version; tests for
  it
 
 Upstream's app_version (2026-10-18) is a dispatch input, outside the
@@ -27,7 +28,7 @@ and build_uuid.
  4 files changed, 45 insertions(+), 3 deletions(-)
 
 diff --git a/.github/workflows/fetch-encrypted-secrets.yml b/.github/workflows/fetch-encrypted-secrets.yml
-index 8ef3eef..992229d 100644
+index 239e409..ffe4f94 100644
 --- a/.github/workflows/fetch-encrypted-secrets.yml
 +++ b/.github/workflows/fetch-encrypted-secrets.yml
 @@ -45,6 +45,9 @@ jobs:

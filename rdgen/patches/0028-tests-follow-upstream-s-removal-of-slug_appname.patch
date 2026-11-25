@@ -1,7 +1,8 @@
-From 7146ada991c443bee74096ea835d79c8e0fef91a Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 174143c967432a7e087955bdceabee12456feb48 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 08:49:30 +0000
-Subject: [PATCH 28/33] tests: follow upstream's removal of slug_appname
+Subject: [PATCH 28/38] tests: follow upstream's removal of slug_appname
 
 ---
  rdgenerator/tests/test_ui.py        | 3 ++-
@@ -9,7 +10,7 @@ Subject: [PATCH 28/33] tests: follow upstream's removal of slug_appname
  2 files changed, 7 insertions(+), 4 deletions(-)
 
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index 47bfccd..4e08699 100644
+index 21b3187..2e06f08 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -158,7 +158,8 @@ class LinuxAppNameTests(StubTestCase):

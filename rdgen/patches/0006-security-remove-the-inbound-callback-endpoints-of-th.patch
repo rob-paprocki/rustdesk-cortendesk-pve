@@ -1,7 +1,8 @@
-From 74d995c3eacfdfb8bc7561369c2a5b0fb6d1b5d8 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 05861d8b58cd308bbfef824c769c8650847229d8 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:48:30 -0400
-Subject: [PATCH 06/33] security: remove the inbound callback endpoints of the
+Subject: [PATCH 06/38] security: remove the inbound callback endpoints of the
  push model
 
 GitHub runners no longer call back into rdgen, so these are gone:
@@ -23,13 +24,12 @@ GitHub runners no longer call back into rdgen, so these are gone:
 
 Also dropped the unused helpers (save_png, resize_and_encode_icon) and
 the imports they needed.
-
 ---
  rdgen/urls.py            |  12 +--
  rdgenerator/api_views.py |   2 -
- rdgenerator/forms.py     |   2 -
- rdgenerator/views.py     | 226 +++------------------------------------
- 4 files changed, 21 insertions(+), 221 deletions(-)
+ rdgenerator/forms.py     |   1 -
+ rdgenerator/views.py     | 227 +++------------------------------------
+ 4 files changed, 20 insertions(+), 222 deletions(-)
 
 diff --git a/rdgen/urls.py b/rdgen/urls.py
 index 274bbfd..e593015 100644
@@ -80,36 +80,36 @@ index a9a885e..608ed19 100644
  from .validation import validate_build_fields
  from .views import build_files, generate_custom_client, serve_build_file, _get_run_status
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 74d5434..52023d6 100644
+index d689190..886030e 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -1,5 +1,3 @@
+@@ -1,5 +1,4 @@
+ import logging
 -import re
--
+ 
  from django import forms
  from PIL import Image
- 
 diff --git a/rdgenerator/views.py b/rdgenerator/views.py
-index 63b0442..3801b07 100644
+index e08c5da..3801b07 100644
 --- a/rdgenerator/views.py
 +++ b/rdgenerator/views.py
-@@ -1,26 +1,22 @@
+@@ -1,27 +1,22 @@
 -import io
++import base64
++import json
+ import logging
 -from pathlib import Path
 -from django.http import FileResponse, Http404, HttpResponse, JsonResponse, HttpResponseForbidden
 -from django.urls import reverse
 -from urllib.parse import urlencode
 -from django.shortcuts import render, get_object_or_404
 -from django.core.files.base import ContentFile
--import os
+ import os
 -import secrets
--import re
+ import re
 -import requests
- import base64
- import json
-+import logging
-+import os
-+import re
+-import base64
+-import json
  import uuid
 -import pyzipper
 +from urllib.parse import urlencode
@@ -133,13 +133,15 @@ index 63b0442..3801b07 100644
  
  log = logging.getLogger(__name__)
  
-@@ -46,21 +42,6 @@ def site_defaults():
+@@ -47,23 +42,6 @@ def site_defaults():
              values['key'] = ''
      bad = validate_build_fields(values)
      return {k: v for k, v in values.items() if v and k not in bad}
 -from .models import GithubRun
 -from PIL import Image
 -from urllib.parse import quote
+-
+-logger = logging.getLogger(__name__)
 -
 -# get_png, download and save_custom_client build file paths from request values;
 -# only accept a UUID and a plain file name so "../" or absolute paths cannot escape png/ and exe/.
@@ -155,7 +157,7 @@ index 63b0442..3801b07 100644
  
  
  def _norm_hex_color(value):
-@@ -330,6 +311,10 @@ def generate_custom_client(params, full_url=None):
+@@ -333,6 +311,10 @@ def generate_custom_client(params, full_url=None):
          "logolink_url":logolink_url,
          "privacylink_url":privacylink_url,
          "appname":appname,
@@ -166,7 +168,7 @@ index 63b0442..3801b07 100644
          "urlLink":urlLink,
          "downloadLink":downloadLink,
          "delayFix": 'true' if delayFix else 'false',
-@@ -497,180 +482,3 @@ def serve_build_file(request):
+@@ -500,180 +482,3 @@ def serve_build_file(request):
  
  def download(request):
      return serve_build_file(request)
@@ -267,7 +269,7 @@ index 63b0442..3801b07 100644
 -        'X-GitHub-Api-Version': '2026-03-10'
 -    }
 -    response = requests.post(url, json=data, headers=headers)
--    print(response)
+-    logger.info("%s", response)
 -    return HttpResponse(status=204)
 -
 -def save_png(file, uuid, domain, name):
@@ -280,10 +282,10 @@ index 63b0442..3801b07 100644
 -            decoded_img = base64.b64decode(encoded)
 -            file = ContentFile(decoded_img, name=name) # Create a file-like object
 -        except ValueError:
--            print("Invalid base64 data")
+-            logger.info("Invalid base64 data")
 -            return None  # Or handle the error as you see fit
 -        except Exception as e:  # Catch general exceptions during decoding
--            print(f"Error decoding base64: {e}")
+-            logger.warning(f"Error decoding base64: {e}")
 -            return None
 -        
 -    with open(file_save_path, "wb+") as f:
@@ -326,9 +328,9 @@ index 63b0442..3801b07 100644
 -            file_path = os.path.join(temp_dir, filename)
 -            try:
 -                os.remove(file_path)
--                print(f"Successfully deleted {file_path}")
+-                logger.info(f"Successfully deleted {file_path}")
 -            except OSError as e:
--                print(f"Error deleting file: {e}")
+-                logger.warning(f"Error deleting file: {e}")
 -
 -    return HttpResponse("Cleanup successful", status=200)
 -

@@ -1,7 +1,8 @@
-From b40c3890f2f6b134824541542eebcbc5654c45e1 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 580e226aa743c5c83ae11e5c45fcc4e9b6e4f4a1 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Thu, 1 Oct 2026 16:17:32 -0400
-Subject: [PATCH 17/33] builds: a Recent builds page and expiring share links
+Subject: [PATCH 17/38] builds: a Recent builds page and expiring share links
 
 Once you left a build's result page there was no way back to it, so a
 build that should not go on a public download page (a client with a
@@ -24,7 +25,6 @@ to rdgen. Without it, links point at rdgen itself (LAN only).
 The file checks of /download move into stored_file(), shared by both.
 The poller drops expired links when it prunes; a pruned build takes its
 links along.
-
 ---
  SETUP-PULL.md                            |   7 +
  deploy/rdgen.env.example                 |   4 +
@@ -86,7 +86,7 @@ index a2c9e91..3fe5d05 100644
  # --- hand-off to a console's client downloads (optional) -----------------
  # Empty: off. Otherwise the form offers "add the files to <target>'s Client
 diff --git a/rdgen/settings.py b/rdgen/settings.py
-index 9cceab5..c3adecd 100644
+index fc08a0d..b2692b9 100644
 --- a/rdgen/settings.py
 +++ b/rdgen/settings.py
 @@ -140,6 +140,13 @@ RDGEN_UPDATE_BASE = env('RDGEN_UPDATE_BASE', '').strip().rstrip('/')

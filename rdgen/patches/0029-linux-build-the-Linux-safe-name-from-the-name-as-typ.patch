@@ -1,7 +1,8 @@
-From 223719eb525d36bb57ace468999ed471151e6c33 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 82fe6bb8c200c86cba66858960763570881ec7c5 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Fri, 30 Oct 2026 08:56:56 +0000
-Subject: [PATCH 29/33] linux: build the Linux-safe name from the name as typed
+Subject: [PATCH 29/38] linux: build the Linux-safe name from the name as typed
  (upstream strips spaces first)
 
 ---
@@ -10,7 +11,7 @@ Subject: [PATCH 29/33] linux: build the Linux-safe name from the name as typed
  2 files changed, 7 insertions(+), 4 deletions(-)
 
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index 4e08699..d5b9292 100644
+index 2e06f08..c378c61 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -158,8 +158,10 @@ class LinuxAppNameTests(StubTestCase):

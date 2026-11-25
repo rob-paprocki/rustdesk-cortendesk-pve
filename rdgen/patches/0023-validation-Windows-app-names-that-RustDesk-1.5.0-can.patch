@@ -1,7 +1,8 @@
-From dabb60b30278abafa2f4b35c5722fa741eabd395 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 33bc2bfd1048308fd7adccb45c293ccd900ce457 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Mon, 5 Oct 2026 20:09:22 -0400
-Subject: [PATCH 23/33] validation: Windows app names that RustDesk 1.5.0 can
+Subject: [PATCH 23/38] validation: Windows app names that RustDesk 1.5.0 can
  install
 
 From 1.5.0 on, RustDesk's Windows installer refuses to install unless the
@@ -11,14 +12,13 @@ install" just does nothing. rdgen allowed spaces and other characters, so a
 client named "Rustdesk Rescue Client (example)" built fine and could not
 be installed. Windows builds of 1.5.0 and nightly now get a clear error on
 the app name instead; 1.4.x and the other platforms keep the wider rules.
-
 ---
  rdgenerator/tests/test_security.py | 10 ++++++++++
  rdgenerator/validation.py          | 10 ++++++++++
  2 files changed, 20 insertions(+)
 
 diff --git a/rdgenerator/tests/test_security.py b/rdgenerator/tests/test_security.py
-index ba544eb..ffec9b2 100644
+index ba544eb..6208661 100644
 --- a/rdgenerator/tests/test_security.py
 +++ b/rdgenerator/tests/test_security.py
 @@ -191,6 +191,16 @@ class ValidationTests(TestCase):
@@ -39,7 +39,7 @@ index ba544eb..ffec9b2 100644
          self.assertEqual(sanitize_filename('my client\tname\n'), 'my_client_name')
          self.assertEqual(sanitize_filename('../x'), '___x')
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index 0c32b66..089eb58 100644
+index 72a371b..9ef0186 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -45,6 +45,10 @@ for _field in ('themeColor', 'themeSurfaceLight', 'themeSurfaceDark', 'themeMeCo

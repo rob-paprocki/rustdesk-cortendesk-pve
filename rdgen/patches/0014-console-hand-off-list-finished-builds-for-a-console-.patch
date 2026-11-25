@@ -1,7 +1,8 @@
-From 4e57a2197716a1a6c0535f8fd2f3ffdc5e8a5b1f Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 0236ae1a6273a0d975e191effa810a64a9ce2eb7 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 22:31:39 -0400
-Subject: [PATCH 14/33] console hand-off: list finished builds for a console's
+Subject: [PATCH 14/38] console hand-off: list finished builds for a console's
  client downloads
 
 A per-build choice (no / hidden / published, default RDGEN_PUBLISH_DEFAULT;
@@ -80,7 +81,7 @@ index 3de346a..7c2f7f8 100644
 +RDGEN_PUBLISH_DEFAULT=
 +RDGEN_PUBLISH_TARGET=CortenDesk
 diff --git a/rdgen/settings.py b/rdgen/settings.py
-index 4e90663..2df970c 100644
+index 832fe05..860b073 100644
 --- a/rdgen/settings.py
 +++ b/rdgen/settings.py
 @@ -131,6 +131,17 @@ RDGEN_DEFAULTS = {
@@ -128,16 +129,18 @@ index 608ed19..6b9d1b9 100644
      for field, message in validate_build_fields(cleaned).items():
          errors.setdefault(field, message)
 diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
-index 52023d6..ed698c3 100644
+index 3446534..331e86c 100644
 --- a/rdgenerator/forms.py
 +++ b/rdgenerator/forms.py
-@@ -1,4 +1,5 @@
+@@ -2,6 +2,7 @@ import re
+ import logging
+ 
  from django import forms
 +from django.conf import settings as _settings
  from PIL import Image
  
  from .validation import validate_build_fields
-@@ -119,6 +120,18 @@ class GenerateForm(forms.Form):
+@@ -124,6 +125,18 @@ class GenerateForm(forms.Form):
      xOffline = forms.BooleanField(initial=False, required=False)
      removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
  
@@ -154,9 +157,9 @@ index 52023d6..ed698c3 100644
 +            self.fields['publish'].initial = _settings.RDGEN_PUBLISH_DEFAULT
 +
      def clean_iconfile(self):
+         logger.info("checking icon")
          image = self.cleaned_data['iconfile']
-         if image:
-@@ -201,4 +214,41 @@ class GenerateForm(forms.Form):
+@@ -207,4 +220,41 @@ class GenerateForm(forms.Form):
          for field, message in validate_build_fields(cleaned).items():
              if field in self.fields and field not in self.errors:
                  self.add_error(field, message)
@@ -438,7 +441,7 @@ index 46ced7b..6ed4b8b 100644
          <div class="sections">
 diff --git a/rdgenerator/tests/test_publish.py b/rdgenerator/tests/test_publish.py
 new file mode 100644
-index 0000000..0fcd342
+index 0000000..ad732a6
 --- /dev/null
 +++ b/rdgenerator/tests/test_publish.py
 @@ -0,0 +1,130 @@

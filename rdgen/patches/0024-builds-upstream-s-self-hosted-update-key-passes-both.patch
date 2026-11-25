@@ -1,7 +1,8 @@
-From e54c57749ff22bdc3a41614bc1b87f1be2afd73f Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 74f63de1c1f41a084f88f348cb027d53216dffbc Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 07:49:21 -0400
-Subject: [PATCH 24/33] builds: upstream's self-hosted update key passes both
+Subject: [PATCH 24/38] builds: upstream's self-hosted update key passes both
  checks
 
 Upstream (2026-10-17, "auto update with rustdesk-api") puts
@@ -140,7 +141,7 @@ index 64ae933..f89ff21 100644
      def test_replayed_cfg_rejected(self):
          r1, r2, _ = self.run_steps(secrets_json(str(uuid.uuid4())), event_uuid=str(uuid.uuid4()))
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index 089eb58..b230ea5 100644
+index 9ef0186..ac825e7 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -37,6 +37,10 @@ RULES = {

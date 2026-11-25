@@ -47,7 +47,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/rob-paprocki/rustdesk-co
 1. Choose Alpine or Debian. Advanced mode lets you set the CT ID, a static IP and the root password (for console/SSH login).
 2. When the install is done, the script asks for:
    - The console admin: username, email and a password of at least 12 characters. The rdgen login uses the same credentials.
-   - The addresses. The public ID/relay host is a DNS-only name or IP that clients reach on ports 21115-21117. The console URL is what browsers and the clients' *API server* setting use, e.g. `https://rustdesk.example.com` through a reverse proxy or Cloudflare Tunnel. Last comes the IP of your reverse proxy or tunnel connector. You need it when the console URL is https through a proxy on another host, because without it pages load `http://` assets that browsers block. It also makes the logs show real client IPs.
+   - The addresses. The public ID/relay host is a DNS-only name or IP that clients reach on ports 21115-21117. The console URL is what browsers and the clients' *API server* setting use, e.g. `https://rustdesk.example.com` through a reverse proxy or Cloudflare Tunnel. Last comes the IP of your reverse proxy or tunnel connector. A tunnel with several connectors (replicas) needs all of them, as `a,b` or a subnet such as `192.168.100.0/24`. You need it when the console URL is https through a proxy on another host, because without it pages load `http://` assets that browsers block. It also makes the logs show real client IPs.
    - Notifications: none, a Discord webhook, Apprise (Telegram, ntfy, email and 100+ other services), or an existing Apprise API server. CortenDesk's own alerts go to the same place (see [Notifications](#notifications)).
    - rdgen: your private GitHub repo and two tokens (see [rdgen](#rdgen-custom-clients)).
 
@@ -124,7 +124,7 @@ Then set up a client as described in [Client configuration](#client-configuratio
 
 ## Known limits
 - Alpine 3.24 and Debian 13 are the only container choices.
-- rdgen's web UI is for your LAN only (see [Ports](#ports)).
+- rdgen's web UI is for your LAN only (see [Ports](#ports)), unless you give it a public name ([Opening rdgen from outside your LAN](#opening-rdgen-from-outside-your-lan)).
 - Unless you add runners of your own ([Builds on machines of your own](#builds-on-machines-of-your-own)), rdgen builds run in your own private GitHub repository and use your Actions minutes.
 - Windows builds are unsigned and SmartScreen warns. Mac builds are ad-hoc signed unless you add Apple secrets (see [Signed and notarized Mac clients](#signed-and-notarized-mac-clients)).
 - Only installed Windows clients with Auto update on can update from your console. [Keeping Windows clients up to date](#keeping-windows-clients-up-to-date) has the details.
@@ -141,10 +141,11 @@ Then set up a client as described in [Client configuration](#client-configuratio
 | `cat ~/rustdesk-cortendesk.creds` | Shows the logins, the server key, the client settings and the rdgen URL (root-only file) |
 | `rustdesk-admin` | Changes the console admin and the rdgen login. It renames the current admin instead of adding a second one. |
 | `rustdesk-config` | Changes the public host, console URL and proxy IP in every place that uses them: hbbs, CortenDesk's `.env` and saved settings, and rdgen's defaults |
-| `rustdesk-config --check` | Tests the console URL the way clients (check-ins) and the web client (WebSocket) use it |
+| `rustdesk-config --check` | Tests the console URL the way clients (check-ins), the web client (WebSocket) and browsers (https links on every request) use it |
 | `rustdesk-notify setup` / `test` | Configures or tests notifications |
 | `cortendesk-alerts connect` | Points CortenDesk's own alerts at your notifications again, e.g. after you changed them under Settings → Notifications |
 | `rdgen-setup` / `rdgen-setup --github` | Installs rdgen later, or redoes only its GitHub step (leave the token blank to reuse the stored one) |
+| `rdgen-setup --public-url <url>` / `off` | Lets rdgen answer on a public name, for example through a tunnel, and points the console's Build Installers link there. See [Opening rdgen from outside your LAN](#opening-rdgen-from-outside-your-lan). |
 | `rdgen-setup --push` | Pushes the installed rdgen to your build repo with the stored install token, asking nothing |
 | `rdgen-publish --retry <build uuid>` | Copies a finished rdgen build into CortenDesk's Client Downloads again, e.g. after a failure (the uuid is in the build page's URL) |
 | `rustdesk-update` | Updates the stack now. It also runs daily at about 04:00. |
@@ -154,10 +155,10 @@ Then set up a client as described in [Client configuration](#client-configuratio
 | Port | Proto | Purpose | Expose |
 |---|---|---|---|
 | 80 | TCP | CortenDesk console, client API, the web client's WebSocket bridge (`/ws/*`), the Windows clients' update links (`/clients/*`) and rdgen's share links (`/share/*`) | Through your reverse proxy or Cloudflare Tunnel (HTTPS), with WebSocket upgrades forwarded |
-| 21115-21117 | TCP | NAT test, ID/signalling, relay | Router port forward, DNS-only (grey-cloud) hostname |
-| 21116 | UDP | ID / hole punching | Router port forward |
-| 21118, 21119 | TCP | hbbs/hbbr WebSocket | Keep internal; nginx proxies them on `/ws/id` and `/ws/relay` |
-| 8190 | TCP | rdgen web UI | LAN only (nginx allows RFC1918 addresses only, and rdgen requires a login) |
+| 21115-21117 | TCP | NAT test, ID/signalling, relay | Router port forward, DNS-only (grey-cloud) hostname. Not needed when every client uses WebSocket: see [Only through your tunnel](#only-through-your-tunnel-websocket-clients) |
+| 21116 | UDP | ID / hole punching | Router port forward (not needed with WebSocket clients either) |
+| 21118, 21119 | TCP | hbbs/hbbr WebSocket | Keep internal; nginx proxies them on `/ws/id` and `/ws/relay` for the web client and WebSocket clients |
+| 8190 | TCP | rdgen web UI | LAN only (nginx allows RFC1918 addresses only, and rdgen requires a login). A tunnel connector on your LAN can publish it: see [Opening rdgen from outside your LAN](#opening-rdgen-from-outside-your-lan) |
 | 8296 | TCP | Relay for CortenDesk's own alerts | Never: it listens on 127.0.0.1 only |
 
 Never put a reverse proxy in front of 21115: hbbs accepts admin commands there from 127.0.0.1.
@@ -170,6 +171,32 @@ In the RustDesk client, open Settings → Network → ID/Relay server and set:
 
 The console's *Client Downloads* page can host installers, and rdgen builds them with all of this already set.
 
+### Only through your tunnel (WebSocket clients)
+Normally the RustDesk app reaches your public host directly on ports 21115-21117, so that name points at your home IP and the router forwards those ports. A Cloudflare Tunnel, or any reverse proxy that only carries web traffic, can't carry them. With **Use WebSocket** on (Settings → Network, option `allow-websocket`), the app instead connects to `wss://<ID server>/ws/id` and `wss://<relay server>/ws/relay`, which the console already serves. So if every device uses the console's name as its ID and relay server, all RustDesk traffic goes through the tunnel and nothing points at your home IP.
+
+On each device, set:
+- ID server and Relay server: the console's host name, e.g. `rustdesk.example.com`
+- API server: the console URL, `https://rustdesk.example.com`. It must be https: the app uses `wss://` only when the API server is https.
+- Key: unchanged
+- Use WebSocket: on
+
+For rdgen builds, add this line under *Other* → Override and clear the Host field (or type the console's host name):
+```
+allow-websocket=Y
+```
+rdgen then uses the console's host name as the server and adds `relay-server=<that name>` and `api-server=<the console URL>` (the app uses `wss://` only when that setting starts with `https`; rdgen refuses a WebSocket build whose API server isn't `https://`). It refuses a WebSocket build with the pre-filled Host (the name with the port forwards), and a normal build with the console's host name, since neither could connect. Once `rustdesk-config` has the console's host name as the public host (step 3), the two names are the same and rdgen no longer checks the names (the `api-server` line still comes with every WebSocket build).
+
+Moving over:
+1. Switch one device at a time. A device's own relay server setting wins over the one hbbs hands out, so switched and unswitched devices don't get in each other's way.
+2. A WebSocket device and a normal one can't connect to each other. Switch unattended machines from a device that is still normal (the session drops when you save), and your own device last.
+3. When every device is switched, run `rustdesk-config` with the console's host name as the public host, remove the router's port forwards for 21115-21117 TCP and 21116 UDP, and delete the old DNS record.
+
+What changes:
+- WebSocket connections always go through hbbr: no direct connections between devices, not even on your LAN. Your home upload carries every session, through Cloudflare, so expect more delay than a direct connection.
+- Cloudflare's free plan isn't meant for heavy video-like traffic. Occasional remote support is fine; hours of streaming a day may not be.
+- The tunnel connector is the only peer hbbs and hbbr see, so nginx passes on the client's address it forwarded (X-Forwarded-For), and only from the proxies in `TRUSTED_PROXIES`. List every connector (`rustdesk-config`'s proxy IP), or the console's connection log shows the connector's address instead of the client's.
+- `rustdesk-config --check` tests both `/ws/id` and `/ws/relay`.
+
 ## rdgen (custom clients)
 1. On GitHub, create a private repository first, e.g. `rdgen-build`, and leave it empty. The installer can't create it, because its tokens are limited to that one repository. If you let GitHub add a README, license or .gitignore, the installer replaces that first commit. Actions must be allowed, which is the default (Settings > Actions > General). Don't fork rdgen, because a fork of a public repo is public.
 2. Create two fine-grained tokens, both limited to that repository:
@@ -179,6 +206,22 @@ The console's *Client Downloads* page can host installers, and rdgen builds them
    Because the tokens are separate, a compromised rdgen web process still cannot change workflows or secrets.
 3. Answer the rdgen prompt, or run `rdgen-setup` in the CT.
 4. Open `http://<lxc-ip>:8190/`. CortenDesk's Build Installers link points there.
+
+### Opening rdgen from outside your LAN
+rdgen answers only to the LXC's own names: its IP, its host name and localhost. Open it on any other name, such as one a Cloudflare Tunnel publishes, and it answers "Bad Request (400)". To give it a public name, run this in the CT:
+
+```sh
+rdgen-setup --public-url https://rdgen.example.com
+```
+
+That adds the name to `ALLOWED_HOSTS`, sets `CSRF_TRUSTED_ORIGINS` so the login form works over HTTPS, points CortenDesk's Build Installers link at the name, and restarts rdgen. `rustdesk-config` and `rdgen-setup` keep it from then on. `rdgen-setup --public-url off` removes it.
+- If you already added the name to `/etc/rdgen/rdgen.env` by hand, with `CSRF_TRUSTED_ORIGINS` set to it, the next `rustdesk-config` or `rdgen-setup` adopts it as the public name.
+- A name added to `ALLOWED_HOSTS` any other way is dropped by the next `rustdesk-config`, which says so.
+- A Build Installers link you saved yourself in CortenDesk's Settings stays as it is.
+
+Then point the tunnel or proxy at `http://<lxc-ip>:8190`.
+- nginx on port 8190 accepts private addresses only, so the proxy or tunnel connector has to run on your LAN.
+- Put the name behind a second login, such as Cloudflare Access, in front of rdgen's own. Builds never call back into rdgen (the CT fetches them from GitHub), so Access needs no bypass paths for it.
 
 rdgen's form comes filled in with this server's host, port, key and API address, and each Custom Server field explains what it changes in the client. The *Other* section explains the `key=value` format and the difference between default and override settings. Its **Browse client options** dialog lists the 120 documented RustDesk options the form has no control for (a toggle adds the 20 it does set). You can filter them and add one to either box with a click. Both boxes are checked as you type.
 
@@ -282,6 +325,8 @@ On every self-hosted runner, the workflows first check the machine's prerequisit
 - **New devices land under Devices → Pending** when *Require device approval* is on in CortenDesk's settings. Approve them there.
 - **Devices you added by hand stay offline.** Enter the ID without spaces (the client shows `123 456 789`, but checks in as `123456789`). A device in the Recycle Bin ignores its client's check-ins until you restore it or delete it for good.
 - **Clients can't log in ("RequestException, statusCode: 403").** If Cloudflare Access protects the console's web login through a tunnel route with a path, anchor that path: `^/login`. A tunnel path is a pattern that matches anywhere in the URL, so `login` also catches the clients' `/api/login` and `/api/login-options`, and the clients can't sign in to Access.
+- **The app says "Connecting…" forever with Use WebSocket on.** It connects to `wss://<ID server>/ws/id`, not to the ports above. The ID server must be the console's name (or another name whose port 443 serves `/ws/id` and `/ws/relay`): see [Only through your tunnel](#only-through-your-tunnel-websocket-clients).
+- **Pages load, but buttons and forms do nothing, and the browser console reports mixed content.** Some requests reach the console through a proxy or tunnel connector it doesn't trust, so those pages link to `http://`. `rustdesk-config --check` reports it as `https links: BROKEN`. A Cloudflare Tunnel with replicas has a connector on each of them: give `rustdesk-config` all of their IPs, or their subnet.
 - **The web client stops with "websocket error before open: ws://…".** The console URL is `http://` while the browser has the page over `https://`, and browsers block that. Set the `https://` console URL with `rustdesk-config`.
 
 ## Unattended access
@@ -354,6 +399,7 @@ Installs and updates reach `github.com`, `api.github.com` (release digests), `ra
 - Console: `/opt/cortendesk` (code, with the previous release at `.prev`), `/var/lib/cortendesk` (SQLite, storage, downloads), `/etc/cortendesk/cortendesk.env` (APP_KEY and secrets)
 - rdgen: `/opt/rdgen` (root-owned code), `/var/lib/rdgen` (DB and builds, user `rdgen`), `/var/lib/rdgen-build` (the patched git tree, bootstrap state and the optional install token; user `rdgenbuild`, mode 0700), `/etc/rdgen/` (`rdgen.env`, `server.pub`)
 - Tools: `/usr/local/bin/{rustdesk-update,rustdesk-server-update,cortendesk-update,rdgen-update,rustdesk-admin,rustdesk-config,rustdesk-notify,cortendesk-alerts,rdgen-setup,rdgen-publish}`
+- WebSocket bridge's trusted proxies (from `TRUSTED_PROXIES`, written by `rustdesk-config`): `/etc/nginx/rustdesk-ws-realip.conf`
 - Alert relay: `/etc/nginx/rustdesk-alert-relay.conf`, `/usr/local/lib/cortendesk/alert-relay.php`, `/etc/cortendesk/alert-relay.key`, queue `/var/spool/cortendesk-alerts`
 
 ## Updating an existing CT to a newer version of this repo
@@ -361,7 +407,7 @@ The daily `rustdesk-update` updates the RustDesk server, CortenDesk and rdgen, b
 ```bash
 bash rustdesk-cortendesk-pve-stable/tools/refresh-ct.sh <ctid>
 ```
-It copies the tools and rdgen patches into the CT and rebuilds rdgen from them. It also adds what newer versions need on the console (the `/clients/` and `/share/` links, the alert relay). Data, logins, keys and tokens stay.
+It copies the tools and rdgen patches into the CT and rebuilds rdgen from them. It also adds what newer versions need on the console (the `/clients/` and `/share/` links, the alert relay, real client addresses on the WebSocket bridge). Data, logins, keys and tokens stay.
 
 Your build repo needs the same rdgen. If you kept the install token at setup, the refresh pushes the rebuilt rdgen there with it (`rdgen-setup --push`), so there's nothing else to do. The rebuild starts from the upstream rdgen these patches were tested on, which can be older than what the daily update had installed, so the refresh then runs `rdgen-update` to move both to the newest upstream rdgen the patches apply to. Without a stored token, run `rdgen-setup --github` in the CT afterwards and give it a token. Fine-grained tokens expire, so when the push reports a refused token, create a new one and run `rdgen-setup --github`.
 

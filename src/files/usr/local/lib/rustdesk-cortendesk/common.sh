@@ -76,6 +76,65 @@ env_set() {  # env_set <file> <KEY> <value>: replace or append KEY=value, keep m
   chown "$(stat -c %u:%g "$f" 2>/dev/null || echo 0:0)" "$tmp"
   mv "$tmp" "$f"
 }
+# rdgen's public URL (rdgen-setup --public-url), or nothing. The first call adopts a single origin set by hand
+# in CSRF_TRUSTED_ORIGINS, so a name added by hand survives rustdesk-config and rdgen-setup.
+rdgen_public() {
+  local o
+  if ! grep -q '^RDGEN_PUBLIC_URL=' "$RDGEN_ENV"; then
+    o=$(env_get "$RDGEN_ENV" CSRF_TRUSTED_ORIGINS)
+    [[ "$o" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || o=""
+    env_set "$RDGEN_ENV" RDGEN_PUBLIC_URL "$o"
+  fi
+  env_get "$RDGEN_ENV" RDGEN_PUBLIC_URL
+}
+rdgen_site_env() {  # rdgen's form defaults, links and the names it answers to: CortenDesk's .env + RDGEN_PUBLIC_URL
+  local url p h w n old new olds=()
+  url=$(env_get "$CD_ENV" APP_URL | sed 's#/*$##'); p=$(rdgen_public); h=${p#*://}; h=${h%%[:/]*}
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$(env_get "$CD_ENV" CORTENDESK_ID_SERVER | sed 's/:21116$//')"
+  w=${url#*://}; env_set "$RDGEN_ENV" RDGEN_DEFAULT_WS_SERVER "${w%%[:/]*}"   # the name /ws/id and /ws/relay answer on
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$url"
+  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "$url/clients"   # Windows self-update links (rustdesk-clients.conf)
+  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "$url/share"      # share links work wherever the console does
+  old=$(env_get "$RDGEN_ENV" ALLOWED_HOSTS)
+  new="$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1${h:+,$h}"
+  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$new"
+  [ -z "$p" ] || env_set "$RDGEN_ENV" CSRF_TRUSTED_ORIGINS "$p"
+  IFS=, read -ra olds <<<"$old"   # no word splitting: a '*' entry must not glob
+  for n in "${olds[@]}"; do
+    case ",$new," in *",$n,"*) ;; *) echo "rdgen: no longer answers on $n (a public name: rdgen-setup --public-url)" >&2 ;; esac
+  done
+}
+rdgen_link_console() {  # the console's Build Installers link; a different value saved in Settings is kept
+  local p u o; p=$(rdgen_public); u=${p:-http://$(lan_ip):8190}; o=$(env_get "$CD_ENV" CORTENDESK_RDGEN_URL)
+  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "$u"
+  art config:cache >/dev/null
+  jq -n --arg u "$u" --arg o "$o" '{rdgen_url:$u, was:{rdgen_url:$o}}' | cd_php /usr/local/lib/cortendesk/sync-settings.php
+  svc restart "$FPM"
+  creds_set "rdgen URL" "$u/  (Build Installers; LAN: http://$(lan_ip):8190/)"
+}
+# The WebSocket bridge (/ws/id, /ws/relay -> hbbs/hbbr, which trust X-Real-IP) passes on the client's address. Behind a
+# tunnel every request comes from the connector, so nginx takes it from X-Forwarded-For, but only from the proxies
+# in TRUSTED_PROXIES (included in both locations; a list nginx rejects is not kept)
+ws_realip_conf() {
+  local f=/etc/nginx/rustdesk-ws-realip.conf p tmp old="" ok=0 ps=()
+  [ -f "$f" ] && old=$(cat "$f")
+  IFS=, read -ra ps <<<"$(env_get "$CD_ENV" TRUSTED_PROXIES | tr -d ' ')"   # no word splitting: '*' must not glob
+  nginx -t -q 2>/dev/null && ok=1   # judge the new list only against a configuration that passed before
+  tmp=$(mktemp /etc/nginx/.ws-realip.XXXXXX)
+  {
+    echo "# written from TRUSTED_PROXIES in $CD_ENV by rustdesk-config"
+    for p in "${ps[@]}"; do
+      if [ "$p" = '*' ]; then printf 'set_real_ip_from 0.0.0.0/0;\nset_real_ip_from ::/0;\n'
+      elif [[ "$p" =~ ^[0-9a-fA-F.:/]+$ ]]; then echo "set_real_ip_from $p;"; fi
+    done
+    echo 'real_ip_header X-Forwarded-For;'
+  } >"$tmp"
+  chmod 644 "$tmp" && mv -f "$tmp" "$f"
+  if [ "$ok" = 1 ] && ! nginx -t -q 2>/dev/null; then
+    printf '%s\n' "${old:-real_ip_header X-Forwarded-For;}" >"$f"
+    echo "!! nginx rejected TRUSTED_PROXIES for the WebSocket bridge; kept the previous list" >&2; return 1
+  fi
+}
 # ~/rustdesk-cortendesk.creds: "Label: value" lines (root-only). Values never pass through sed/regex.
 creds_set() {  # creds_set <label> <value>
   local tmp

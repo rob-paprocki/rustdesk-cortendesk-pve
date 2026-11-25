@@ -1,7 +1,8 @@
-From bab16e6d71d1b3450b8908548a2c3c33896fbd92 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From c1bf3d378b5194cc93371ef5c695d4cd45a6e368 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 00:51:33 -0400
-Subject: [PATCH 07/33] workflows: take the config from the cfg input; harden
+Subject: [PATCH 07/38] workflows: take the config from the cfg input; harden
  the decrypt step
 
 fetch-encrypted-secrets.yml (the `setup` job of every generator):
@@ -40,14 +41,14 @@ decrypt-secrets action:
   later checkout of rustdesk/rustdesk wipes the workspace, and the build
   steps must not fetch anything from rdgen or from bryangerlach's master
   branch.
-
 ---
  .github/actions/decrypt-secrets/action.yml    |  39 +++----
  .github/actions/decrypt-secrets/decrypt.py    | 100 ++++++++++++++++++
  .../actions/decrypt-secrets/requirements.txt  |  47 ++++++++
  .github/actions/decrypt-secrets/validate.py   |  63 +++++++++++
  .github/workflows/fetch-encrypted-secrets.yml |  78 +++++++++-----
- 5 files changed, 271 insertions(+), 56 deletions(-)
+ rdgenerator/forms.py                          |   1 +
+ 6 files changed, 272 insertions(+), 56 deletions(-)
  create mode 100644 .github/actions/decrypt-secrets/decrypt.py
  create mode 100644 .github/actions/decrypt-secrets/requirements.txt
  create mode 100644 .github/actions/decrypt-secrets/validate.py
@@ -339,7 +340,7 @@ index 0000000..4dd5852
 +        problems.append('serverPort: out of range')
 +    return problems
 diff --git a/.github/workflows/fetch-encrypted-secrets.yml b/.github/workflows/fetch-encrypted-secrets.yml
-index 6ccad6b..1f0989d 100644
+index a661f5d..e780e6b 100644
 --- a/.github/workflows/fetch-encrypted-secrets.yml
 +++ b/.github/workflows/fetch-encrypted-secrets.yml
 @@ -1,47 +1,67 @@
@@ -369,7 +370,7 @@ index 6ccad6b..1f0989d 100644
      runs-on: ubuntu-latest
      steps:
 -      - name: Download with Retry
--        uses: nick-fields/retry@v3
+-        uses: nick-fields/retry@v4
 -        with:
 -          timeout_minutes: 5
 -          max_attempts: 3
@@ -432,11 +433,20 @@ index 6ccad6b..1f0989d 100644
 +          PY
  
        - name: Upload Encrypted Artifact
--        uses: actions/upload-artifact@v4
-+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+-        uses: actions/upload-artifact@v7
++        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
          with:
            name: encrypted-secrets-zip
            path: secrets.zip
 -          retention-days: 1
 \ No newline at end of file
 +          retention-days: 1
+diff --git a/rdgenerator/forms.py b/rdgenerator/forms.py
+index 886030e..3446534 100644
+--- a/rdgenerator/forms.py
++++ b/rdgenerator/forms.py
+@@ -1,3 +1,4 @@
++import re
+ import logging
+ 
+ from django import forms

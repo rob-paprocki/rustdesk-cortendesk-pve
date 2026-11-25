@@ -205,11 +205,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/cortendesk-update"
 #!/usr/bin/env bash
-# cortendesk-update: install or update CortenDesk (marcpope/cortendesk, Laravel) natively, with a consistent
-# SQLite backup, health check and rollback (previous code + pre-migration database).
-#   cortendesk-update [--force]   update if a newer release exists (reinstall the current one with --force)
-#   cortendesk-update --install   first install (used by the installer; no backup/rollback)
-#   cortendesk-update --check     print "<installed> <latest>" and exit
+# usage and notes: src/files/usr/local/bin/cortendesk-update in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 REPO=marcpope/cortendesk
@@ -341,14 +337,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rdgen-publish"
 #!/usr/bin/env bash
-# rdgen-publish: copy finished rdgen builds into CortenDesk's Client Downloads, as chosen per build on rdgen's form
-# ("Add the finished files to CortenDesk's Client Downloads": no / hidden / published).
-#   rdgen-publish                       import the builds that are waiting (runs every minute; it returns at once
-#                                       unless rdgen flagged a finished build)
-#   rdgen-publish --retry <build uuid>  try a build again, e.g. after a failure (the uuid is in rdgen's build URL)
-# rdgen never writes into CortenDesk. This job reads the files as the rdgen user and hands them to
-# import-download.php, which runs as cortendesk and checks them against rdgen's size and sha256. CortenDesk's
-# /downloads page is public, so a client with a preset permanent password always arrives hidden.
+# usage and notes: src/files/usr/local/bin/rdgen-publish in the project repository
 set -Eeuo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 FLAG=$RDGEN_DATA/publish.pending
@@ -429,30 +418,12 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rdgen-setup"
 #!/usr/bin/env bash
-# rdgen-setup: install the hardened, pull-model rdgen (bryangerlach/rdgen + the patches in
-# /usr/local/share/rustdesk-cortendesk/rdgen/patches) and connect it to your private GitHub build repo.
-#   rdgen-setup              interactive
-#   rdgen-setup --stdin      lines: owner/repo, install/update token, runtime token, keep install token (yes|no)
-#   rdgen-setup --github     redo only the GitHub step (repo, tokens); blank tokens keep the stored/current ones
-#   rdgen-setup --push       push the installed tree to the configured repo with the stored install token, asking
-#                            nothing (exit 10 if no token is stored); tools/refresh-ct.sh runs it after --rebuild
-#   rdgen-setup --local-only install locally without touching GitHub (testing)
-#   rdgen-setup --rebuild    rebuild the installed rdgen from the base commit + the patches in this CT (after new
-#                            patches were copied in, e.g. by tools/refresh-ct.sh); then --push (or --github) it
-#   rdgen-setup --patch-source <owner/repo> [branch] | off | status | dispatch-token   (see rdgen/patch-source)
-# GitHub never connects to this LXC: builds are dispatched with the encrypted config as a workflow input and the
-# poller downloads (then deletes) the artifacts. The web UI listens on http://<LAN IP>:8190/ (LAN only, login).
-# Users: rdgen runs the web UI + poller (runtime token only); rdgenbuild owns the git tree and the install token
-# and runs every step that executes upstream rdgen code (checks, pushes). Root only deploys.
-# Tokens (fine-grained, only the build repo):
-#   install/update token  Contents RW, Workflows RW, Secrets RW   -> kept only if you choose (needed for automatic
-#                                                                   rdgen updates), readable by rdgenbuild only
-#   runtime token         Actions RW                             -> /etc/rdgen/rdgen.env (root:rdgen 0640)
+# usage and notes: src/files/usr/local/bin/rdgen-setup in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 MODE=full REPO="" ITOKEN="" RTOKEN="" STORE=""
 case "${1:-}" in --stdin) MODE=stdin ;; --github) MODE=github ;; --push) MODE=push ;; --local-only) MODE=local ;;
-  --rebuild) MODE=rebuild ;;
+  --rebuild) MODE=rebuild ;; --public-url) MODE=public PUB=${2:-} ;;
   --patch-source) PS=/usr/local/share/rustdesk-cortendesk/rdgen/patch-source
     case "${2:-status}" in off|status|dispatch-token) exec "$PS" "${2:-status}" ;; *) exec "$PS" setup "${@:2}" ;; esac ;;
 esac
@@ -575,14 +546,8 @@ rdgen_env() {  # secrets are created once; site values are (re)written
   # otherwise the form's key is blank and rdgen falls back to RustDesk's public key
   server_pub_copy
   env_set "$RDGEN_ENV" RDGEN_DEFAULT_KEY_FILE /etc/rdgen/server.pub
-  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1"
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$(env_get "$CD_ENV" CORTENDESK_ID_SERVER | sed 's/:21116$//')"
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$(env_get "$CD_ENV" APP_URL)"
+  rdgen_site_env   # form defaults, self-update and share links, ALLOWED_HOSTS (+ the public URL)
   env_set "$RDGEN_ENV" RDGEN_DEFAULT_PORT 21116   # hbbs here always listens on 21116 (relay 21117, WebSocket 21118/9)
-  # Windows clients' self-update links on the console (/etc/nginx/rustdesk-clients.conf, client-update.php)
-  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "$(env_get "$CD_ENV" APP_URL | sed 's#/*$##')/clients"
-  # share links from the Recent builds page work wherever the console does (/etc/nginx/rustdesk-clients.conf)
-  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "$(env_get "$CD_ENV" APP_URL | sed 's#/*$##')/share"
   # the form's "add to CortenDesk's Client Downloads" choice (rdgen-publish does the copy); an existing value,
   # even an empty one (= off), is kept
   grep -q '^RDGEN_PUBLISH_DEFAULT=' "$RDGEN_ENV" || env_set "$RDGEN_ENV" RDGEN_PUBLISH_DEFAULT hidden
@@ -664,15 +629,14 @@ github() {  # push the tree to the private repo + set ZIP_PASSWORD, as rdgenbuil
   return 0
 }
 
-link_cortendesk() {
-  local url; url="http://$(lan_ip):8190"
-  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "$url"
-  art config:cache >/dev/null
-  jq -n --arg u "$url" '{rdgen_url:$u}' | cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
-  svc restart "$FPM"
-  creds_set "rdgen URL" "$url/  (LAN only; the console's Build Installers link)"
-}
-
+if [ "$MODE" = public ]; then
+  PUB=${PUB%/}; [ "$PUB" = off ] && PUB=""
+  [[ "$PUB" =~ ^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$ ]] || { echo "rdgen-setup: --public-url https://name or off" >&2; exit 2; }
+  [ -f "$RDGEN_ENV" ] || { echo "rdgen is not installed; run rdgen-setup first" >&2; exit 1; }
+  env_set "$RDGEN_ENV" RDGEN_PUBLIC_URL "$PUB"; env_set "$RDGEN_ENV" CSRF_TRUSTED_ORIGINS "$PUB"
+  rdgen_site_env; rdgen_link_console; svc restart rdgen
+  echo "==> rdgen answers on ${PUB:-its LAN names only}"; exit 0
+fi
 ask
 if [ "$MODE" = push ]; then   # same as --github with the stored install token, the current repo and runtime token
   [ -x "$VENV_PY" ] || { echo "rdgen is not installed; run rdgen-setup first" >&2; exit 1; }
@@ -731,7 +695,7 @@ else
 fi
 services
 healthy
-link_cortendesk
+rdgen_link_console
 mkdir -p /var/lib/rustdesk-update
 if [ -n "$BUILT_BASE" ]; then echo "${BUILT_BASE:0:12}" >/var/lib/rustdesk-update/rdgen; fi
 if [ "$MODE" = local ]; then echo "==> rdgen installed locally (GitHub not configured)"; exit 0; fi
@@ -751,17 +715,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rdgen-update"
 #!/usr/bin/env bash
-# rdgen-update: move rdgen to the newest upstream master + our patches, push that to the private build repo,
-# then deploy the same tree locally (backup, health check, rollback). The GitHub side and the local side must
-# match (dispatch inputs <-> workflows), so the local deploy only happens after a successful push; a failed local
-# deploy is retried on the next run. Everything that executes upstream code runs as the rdgenbuild user.
-#   rdgen-update               uses the stored install token (see rdgen-setup)
-#   rdgen-update --token-stdin reads a (fresh) install/update token from stdin (not echoed at a terminal)
-#   rdgen-update --check       print "<installed upstream> <latest upstream>" (12-char commits) and exit
-# Exit: 0 updated/up to date, 1 failed (local rollback), 3 token/repo problem, 4 patches no longer apply
-#       (nothing changed), 5 push failed, 6 the patch source is unreadable, 10 an update exists but no token is stored
-# With a patch source (rdgen-setup --patch-source) the versions read <upstream>+<series commit>, and a new series is
-# built and pushed like an upstream update; it replaces the installed patches only after a successful push.
+# usage and notes: src/files/usr/local/bin/rdgen-update in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 VENV_PY=$RDGEN_APP/.venv/bin/python3
@@ -885,12 +839,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rustdesk-admin"
 #!/usr/bin/env bash
-# rustdesk-admin: set the CortenDesk console administrator (and the rdgen login, if rdgen is installed).
-#   rustdesk-admin              interactive
-#   rustdesk-admin --stdin      lines: username, password, [email]   (used by the Proxmox host script)
-# The account named in ~/rustdesk-cortendesk.creds is renamed rather than duplicated; all its existing sessions,
-# remember-me cookies, trusted browsers and client tokens are revoked. Passwords are read from stdin/the terminal
-# only and saved to ~/rustdesk-cortendesk.creds (root-only). Minimum 12 characters (rdgen's rule; the console's is 8).
+# usage and notes: src/files/usr/local/bin/rustdesk-admin in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 PREV=$(creds_get "Console admin" || true)
@@ -941,18 +890,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rustdesk-config"
 #!/usr/bin/env bash
-# rustdesk-config: set the addresses RustDesk clients and browsers use, everywhere they are needed
-# (hbbs relay list, CortenDesk .env + saved settings, rdgen form defaults, the creds file).
-#   rustdesk-config            interactive (current values are the defaults)
-#   rustdesk-config --stdin    lines: public host, console URL, reverse-proxy IP (empty lines keep the current value;
-#                              "none" clears the proxy)
-#   rustdesk-config --show     print the current values
-#   rustdesk-config --check    test the console URL the way clients and the web client use it
-#  public host   DNS name or IP clients use for the ID/relay server (ports 21115-21117; never behind a proxy)
-#  console URL   what browsers and the clients' "API server" use, e.g. https://rustdesk.example.com or http://<LAN IP>
-#  proxy IP      your reverse proxy / tunnel connector (e.g. cloudflared). Needed when the console URL is https
-#                through a proxy on another host (CortenDesk only trusts X-Forwarded-Proto from it; without it pages
-#                load http:// assets that browsers block); also makes the logs show real client IPs
+# usage and notes: src/files/usr/local/bin/rustdesk-config in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 
@@ -970,13 +908,31 @@ check_url() {  # check_url <console url>
     000) echo "client check-ins:  no answer from $url here (this LXC may not reach its own public name)" ;;
     *)   echo "client check-ins:  HTTP $code from $url/api/heartbeat" ;;
   esac
-  # after a 101 curl keeps the socket open until -m runs out and exits non-zero; the status it printed still counts
-  code=$(curl -s -o /dev/null -m 4 --http1.1 -w '%{http_code}' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-           -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$url/ws/id" 2>/dev/null || true)
-  case "$code" in
-    101) echo "web client:        OK (${url/#http/ws}/ws/id)" ;;
-    *)   echo "web client:        ${url/#http/ws}/ws/id answered HTTP ${code:-000} instead of switching to a WebSocket" ;;
-  esac
+  # the web client and WebSocket clients: hbbs on /ws/id, hbbr on /ws/relay. After a 101 curl keeps the socket open
+  # until -m runs out and exits non-zero; the status it printed still counts
+  local p
+  for p in id relay; do
+    code=$(curl -s -o /dev/null -m 4 --http1.1 -w '%{http_code}' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+             -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$url/ws/$p" 2>/dev/null || true)
+    case "$code" in
+      101) printf '%-18s OK (%s)\n' "WebSocket $p:" "${url/#http/ws}/ws/$p" ;;
+      *)   printf '%-18s %s answered HTTP %s instead of switching to a WebSocket\n' "WebSocket $p:" "${url/#http/ws}/ws/$p" "${code:-000}" ;;
+    esac
+  done
+  # an https console must build https links on every request; a proxy hop it doesn't trust (one tunnel replica of
+  # several, say) gets http:// links, so some pages break (mixed content) and some don't
+  [[ "$url" == https://* ]] || return 0
+  local h=${url#https://} n=0 s=0
+  for _ in 1 2 3 4 5 6 7 8; do
+    case "$(curl -s -o /dev/null -m 10 -w '%{redirect_url}' "$url/devices" 2>/dev/null || true)" in
+      "http://$h/"*) n=$((n + 1)) ;; "https://$h/"*) s=$((s + 1)) ;;
+    esac
+  done
+  if [ "$n" -gt 0 ]; then
+    echo "https links:       BROKEN: $n of $((n + s)) answers linked to http://. A proxy or tunnel connector is not in"
+    echo "                   TRUSTED_PROXIES. Give rustdesk-config all of their IPs (a,b) or their subnet."
+  elif [ "$s" -gt 0 ]; then echo "https links:       OK ($s of $s)"
+  else echo "https links:       not tested (no redirect from $url/devices)"; fi
 }
 cur_host=$(env_get "$CD_ENV" CORTENDESK_ID_SERVER); cur_host=${cur_host%:21116}
 cur_url=$(env_get "$CD_ENV" APP_URL)
@@ -988,9 +944,9 @@ if [ "${1:-}" = --check ]; then check_url "$cur_url"; exit 0; fi
 if [ "${1:-}" = --stdin ]; then
   IFS= read -r host || true; IFS= read -r url || true; IFS= read -r proxy || true
 else
-  read -r -p "Public host for the ID/relay server (DNS-only name or IP) [$cur_host]: " host
+  read -r -p "Public host for the ID/relay server (DNS-only name or IP; the console's name if all clients use WebSocket) [$cur_host]: " host
   read -r -p "Console URL (browsers + the clients' API server) [$cur_url]: " url
-  read -r -p "Reverse proxy / tunnel IP, or 'none' [${cur_proxy:-none}]: " proxy
+  read -r -p "Reverse proxy / tunnel IPs (all connectors, a,b or a subnet), or 'none' [${cur_proxy:-none}]: " proxy
 fi
 host=${host:-$cur_host}; url=${url:-$cur_url}; url=${url%/}; proxy=${proxy:-$cur_proxy}
 [ "$proxy" = none ] && proxy=""
@@ -1027,19 +983,13 @@ art config:cache >/dev/null
 jq -n --arg i "$host:21116" --arg r "$host:21117" '{id_server:$i, relay_server:$r}' |
   cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
 svc restart "$FPM"   # opcache.validate_timestamps=0
+if ws_realip_conf; then svc reload nginx; fi   # the WebSocket bridge trusts the same proxies for client addresses
 
-# rdgen: form defaults, the hosts it answers to, the key copy it can read, and the console's link to it
+# rdgen: form defaults, the names it answers to (its public URL included), the key copy, the console's link to it
 if [ -f "$RDGEN_ENV" ]; then
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$host"
-  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$url"
-  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "${url%/}/clients"
-  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "${url%/}/share"
-  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1"
+  rdgen_site_env
   server_pub_copy || true
-  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "http://$(lan_ip):8190"
-  art config:cache >/dev/null
-  jq -n --arg u "http://$(lan_ip):8190" '{rdgen_url:$u}' | cd_php /usr/local/lib/cortendesk/sync-settings.php >/dev/null
-  svc restart "$FPM"
+  rdgen_link_console
   svc restart rdgen
 fi
 
@@ -1215,10 +1165,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rustdesk-server-update"
 #!/usr/bin/env bash
-# rustdesk-server-update: install/update hbbs + hbbr from marcpope/cortendesk-server (official RustDesk
-# server 1.1.16 + the KeyExchange that signed-in clients need), with digest check, backup, health check, rollback.
-#   rustdesk-server-update [--force]   update if a newer release exists (or reinstall with --force)
-#   rustdesk-server-update --check     print "<installed> <latest>" and exit
+# usage and notes: src/files/usr/local/bin/rustdesk-server-update in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 REPO=marcpope/cortendesk-server
@@ -1326,14 +1273,7 @@ RDFILE_EOF
   mkdir -p "/usr/local/bin"
   cat <<'RDFILE_EOF' >"/usr/local/bin/rustdesk-update"
 #!/usr/bin/env bash
-# rustdesk-update: update (or health-check) the whole stack, then notify once with before -> after versions.
-#   rustdesk-update [--force]     runs daily (crond on Alpine, a systemd timer on Debian)
-# Components (each has its own tool with backup, health check and rollback):
-#   rustdesk-server  hbbs/hbbr from marcpope/cortendesk-server      rustdesk-server-update
-#   cortendesk       the console, marcpope/cortendesk               cortendesk-update
-#   rdgen            client builder (only if installed)             rdgen-update
-# /etc/rustdesk-update.env: UPDATE_SERVER / UPDATE_CORTENDESK / UPDATE_RDGEN=0 skip a component;
-#   NOTIFY_UPTODATE=0 silences the daily "no updates" message. Notifications: rustdesk-notify setup.
+# usage and notes: src/files/usr/local/bin/rustdesk-update in the project repository
 set -euo pipefail
 . /usr/local/lib/rustdesk-cortendesk/common.sh
 mkdir -p /var/lib/rustdesk-update "$BK"; chmod 700 "$BK"
@@ -1767,12 +1707,18 @@ $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 $allowed = ['id_server', 'relay_server', 'public_key', 'rdgen_url'];
 $in = json_decode(stream_get_contents(STDIN), true);
 if (! is_array($in)) { fwrite(STDERR, "expected a JSON object on stdin\n"); exit(2); }
+// "was": {key: the .env value before}. A row that differs from it was saved by hand in Settings: keep it.
+$was = is_array($in['was'] ?? null) ? $in['was'] : [];
 foreach ($in as $key => $value) {
     if (! in_array($key, $allowed, true) || ! is_string($value)) { continue; }
-    if (App\Models\Setting::query()->find($key) !== null) {
-        App\Models\Setting::put($key, $key === 'rdgen_url' ? rtrim($value, '/') : trim($value));
-        echo "updated setting $key\n";
+    $row = App\Models\Setting::query()->find($key);
+    if ($row === null) { continue; }
+    if (is_string($was[$key] ?? null) && rtrim((string) $row->value, '/') !== rtrim($was[$key], '/')) {
+        echo "kept setting $key (saved in Settings: {$row->value})\n";
+        continue;
     }
+    App\Models\Setting::put($key, $key === 'rdgen_url' ? rtrim($value, '/') : trim($value));
+    echo "updated setting $key\n";
 }
 RDFILE_EOF
   chmod 644 "/usr/local/lib/cortendesk/sync-settings.php"
@@ -1855,6 +1801,65 @@ env_set() {  # env_set <file> <KEY> <value>: replace or append KEY=value, keep m
   chmod "$(stat -c %a "$f" 2>/dev/null || echo 640)" "$tmp"   # busybox has no --reference
   chown "$(stat -c %u:%g "$f" 2>/dev/null || echo 0:0)" "$tmp"
   mv "$tmp" "$f"
+}
+# rdgen's public URL (rdgen-setup --public-url), or nothing. The first call adopts a single origin set by hand
+# in CSRF_TRUSTED_ORIGINS, so a name added by hand survives rustdesk-config and rdgen-setup.
+rdgen_public() {
+  local o
+  if ! grep -q '^RDGEN_PUBLIC_URL=' "$RDGEN_ENV"; then
+    o=$(env_get "$RDGEN_ENV" CSRF_TRUSTED_ORIGINS)
+    [[ "$o" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || o=""
+    env_set "$RDGEN_ENV" RDGEN_PUBLIC_URL "$o"
+  fi
+  env_get "$RDGEN_ENV" RDGEN_PUBLIC_URL
+}
+rdgen_site_env() {  # rdgen's form defaults, links and the names it answers to: CortenDesk's .env + RDGEN_PUBLIC_URL
+  local url p h w n old new olds=()
+  url=$(env_get "$CD_ENV" APP_URL | sed 's#/*$##'); p=$(rdgen_public); h=${p#*://}; h=${h%%[:/]*}
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_SERVER "$(env_get "$CD_ENV" CORTENDESK_ID_SERVER | sed 's/:21116$//')"
+  w=${url#*://}; env_set "$RDGEN_ENV" RDGEN_DEFAULT_WS_SERVER "${w%%[:/]*}"   # the name /ws/id and /ws/relay answer on
+  env_set "$RDGEN_ENV" RDGEN_DEFAULT_API_SERVER "$url"
+  env_set "$RDGEN_ENV" RDGEN_UPDATE_BASE "$url/clients"   # Windows self-update links (rustdesk-clients.conf)
+  env_set "$RDGEN_ENV" RDGEN_SHARE_BASE "$url/share"      # share links work wherever the console does
+  old=$(env_get "$RDGEN_ENV" ALLOWED_HOSTS)
+  new="$(lan_ip),$(hostname),$(hostname -f 2>/dev/null || hostname),localhost,127.0.0.1${h:+,$h}"
+  env_set "$RDGEN_ENV" ALLOWED_HOSTS "$new"
+  [ -z "$p" ] || env_set "$RDGEN_ENV" CSRF_TRUSTED_ORIGINS "$p"
+  IFS=, read -ra olds <<<"$old"   # no word splitting: a '*' entry must not glob
+  for n in "${olds[@]}"; do
+    case ",$new," in *",$n,"*) ;; *) echo "rdgen: no longer answers on $n (a public name: rdgen-setup --public-url)" >&2 ;; esac
+  done
+}
+rdgen_link_console() {  # the console's Build Installers link; a different value saved in Settings is kept
+  local p u o; p=$(rdgen_public); u=${p:-http://$(lan_ip):8190}; o=$(env_get "$CD_ENV" CORTENDESK_RDGEN_URL)
+  env_set "$CD_ENV" CORTENDESK_RDGEN_URL "$u"
+  art config:cache >/dev/null
+  jq -n --arg u "$u" --arg o "$o" '{rdgen_url:$u, was:{rdgen_url:$o}}' | cd_php /usr/local/lib/cortendesk/sync-settings.php
+  svc restart "$FPM"
+  creds_set "rdgen URL" "$u/  (Build Installers; LAN: http://$(lan_ip):8190/)"
+}
+# The WebSocket bridge (/ws/id, /ws/relay -> hbbs/hbbr, which trust X-Real-IP) passes on the client's address. Behind a
+# tunnel every request comes from the connector, so nginx takes it from X-Forwarded-For, but only from the proxies
+# in TRUSTED_PROXIES (included in both locations; a list nginx rejects is not kept)
+ws_realip_conf() {
+  local f=/etc/nginx/rustdesk-ws-realip.conf p tmp old="" ok=0 ps=()
+  [ -f "$f" ] && old=$(cat "$f")
+  IFS=, read -ra ps <<<"$(env_get "$CD_ENV" TRUSTED_PROXIES | tr -d ' ')"   # no word splitting: '*' must not glob
+  nginx -t -q 2>/dev/null && ok=1   # judge the new list only against a configuration that passed before
+  tmp=$(mktemp /etc/nginx/.ws-realip.XXXXXX)
+  {
+    echo "# written from TRUSTED_PROXIES in $CD_ENV by rustdesk-config"
+    for p in "${ps[@]}"; do
+      if [ "$p" = '*' ]; then printf 'set_real_ip_from 0.0.0.0/0;\nset_real_ip_from ::/0;\n'
+      elif [[ "$p" =~ ^[0-9a-fA-F.:/]+$ ]]; then echo "set_real_ip_from $p;"; fi
+    done
+    echo 'real_ip_header X-Forwarded-For;'
+  } >"$tmp"
+  chmod 644 "$tmp" && mv -f "$tmp" "$f"
+  if [ "$ok" = 1 ] && ! nginx -t -q 2>/dev/null; then
+    printf '%s\n' "${old:-real_ip_header X-Forwarded-For;}" >"$f"
+    echo "!! nginx rejected TRUSTED_PROXIES for the WebSocket bridge; kept the previous list" >&2; return 1
+  fi
 }
 # ~/rustdesk-cortendesk.creds: "Label: value" lines (root-only). Values never pass through sed/regex.
 creds_set() {  # creds_set <label> <value>
@@ -2095,9 +2100,11 @@ __V6_LISTEN__
     client_max_body_size 260m;
     access_log off;
 
-    # WebSocket bridge for the web client -> hbbs (21118) / hbbr (21119). Those ports trust X-Real-IP /
-    # X-Forwarded-For from whoever connects, so always overwrite them with the real peer.
+    # WebSocket bridge for the web client and WebSocket clients -> hbbs (21118) / hbbr (21119). Those ports trust
+    # X-Real-IP / X-Forwarded-For from whoever connects, so always overwrite them with the peer; behind a trusted
+    # proxy (TRUSTED_PROXIES) that is the client it forwarded for (rustdesk-ws-realip.conf).
     location = /ws/id {
+        include /etc/nginx/rustdesk-ws-realip.conf;
         proxy_pass http://127.0.0.1:21118/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -2108,6 +2115,7 @@ __V6_LISTEN__
         proxy_send_timeout 3600s;
     }
     location = /ws/relay {
+        include /etc/nginx/rustdesk-ws-realip.conf;
         proxy_pass http://127.0.0.1:21119/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -2186,6 +2194,8 @@ CORTENDESK_DOWNLOADS_PATH=/var/lib/cortendesk/downloads
 CORTENDESK_DOWNLOADS_MAX_KB=262144
 EOF
   fi
+  # the WebSocket bridge's trusted proxies (the console's server block includes them; rustdesk-config rewrites them)
+  bash -c '. /usr/local/lib/rustdesk-cortendesk/common.sh; ws_realip_conf'
   [ -f /etc/rustdesk-update.env ] || cat <<'EOF' >/etc/rustdesk-update.env
 # rustdesk-update settings. Notifications: run `rustdesk-notify setup` (Discord, Apprise, Apprise API).
 NOTIFY_METHOD=none

@@ -43,6 +43,11 @@ gh_api() {  # gh_api <method> <path> [json]: prints the HTTP code; the token rea
       -H 'X-GitHub-Api-Version: 2022-11-28' ${3:+--data-binary "$3"} "$API/repos/$REPO$2" 2>/dev/null || echo 000
 }
 remote_commit() { sgit ls-remote "$URL" "refs/heads/$BRANCH" 2>/dev/null | cut -f1 || true; }   # empty: unreadable
+unreadable_why() {  # remote_commit came back empty: a missing branch, or no access to the repository at all
+  if sgit ls-remote --exit-code "$URL" HEAD >/dev/null 2>&1; then
+    echo "the repository has no branch $BRANCH (renamed or deleted? rdgen-setup --patch-source $REPO <branch>)"
+  else echo "the repository is not readable (add the deploy key below, read-only)"; fi
+}
 
 setup() {
   local repo=${1:-} branch=${2:-main}
@@ -61,7 +66,7 @@ setup() {
   echo "(https://github.com/$REPO/settings/keys -> Add deploy key; leave \"Allow write access\" off):"
   echo; cat "$KEY.pub"; echo
   if [ -n "$(remote_commit)" ]; then echo "Access OK: the daily update now follows $REPO@$BRANCH."
-  else echo "Not readable yet. Once the key is added, check with: rdgen-setup --patch-source status"; fi
+  else echo "Not readable yet: $(unreadable_why). Check again with: rdgen-setup --patch-source status"; fi
 }
 
 stage() {
@@ -70,7 +75,7 @@ stage() {
   (umask 077; mkdir -p "$CACHE")
   [ -d "$CACHE/repo.git" ] || git init -q --bare "$CACHE/repo.git"
   sgit -C "$CACHE/repo.git" fetch -q --depth 1 "$URL" "+refs/heads/$BRANCH:refs/heads/series" || {
-    echo "!! cannot fetch $REPO@$BRANCH (deploy key added? see rdgen-setup --patch-source status)" >&2; return 6; }
+    echo "!! cannot fetch $REPO@$BRANCH: $(unreadable_why)" >&2; return 6; }
   commit=$(git -C "$CACHE/repo.git" rev-parse series)
   tmp=$(mktemp -d -p "$(dirname "$RDGEN_PATCHES")" .stage.XXXXXX)
   trap 'rm -rf "$tmp"' RETURN
@@ -145,11 +150,11 @@ case "${1:-status}" in
     if conf; then
       c=$(remote_commit)
       if [ -n "$c" ]; then echo "following github.com/$REPO ($BRANCH): readable, at ${c:0:12}"
-      else echo "following github.com/$REPO ($BRANCH): NOT readable (add the deploy key below, read-only)"; fi
+      else why=$(unreadable_why); echo "following github.com/$REPO ($BRANCH): NOT readable: $why"; fi
       echo "installed series from: $(cat /var/lib/rustdesk-update/rdgen-series 2>/dev/null || echo "this CT's copy (refresh-ct.sh)")"
       if [ -s "$TOKEN" ]; then echo "repair requests: on ($WORKFLOW)${REPAIRF:+; last: $(cat "$REPAIRF" 2>/dev/null || echo none)}"
       else echo "repair requests: off (rdgen-setup --patch-source dispatch-token)"; fi
-      [ -n "$c" ] || cat "$KEY.pub"
+      [ -n "$c" ] || [[ "$why" != *"deploy key"* ]] || cat "$KEY.pub"
     else echo "no patch source: rdgen uses the patches copied in by the installer or tools/refresh-ct.sh"; fi ;;
   *) echo "usage: $0 setup <owner/repo> [branch] | off | status | dispatch-token | enabled | remote | stage | request-repair |" \
           "request-sync" >&2

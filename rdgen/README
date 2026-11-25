@@ -77,8 +77,24 @@ The later patches, newest last:
      stays Acme-Support as before 073447b) as both the build name and custom.txt app-name: RustDesk on macOS runs under
      that app-name, looks for /Applications/<app-name>.app/Contents/MacOS/<app-name> and pastes it unquoted into /bin/sh.
 0031 follows upstream's move of the Apple Silicon Mac runner from macos-14 to macos-15 in the test suite.
-0032 follows upstream 1.5.3, which writes "Deny LAN discovery" and "Automatically close incoming sessions" into override-settings itself (the fix our UI patch had made): the tests now expect those keys there, always.0033 validates upstream's new theme color keys (themeColor, themeSurfaceLight, themeSurfaceDark, themeMeColor) in rdgenerator/validation.py and the runner's validate.py (canonical #RRGGBB or blank), and carries upstream's theme tests into the tests package (our series replaced upstream's tests.py).
+0032 follows upstream 1.5.3, which writes "Deny LAN discovery" and "Automatically close incoming sessions" into override-settings itself (the fix our UI patch had made): the tests now expect those keys there, always.
 0033 validates upstream's new theme color keys (themeColor, themeSurfaceLight, themeSurfaceDark, themeMeColor) in rdgenerator/validation.py and the runner's validate.py (canonical #RRGGBB or blank), and carries upstream's theme tests into the tests package (our series replaced upstream's tests.py).
+0034 adds the build repository's own README (.github/README.md, which GitHub shows ahead of upstream's), CHANGELOG.md and NOTICE. Every update force-pushes that repository, so files committed there by hand do not last.
+0035 adds the tests and the SETUP-PULL.md notes for pullify's fixes for a Mac of your own (in 0008): the prepare step checks for Apple's Developer ID G2
+     intermediate in the System keychain, which codesign needs on a LaunchDaemon runner; Xcode 27 builds target macOS 12.0; the signing keychain is
+     recorded first, so it is always removed, with its entry in the search list.
+0036 lets RustDesk's MSI script build on a machine that cannot start the client (Windows Server Core lacks sas, dxva2, xpsprint and
+     opengl32): .github/patches/msiPreprocessFallback.py gives preprocess.py Cargo.toml's version and the clock's build date, and pullify (0008)
+     runs it before "Build msi", which no longer continues on error.
+0037 tests that the build tree has no Dependabot config: pullify (0008) deletes upstream's .github/dependabot.yml, whose version-update pull
+     requests the next update would overwrite.
+0038 tells WebSocket builds from normal ones when the server has a separate WebSocket name (RDGEN_DEFAULT_WS_SERVER, here the
+     console's name, which bridges /ws/id and /ws/relay): a build with allow-websocket=Y under Other gets that name for an empty
+     Host, is refused with the raw name (RDGEN_DEFAULT_SERVER) as Host, relay-server or custom-rendezvous-server, and gets
+     relay-server=<Host> unless it sets one (a client's own relay-server wins over the raw relay hbbs names); any other build is
+     refused with the WebSocket name. The form explains the two names under Host. Every WebSocket build with an https:// API
+     server also gets api-server=<it> (the client picks wss:// only from that option, which rdgen otherwise sets only for
+     Incoming Only builds), and one without https:// is refused when its Host is a public name.
 
 tools/rdgen-rebase.py moves the series to a newer upstream: it rebases, regenerates 0009, exports and verifies.
 .github/workflows/rdgen-upstream.yml runs it when a CT asks, or by hand. patch-source, installed next to the patches in

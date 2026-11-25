@@ -1,7 +1,8 @@
-From 95d541306804d88c93452e4445bc01b3b37c7b1f Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From d6f4e6f8af5ec724f2ee03e75e633bb31f9154b5 Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Wed, 30 Sep 2026 01:11:23 -0400
-Subject: [PATCH 12/33] tests: hardening and pull-model test suite with a local
+Subject: [PATCH 12/38] tests: hardening and pull-model test suite with a local
  GitHub API stub
 
 rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with
@@ -40,7 +41,6 @@ rdgenerator/tests/ (replaces the empty tests.py), 45 tests, run with
   runner (heredoc GITHUB_ENV, masks, staged assets and patches, and
   rejection of a replayed cfg, a protocol mismatch, an injection and a
   flag/image mismatch).
-
 ---
  rdgenerator/tests.py                | 136 -----------
  rdgenerator/tests/__init__.py       |   0

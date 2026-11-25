@@ -1,7 +1,8 @@
-From 3f98da8c0451baca860f964b9842ef6549a3c680 Mon Sep 17 00:00:00 2001
-From: rustdesk-cortendesk-pve release <41898282+github-actions[bot]@users.noreply.github.com>
+From 8ca85847aac8d5a7976a1fee0a4eda53e0d15afa Mon Sep 17 00:00:00 2001
+From: rustdesk-cortendesk-pve release
+ <41898282+github-actions[bot]@users.noreply.github.com>
 Date: Fri, 30 Oct 2026 09:04:15 +0000
-Subject: [PATCH 30/33] macos: one shell-safe name for the bundle and
+Subject: [PATCH 30/38] macos: one shell-safe name for the bundle and
  custom.txt app-name
 
 Upstream (073447b) builds with the typed name stripped of spaces and puts the
@@ -20,7 +21,6 @@ macOS builds now send one name as both, mac_app_name(): letters, digits and
 ("Acme Support" -> Acme-Support), so a rebuilt client replaces the installed
 one instead of landing next to it with a new ID. Android keeps upstream's
 typed name; Windows 1.5.0 names are [A-Za-z0-9-] already (0023).
-
 ---
  rdgenerator/tests/test_ui.py | 16 +++++++++++++---
  rdgenerator/validation.py    | 14 ++++++++++++++
@@ -28,7 +28,7 @@ typed name; Windows 1.5.0 names are [A-Za-z0-9-] already (0023).
  3 files changed, 31 insertions(+), 4 deletions(-)
 
 diff --git a/rdgenerator/tests/test_ui.py b/rdgenerator/tests/test_ui.py
-index d5b9292..c82b5f0 100644
+index c378c61..683c708 100644
 --- a/rdgenerator/tests/test_ui.py
 +++ b/rdgenerator/tests/test_ui.py
 @@ -157,12 +157,22 @@ class LinuxAppNameTests(StubTestCase):
@@ -58,7 +58,7 @@ index d5b9292..c82b5f0 100644
          self.assertEqual(self.secrets(platform='linux')['appname'], 'rustdesk')
          self.assertEqual(self.secrets(platform='linux', appname='acme-remote')['appname'], 'acme-remote')
 diff --git a/rdgenerator/validation.py b/rdgenerator/validation.py
-index b230ea5..361ea6d 100644
+index ac825e7..94d5651 100644
 --- a/rdgenerator/validation.py
 +++ b/rdgenerator/validation.py
 @@ -75,6 +75,20 @@ def linux_reserved_names():
